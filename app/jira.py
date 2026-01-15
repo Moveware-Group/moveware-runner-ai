@@ -1,0 +1,55 @@
+import base64
+from typing import Any, Dict, List, Optional
+
+import requests
+
+
+class JiraClient:
+    def __init__(self, base_url: str, email: str, api_token: str, timeout_s: int = 30):
+        self.base_url = base_url.rstrip("/")
+        token = base64.b64encode(f"{email}:{api_token}".encode("utf-8")).decode("utf-8")
+        self._auth_header = f"Basic {token}"
+        self.timeout_s = timeout_s
+
+    def _headers(self) -> Dict[str, str]:
+        return {
+            "Authorization": self._auth_header,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+
+    def get_issue(self, issue_key: str) -> Dict[str, Any]:
+        url = f"{self.base_url}/rest/api/3/issue/{issue_key}"
+        r = requests.get(url, headers=self._headers(), timeout=self.timeout_s)
+        r.raise_for_status()
+        return r.json()
+
+    def add_comment(self, issue_key: str, body_md: str) -> None:
+        url = f"{self.base_url}/rest/api/3/issue/{issue_key}/comment"
+        payload = {"body": body_md}
+        r = requests.post(url, headers=self._headers(), json=payload, timeout=self.timeout_s)
+        r.raise_for_status()
+
+    def assign(self, issue_key: str, account_id: str) -> None:
+        url = f"{self.base_url}/rest/api/3/issue/{issue_key}/assignee"
+        r = requests.put(url, headers=self._headers(), json={"accountId": account_id}, timeout=self.timeout_s)
+        r.raise_for_status()
+
+    def get_transitions(self, issue_key: str) -> List[Dict[str, Any]]:
+        url = f"{self.base_url}/rest/api/3/issue/{issue_key}/transitions"
+        r = requests.get(url, headers=self._headers(), timeout=self.timeout_s)
+        r.raise_for_status()
+        return r.json().get("transitions", [])
+
+    def transition(self, issue_key: str, transition_id: str) -> None:
+        url = f"{self.base_url}/rest/api/3/issue/{issue_key}/transitions"
+        payload = {"transition": {"id": transition_id}}
+        r = requests.post(url, headers=self._headers(), json=payload, timeout=self.timeout_s)
+        r.raise_for_status()
+
+    def transition_by_name(self, issue_key: str, target_name: str) -> Optional[str]:
+        for t in self.get_transitions(issue_key):
+            if t.get("name", "").strip().lower() == target_name.strip().lower():
+                self.transition(issue_key, t["id"])
+                return t["id"]
+        return None

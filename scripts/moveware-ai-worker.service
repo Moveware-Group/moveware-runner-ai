@@ -1,0 +1,18 @@
+[Unit]
+Description=Moveware AI Worker (run processor)
+After=network.target moveware-ai-orchestrator.service
+
+[Service]
+Type=simple
+User=moveware-ai
+Group=moveware-ai
+EnvironmentFile=/etc/moveware-ai.env
+WorkingDirectory=/srv/ai/app
+ExecStart=/srv/ai/app/.venv/bin/python -m app.worker
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
