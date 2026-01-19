@@ -53,3 +53,17 @@ class JiraClient:
                 self.transition(issue_key, t["id"])
                 return t["id"]
         return None
+
+    def transition_to_status(self, issue_key: str, status_name: str) -> Optional[str]:
+        """Transition an issue to a target *status* name.
+
+        Jira transitions are not always named the same as the destination status.
+        This helper matches on the transition's `to.name`.
+        """
+        target = status_name.strip().lower()
+        for t in self.get_transitions(issue_key):
+            to_name = (t.get("to") or {}).get("name", "").strip().lower()
+            if to_name == target:
+                self.transition(issue_key, t["id"])
+                return t["id"]
+        return None

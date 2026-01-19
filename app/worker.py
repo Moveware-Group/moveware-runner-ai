@@ -1,161 +1,274 @@
+from __future__ import annotations
+
 import json
-import os
-import socket
 import time
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
-from tenacity import retry, stop_after_attempt, wait_exponential
-
-from app.config import settings
-from app.db import append_event, claim_next_run, finish_run, mark_run_failed
-from app.git_ops import (
-    checkout_repo,
-    commit_and_push_if_needed,
-    create_branch,
-    create_or_get_pr,
-    make_markdown_change,
+from .config import (
+    JIRA_AI_ACCOUNT_ID,
+    JIRA_HUMAN_ACCOUNT_ID,
+    REPO_OWNER_SLUG,
+    REPO_NAME,
+    BASE_BRANCH,
+    STATUS_BACKLOG,
+    STATUS_PLAN_REVIEW,
+    STATUS_IN_PROGRESS,
+    STATUS_IN_TESTING,
+    STATUS_DONE,
+    STATUS_BLOCKED,
+    PARENT_PLAN_COMMENT_PREFIX,
 )
-from app.jira import JiraClient
+from .db import dequeue_event, enqueue_job, init_db, mark_event_processed
+from .executor import ExecutionResult, execute_subtask
+from .jira import JiraClient
+from .models import JiraIssue
+from .planner import PlanResult, build_plan
+from .router import Action, Router
 
 
 @dataclass
-class IssueContext:
-    key: str
-    summary: str
-    description: str
-    comments: str
+class Context:
+    jira: JiraClient
+    router: Router
 
 
-def _host() -> str:
-    return socket.gethostname()
+def _to_issue(payload: Dict[str, Any]) -> Optional[JiraIssue]:
+    issue = payload.get("issue") or {}
+    fields = issue.get("fields") or {}
+    key = issue.get("key")
+    if not key:
+        return None
 
-
-def _issue_to_ctx(issue_json: Dict) -> IssueContext:
-    fields = issue_json.get("fields", {})
-    summary = fields.get("summary", "")
-    description = ""
-    # Jira Cloud description is usually ADF JSON; for pilot we keep it simple
     desc = fields.get("description")
-    if isinstance(desc, str):
-        description = desc
-    elif desc is None:
-        description = ""
+    # Jira Cloud v3 returns description as Atlassian Document Format (ADF) object.
+    if isinstance(desc, dict):
+        desc_text = json.dumps(desc)
     else:
-        # ADF or nested format
-        description = json.dumps(desc)[:4000]
+        desc_text = desc or ""
 
-    comments_bits = []
-    comm = fields.get("comment", {}).get("comments", []) if isinstance(fields.get("comment"), dict) else []
-    for c in comm[-5:]:
-        author = (c.get("author", {}) or {}).get("displayName", "")
-        body = c.get("body")
-        if isinstance(body, str):
-            body_text = body
-        else:
-            body_text = json.dumps(body)[:2000]
-        comments_bits.append(f"- {author}: {body_text}")
-    comments = "\n".join(comments_bits)
+    issuetype = fields.get("issuetype") or {}
+    status = (fields.get("status") or {}).get("name", "")
+    assignee = fields.get("assignee")
+    assignee_id = assignee.get("accountId") if isinstance(assignee, dict) else None
 
-    return IssueContext(key=issue_json.get("key", ""), summary=summary, description=description, comments=comments)
+    parent = fields.get("parent") or {}
+    parent_key = parent.get("key") if isinstance(parent, dict) else None
 
-
-def _jira() -> JiraClient:
-    return JiraClient(settings.jira_base_url, settings.jira_email, settings.jira_api_token)
-
-
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=20))
-def _process_run(run_id: int, issue_key: str) -> Tuple[str, str]:
-    jira = _jira()
-
-    issue = jira.get_issue(issue_key)
-    ctx = _issue_to_ctx(issue)
-
-    append_event(run_id, "jira.issue_loaded", {"issue_key": issue_key, "summary": ctx.summary})
-
-    # Workdir per issue
-    workdir = str(Path(settings.work_root) / issue_key)
-    branch = f"ai/{issue_key}"
-
-    # Git operations
-    checkout_repo(
-        workdir=workdir,
-        repo_https=settings.github_repo_https,
-        base_branch=settings.github_base_branch,
-        token=settings.github_token,
+    return JiraIssue(
+        key=key,
+        summary=fields.get("summary", ""),
+        description=desc_text,
+        issue_type=(issuetype.get("name") or ""),
+        is_subtask=bool(issuetype.get("subtask")),
+        status=status,
+        assignee_account_id=assignee_id,
+        parent_key=parent_key,
     )
-    create_branch(workdir, branch)
 
-    # Pilot implementation: write a deterministic change
-    make_markdown_change(workdir, issue_key, ctx.summary)
 
-    pushed = commit_and_push_if_needed(workdir, issue_key)
-    append_event(run_id, "git.pushed", {"pushed": pushed, "branch": branch})
+def _fetch_issue(jira: JiraClient, issue_key: str) -> JiraIssue:
+    raw = jira.get_issue(issue_key)
+    # Wrap into webhook-like shape for reuse
+    return _to_issue({"issue": raw})  # type: ignore
 
-    pr_url = ""
-    if pushed:
-        title = f"{issue_key}: {ctx.summary}".strip()
-        body = (
-            f"Automated change for {issue_key}.\n\n"
-            f"Summary: {ctx.summary}\n\n"
-            "This PR was created by the Moveware AI Runner pilot."
-        )
-        pr_url = create_or_get_pr(
-            workdir=workdir,
-            title=title,
-            body=body,
-            base=settings.github_base_branch,
-            head=branch,
-            token=settings.github_token,
-        )
-        append_event(run_id, "github.pr_created", {"pr_url": pr_url})
 
-    # Jira updates
-    comment_lines = [
-        "AI Runner has completed initial implementation and raised a PR for review.",
-        f"Branch: `{branch}`",
-    ]
-    if pr_url:
-        comment_lines.append(f"PR: {pr_url}")
-    comment_lines.append("\nNext steps: Please review the PR and either approve/merge, or comment on the ticket with required changes and re-assign to the AI Runner.")
+def _is_parent(issue: JiraIssue) -> bool:
+    return not issue.is_subtask
 
-    jira.add_comment(issue_key, "\n".join(comment_lines))
 
-    # Move to In Testing (transition name configurable)
+def _has_plan_comment(jira: JiraClient, parent_key: str) -> bool:
     try:
-        jira.transition(issue_key, settings.jira_transition_in_testing)
-    except Exception as e:
-        append_event(run_id, "jira.transition_failed", {"target": settings.jira_transition_in_testing, "error": str(e)})
-        # Non-fatal: status schemes vary
-
-    # Assign back to Leigh
-    try:
-        jira.assign(issue_key, settings.jira_assignee_leigh_account_id)
-    except Exception as e:
-        append_event(run_id, "jira.assign_failed", {"assignee": "Leigh", "error": str(e)})
-
-    return branch, pr_url
+        comments = jira.get_comments(parent_key)
+        for c in comments:
+            body = c.get("body")
+            if isinstance(body, str) and body.startswith(PARENT_PLAN_COMMENT_PREFIX):
+                return True
+        return False
+    except Exception:
+        return False
 
 
-def worker_loop() -> None:
-    worker_id = f"{_host()}:{os.getpid()}"
-    poll_s = settings.worker_poll_seconds
+def _extract_plan_json_from_comments(jira: JiraClient, parent_key: str) -> Optional[Dict[str, Any]]:
+    comments = jira.get_comments(parent_key)
+    for c in reversed(comments):
+        body = c.get("body")
+        if isinstance(body, str) and body.startswith(PARENT_PLAN_COMMENT_PREFIX):
+            # body = "[AI PLAN v1]\n```json\n{...}\n```"
+            try:
+                start = body.index("```json") + len("```json")
+                end = body.index("```", start)
+                return json.loads(body[start:end].strip())
+            except Exception:
+                return None
+    return None
+
+
+def _create_subtasks_from_plan(ctx: Context, parent: JiraIssue) -> None:
+    plan = _extract_plan_json_from_comments(ctx.jira, parent.key)
+    if not plan:
+        ctx.jira.add_comment(parent.key, "AI Runner could not read the plan JSON from the ticket comments.")
+        ctx.jira.transition_to_status(parent.key, STATUS_BLOCKED)
+        ctx.jira.assign_issue(parent.key, JIRA_HUMAN_ACCOUNT_ID)
+        return
+
+    subtasks = plan.get("subtasks") or []
+    if not isinstance(subtasks, list) or not subtasks:
+        ctx.jira.add_comment(parent.key, "AI plan did not include subtasks. Please update the plan.")
+        ctx.jira.transition_to_status(parent.key, STATUS_BLOCKED)
+        ctx.jira.assign_issue(parent.key, JIRA_HUMAN_ACCOUNT_ID)
+        return
+
+    created_keys = []
+    for s in subtasks:
+        summary = (s.get("summary") or "").strip()
+        if not summary:
+            continue
+        desc = s.get("description") or ""
+        key = ctx.jira.create_subtask(
+            project_key=None,
+            parent_key=parent.key,
+            summary=summary,
+            description=str(desc),
+            labels=s.get("labels") if isinstance(s.get("labels"), list) else None,
+        )
+        created_keys.append(key)
+        # leave subtask in Backlog and assign AI; worker will pull one into In Progress
+        ctx.jira.assign_issue(key, JIRA_AI_ACCOUNT_ID)
+
+    ctx.jira.add_comment(
+        parent.key,
+        "AI created sub-tasks from the approved plan:\n" + "\n".join([f"- {k}" for k in created_keys]),
+    )
+
+
+def _pick_next_subtask_to_start(ctx: Context, parent_key: str) -> Optional[str]:
+    subtasks = ctx.jira.get_subtasks(parent_key)
+    # pick first Backlog assigned to AI
+    for st in subtasks:
+        fields = st.get("fields") or {}
+        status = (fields.get("status") or {}).get("name")
+        assignee = fields.get("assignee") or {}
+        assignee_id = assignee.get("accountId") if isinstance(assignee, dict) else None
+        if status == STATUS_BACKLOG and assignee_id == JIRA_AI_ACCOUNT_ID:
+            return st.get("key")
+    return None
+
+
+def _all_subtasks_done(ctx: Context, parent_key: str) -> bool:
+    subtasks = ctx.jira.get_subtasks(parent_key)
+    if not subtasks:
+        return False
+    for st in subtasks:
+        status = ((st.get("fields") or {}).get("status") or {}).get("name")
+        if status != STATUS_DONE:
+            return False
+    return True
+
+
+def _handle_plan_parent(ctx: Context, issue: JiraIssue) -> None:
+    if not _is_parent(issue):
+        return
+    if not issue.assignee_account_id == JIRA_AI_ACCOUNT_ID:
+        return
+
+    plan_res: PlanResult = build_plan(issue)
+    ctx.jira.add_comment(issue.key, plan_res.comment)
+    ctx.jira.transition_to_status(issue.key, STATUS_PLAN_REVIEW)
+    ctx.jira.assign_issue(issue.key, JIRA_HUMAN_ACCOUNT_ID)
+
+
+def _handle_parent_approved(ctx: Context, parent: JiraIssue) -> None:
+    # Parent moved to In Progress (approval signal) and assigned to AI Runner.
+    if parent.status != STATUS_IN_PROGRESS:
+        return
+    if parent.assignee_account_id != JIRA_AI_ACCOUNT_ID:
+        return
+
+    # Create subtasks once.
+    subtasks = ctx.jira.get_subtasks(parent.key)
+    if not subtasks:
+        _create_subtasks_from_plan(ctx, parent)
+
+    # Start first subtask.
+    next_key = _pick_next_subtask_to_start(ctx, parent.key)
+    if next_key:
+        ctx.jira.transition_to_status(next_key, STATUS_IN_PROGRESS)
+        ctx.jira.add_comment(parent.key, f"AI starting work on {next_key}.")
+
+
+def _handle_execute_subtask(ctx: Context, subtask: JiraIssue) -> None:
+    if not subtask.is_subtask:
+        return
+    if subtask.status != STATUS_IN_PROGRESS:
+        return
+    if subtask.assignee_account_id != JIRA_AI_ACCOUNT_ID:
+        return
+    if not subtask.parent_key:
+        return
+
+    # Execute
+    result: ExecutionResult = execute_subtask(subtask)
+
+    # Comment + transition + assign
+    ctx.jira.add_comment(subtask.key, result.jira_comment)
+    ctx.jira.transition_to_status(subtask.key, STATUS_IN_TESTING)
+    ctx.jira.assign_issue(subtask.key, JIRA_HUMAN_ACCOUNT_ID)
+
+    # Kick off next subtask sequentially
+    next_key = _pick_next_subtask_to_start(ctx, subtask.parent_key)
+    if next_key:
+        ctx.jira.transition_to_status(next_key, STATUS_IN_PROGRESS)
+        ctx.jira.add_comment(subtask.parent_key, f"AI moving to next sub-task {next_key}.")
+
+
+def _handle_subtask_done(ctx: Context, subtask: JiraIssue) -> None:
+    if not subtask.is_subtask or not subtask.parent_key:
+        return
+    if subtask.status != STATUS_DONE:
+        return
+    if _all_subtasks_done(ctx, subtask.parent_key):
+        ctx.jira.transition_to_status(subtask.parent_key, STATUS_DONE)
+        ctx.jira.add_comment(subtask.parent_key, "All sub-tasks are Done. Marking parent ticket Done.")
+
+
+def process_webhook_event(ctx: Context, event: Dict[str, Any]) -> None:
+    issue = _to_issue(event)
+    if not issue:
+        return
+
+    action: Action = ctx.router.decide(issue)
+
+    if action.name == "PLAN_PARENT":
+        _handle_plan_parent(ctx, issue)
+    elif action.name == "PARENT_APPROVED":
+        _handle_parent_approved(ctx, issue)
+    elif action.name == "EXECUTE_SUBTASK":
+        _handle_execute_subtask(ctx, issue)
+    elif action.name == "SUBTASK_DONE":
+        _handle_subtask_done(ctx, issue)
+
+
+def worker_loop(poll_interval_seconds: float = 1.0) -> None:
+    init_db()
+    ctx = Context(jira=JiraClient(), router=Router())
 
     while True:
-        run = claim_next_run(worker_id)
-        if not run:
-            time.sleep(poll_s)
+        row = dequeue_event()
+        if not row:
+            time.sleep(poll_interval_seconds)
             continue
 
-        run_id, issue_key = run
-        append_event(run_id, "worker.claimed", {"worker_id": worker_id, "issue_key": issue_key})
-
+        event_id = row["id"]
+        payload = json.loads(row["payload"])
         try:
-            branch, pr_url = _process_run(run_id, issue_key)
-            finish_run(run_id, branch=branch, pr_url=pr_url)
+            process_webhook_event(ctx, payload)
+            mark_event_processed(event_id)
         except Exception as e:
-            mark_run_failed(run_id, str(e))
+            # Don't lose the event; mark processed but leave trace in logs.
+            # In production you may prefer a retry + dead-letter queue.
+            print(f"ERROR processing event {event_id}: {e}")
+            mark_event_processed(event_id)
 
 
 if __name__ == "__main__":
