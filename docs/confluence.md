@@ -1,165 +1,179 @@
-# Moveware AI Runner, Jira-driven delivery model (Pilot)
+# Moveware AI Runner , Pilot Workflow & Architecture
 
 ## Purpose
-This pilot introduces a controlled, auditable workflow where Jira remains the **system of record** and an AI Runner performs development tasks in a repeatable way, producing GitHub branches and pull requests for human review.
+This pilot lets Jira remain the single GUI, while automating:
 
-Key outcomes:
-- Faster delivery while maintaining governance.
-- Clear human accountability (who approved, who reviewed, who merged).
-- Reduced manual admin work (status moves, assignment, summaries).
+- Plan generation for parent tickets (ChatGPT API / Codex)
+- Sub-task creation (Jira REST)
+- Implementation for sub-tasks (Claude API , Sonnet 4.5)
+- Git branch, commits, PR creation (Git + GitHub CLI)
+- Jira status transitions, reassignment, and comments
 
----
+The design is production-grade (audit trail, secret management, minimal open ports), even though it is a pilot.
 
-## End-to-end workflow (as implemented)
+## Jira status model
+Statuses used in this pilot (exact names):
 
-### 1) Ticket creation and assignment
-1. Ticket is created in Jira.
-2. When the ticket is **ready for AI work**, it is assigned to the **AI Runner user**.
-3. A Jira Automation rule sends a webhook event to the AI Runner Orchestrator.
+- **Backlog**
+- **Plan Review**
+- **In Progress**
+- **In Testing**
+- **Done**
+- **Blocked**
 
-### 2) Orchestrator receives the webhook
-- Orchestrator validates the webhook secret header.
-- Orchestrator stores a **Run** record (immutable audit) and immediately returns `200 OK`.
+Key rule:
 
-This ensures Jira Automation is never blocked by long-running builds.
+- “Plan Approved” is a transition, **Plan Review → In Progress**.
 
-### 3) Worker claims the Run and performs work
-The Worker:
-1. Fetches Jira issue details (summary, description, current status, comments).
-2. Loads the configured target repo (pilot: `online-docs`).
-3. Creates or updates a deterministic branch (e.g. `ai/MWC-123`).
-4. Generates a change plan and patch using the configured LLM provider.
-5. Applies the patch, runs validation, and commits.
-6. Pushes to GitHub and creates/updates a Pull Request.
-7. Updates Jira:
-   - Adds a comment summarising the work and linking to the branch/PR
-   - Transitions status to **In Testing**
-   - Assigns the ticket to **Leigh Morrow**
+## Parent + sub-task model
+We use **one parent ticket per feature / sprint unit**, and **sub-tasks for execution units**.
 
-### 4) Human review loop
-- Leigh reviews the PR.
-- If changes are required:
-  - Leigh adds a Jira comment describing required adjustments.
-  - Leigh reassigns the ticket back to the AI Runner user.
-  - Jira Automation triggers a new webhook, and the Worker iterates on the existing branch/PR.
+- Parent ticket holds:
+  - The AI Implementation Plan
+  - Approval history (comments)
+  - Final outcome summary
+- Sub-tasks represent:
+  - Discrete, reviewable work items
+  - Each sub-task maps to a branch + PR cycle
 
-### 5) Completion
-Two supported patterns:
+## End-to-end flow
 
-**Option A (recommended): Auto-Done on merge**
-- When the PR is merged, a GitHub webhook calls the Orchestrator.
-- Orchestrator transitions the Jira ticket to **Done**.
+### 1) Planning phase (ChatGPT API / Codex)
+Trigger: **Parent ticket** is assigned to **AI Runner** while in **Backlog**.
 
-**Option B: Manual Done**
-- Leigh transitions to Done after PR merge.
+Steps:
 
----
+1. Runner reads the parent ticket (summary + description + existing comments).
+2. Runner calls **ChatGPT API / Codex** to produce:
+   - Proposed approach
+   - File list (expected)
+   - Risks / unknowns
+   - Acceptance criteria
+   - A list of sub-tasks (title + description)
+3. Runner posts the plan back to the parent ticket as a Jira comment.
+4. Runner transitions the parent ticket to **Plan Review** and assigns it to **Leigh**.
 
-## Suggested improvements (before scale-out)
+### 2) Plan review (Human)
+Leigh reviews the plan in Jira.
 
-1. **Auto-Done on merge (GitHub webhook)**
-   - Reduces human admin and ensures Jira reflects code reality.
+Outcomes:
 
-2. **Branch protection + required checks**
-   - Require CI to pass, and require at least one human approval.
+- **Approve:** transition **Plan Review → In Progress**.
+- **Reject / refine:** add a comment and reassign to AI Runner (it will regenerate the plan).
+- **Blocked:** transition to **Blocked** if waiting on something external.
 
-3. **Idempotency and "single active run" per issue**
-   - Prevents duplicate webhooks from creating parallel runs.
+### 3) Sub-task creation (System automation)
+Trigger: parent transitions to **In Progress**.
 
-4. **Security hardening**
-   - Rate limit webhook endpoints (Nginx `limit_req`).
-   - Restrict inbound network access (only Jira IP ranges where practical).
-   - Store secrets in Key Vault (post-pilot), not `.env`.
+Steps:
 
-5. **Multi-repo routing (later)**
-   - Use Jira labels/components/custom field to pick repo + base branch.
+1. Runner creates the sub-tasks under the parent (Jira REST).
+2. Runner assigns all sub-tasks to **AI Runner**.
+3. Runner begins work **sequentially**:
+   - Moves the next sub-task to **In Progress**
+   - Executes it end-to-end
 
----
+Why sequential for the pilot?
 
-## External accounts and API keys required
+- Keeps cost and risk predictable
+- Reduces merge conflicts
+- Makes the “AI Runner” behaviour easy to observe and iterate on
+
+### 4) Execution phase (Claude API , Sonnet 4.5)
+Trigger: a **sub-task** is **In Progress** and assigned to **AI Runner**.
+
+Steps:
+
+1. Runner checks out the repo, creates a branch named with the Jira key.
+2. Runner calls **Claude API** to implement the task.
+3. Runner runs repo commands (optional) such as tests / lint.
+4. Runner commits with message containing the Jira key.
+5. Runner pushes and creates a PR.
+6. Runner updates the sub-task:
+   - Transition to **In Testing**
+   - Assign to **Leigh**
+   - Comment with summary + PR link
+
+### 5) PR review loop (Human ↔ AI)
+Leigh reviews the PR.
+
+Outcomes:
+
+- **PR approved and merged:** transition sub-task to **Done**.
+- **Changes required:** comment in Jira and reassign to **AI Runner**.
+  - Runner pulls the latest branch, applies fixes, pushes updates, and re-requests review.
+
+### 6) Parent completion
+When all sub-tasks are **Done**, Runner transitions the parent ticket to **Done** and posts a final summary.
+
+## Where each model fits
+
+- **ChatGPT API / Codex**
+  - Interpreting requirements into an implementable plan
+  - Repo analysis and integration/build troubleshooting
+  - Producing structured sub-task breakdowns
+
+- **Claude API (Sonnet 4.5)**
+  - Feature implementation
+  - Bug fixes
+  - Refactors
+  - Draft commit/PR messaging (when helpful)
+
+## Suggested improvements (optional)
+These are worth considering after the pilot is stable:
+
+1. **PR-based gating instead of status-based gating**
+   - e.g., “In Testing” only after CI passes.
+2. **Small change sets**
+   - Enforce diff size thresholds (line count) for safety.
+3. **Policy checks**
+   - Disallow secrets in commits.
+   - Require tests for certain folders.
+4. **Second reviewer option**
+   - Add an “AI Code Review” pass (Codex) before sending to Leigh.
+
+## Jira workflow definition (copy into Jira)
+See: `docs/jira-workflow.md`
+
+## Required external accounts / API keys
 
 ### Jira Cloud
-- `JIRA_BASE_URL` (e.g. `https://moveware.atlassian.net`)
-- `JIRA_EMAIL` (account used to create API token)
-- `JIRA_API_TOKEN`
-- `JIRA_WEBHOOK_SECRET` (shared secret set in Jira Automation + validated in runner)
-- Account IDs:
-  - `JIRA_ASSIGNEE_AI_ACCOUNT_ID` (AI Runner user)
-  - `JIRA_ASSIGNEE_LEIGH_ACCOUNT_ID` (Leigh)
-- Jira transition IDs or names for:
-  - **In Testing**
-  - **Done**
-
-> Note: The implementation supports transition by name and will discover the transition ID at runtime.
+- Jira Cloud site URL
+- Jira API token (for a service user)
+- Account IDs for:
+  - **AI Runner** user
+  - **Leigh** user
+- Webhook configured to call the orchestrator endpoint
 
 ### GitHub
-Pilot:
-- A GitHub PAT for the bot identity (recommended: separate bot user)
-- `gh` CLI installed
-- `gh auth login` completed for the service user
+- GitHub Personal Access Token (classic or fine-grained) with:
+  - repo read/write
+  - pull request create
+- `gh` CLI auth on the server for the `moveware-ai` Linux user
 
-Production:
-- Prefer a **GitHub App** (fine-grained, revocable, per-repo).
+### AI providers
+- OpenAI API key (for ChatGPT API / Codex)
+- Anthropic API key (for Claude Sonnet)
 
-### LLM
-Choose one:
-- Anthropic (Claude): `ANTHROPIC_API_KEY`
-- OpenAI (GPT): `OPENAI_API_KEY`
+## Environment variables
+See: `.env.example` (copy to `/etc/moveware-ai.env`).
 
----
-
-## Deployment topology (pilot)
-
-- **Nginx (TLS termination + rate limiting)**
-  - Public internet
-  - Forwards to `127.0.0.1:8088`
-
-- **Orchestrator (FastAPI)**
-  - Webhook endpoints
-
-- **Worker (Python process)**
-  - Polls DB for queued Runs
-  - Executes git operations + LLM calls
-
-- **SQLite**
-  - Stores Runs + events
-
----
-
-## Jira Automation rules to configure
-
-### Rule 1: Assigned to AI Runner → webhook
-Trigger: Issue updated (Assignee changed)
-Condition: Assignee == AI Runner user
-Action: Send web request
-- URL: `https://<runner-domain>/jira/webhook`
-- Method: `POST`
-- Headers:
-  - `X-Jira-Webhook-Secret: <your secret>`
-- Body: include `issue.key` and minimal metadata
-
-### Rule 2 (optional): PR merged → Done
-Trigger: Incoming webhook from GitHub (PR merged)
-Action: Transition issue to Done
-
-In the pilot, we implement this as a GitHub webhook into the runner, not a Jira rule.
-
----
-
-## GitHub configuration
-
-- Branch naming: `ai/<JIRA_KEY>`
-- Commit messages: `<JIRA_KEY>: <short summary>`
-- Branch protection (recommended):
-  - Require PR review
-  - Require status checks
-  - Disallow direct pushes to main
-
----
-
-## Operational notes
-
-- Worker is safe to restart, it uses DB locking + run states.
-- Every run writes an event log for auditability.
-- The system is designed to be extended to multiple specialist agents later.
-
+## Mermaid diagram (high-level)
+```mermaid
+flowchart LR
+  A[Parent created] --> B[Assigned to AI Runner]
+  B -->|Backlog| C[Plan generation\nChatGPT API / Codex]
+  C --> D[Comment plan\nTransition to Plan Review\nAssign Leigh]
+  D --> E{Plan approved?}
+  E -->|No| B
+  E -->|Yes\nPlan Review → In Progress| F[Create sub-tasks]
+  F --> G[Sub-task In Progress\nClaude implementation]
+  G --> H[Commit + PR]
+  H --> I[Sub-task In Testing\nAssign Leigh + comment]
+  I --> J{PR approved?}
+  J -->|No| G
+  J -->|Yes| K[Sub-task Done]
+  K --> L{All sub-tasks done?}
+  L -->|No| G
+  L -->|Yes| M[Parent Done]
+```

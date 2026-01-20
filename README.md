@@ -4,22 +4,19 @@ Production-oriented reference implementation of a **Jira → Orchestrator → Wo
 
 This repo is designed so the pilot can be run "like production": least-privilege system user, systemd services, idempotent run processing, auditable events, and clear separation between orchestration and execution.
 
-## High-level flow
+## High-level flow (pilot: parent + sub-tasks)
 
-1. **Jira ticket is assigned to the AI Runner** (a dedicated Jira user).
-2. **Jira Automation sends a webhook** to the Orchestrator.
-3. Orchestrator persists a **Run** in SQLite and returns `200 OK`.
-4. Worker claims the Run, loads the Jira issue (summary, description, comments, status), then:
-   - Checks governance (approval gate, required fields)
-   - Creates/updates a **branch per issue**
-   - Applies LLM-generated patch(es)
-   - Runs lightweight validation/tests
-   - **Commits with the Jira key** and pushes
-   - Creates/updates a PR
-   - Transitions Jira to **In Testing**, assigns to **Leigh Morrow**, and adds a summary comment
+1. **Parent ticket assigned to AI Runner** (Status: Backlog)
+2. Worker generates an **Implementation Plan** (ChatGPT API / Codex), posts it as a comment, then moves the parent to **Plan Review** and assigns to Leigh.
+3. Leigh approves by transitioning **Plan Review → In Progress**.
+4. Worker creates **sub-tasks** from the plan, then processes them sequentially:
+   - Moves a sub-task to **In Progress** (assigned to AI Runner)
+   - Implements the change (Claude API), commits with the Jira key, pushes a branch, creates a PR
+   - Transitions the sub-task to **In Testing**, assigns to Leigh, and comments with what was done + PR link
 5. Leigh reviews the PR:
-   - If changes needed, Leigh comments on the Jira ticket and assigns back to the AI Runner, which triggers a new Run.
-   - If approved/merged, a GitHub webhook (optional) can transition Jira to **Done**.
+   - If changes needed: comment on the Jira sub-task and assign back to AI Runner
+   - If approved: transition sub-task to Done
+6. When all sub-tasks are Done, worker transitions the parent to Done.
 
 ## Accounts + keys required
 
