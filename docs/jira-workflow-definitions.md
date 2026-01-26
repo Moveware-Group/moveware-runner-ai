@@ -20,23 +20,23 @@ Create these statuses (exact names):
 Suggested transitions to keep the board clean:
 
 ### Backlog
-- Backlog → Plan Review ("Send to plan")
+- Backlog -> Plan Review ("Send to plan")
 
 ### Plan Review
-- Plan Review → In Progress ("Plan approved")
-- Plan Review → Backlog ("Needs more detail")
+- Plan Review -> In Progress ("Plan approved")
+- Plan Review -> Backlog ("Needs more detail")
 
 ### In Progress
-- In Progress → In Testing ("Ready for testing")
-- In Progress → Blocked ("Blocked")
+- In Progress -> In Testing ("Ready for testing")
+- In Progress -> Blocked ("Blocked")
 
 ### In Testing
-- In Testing → Done ("Done")
-- In Testing → In Progress ("Changes required")
+- In Testing -> Done ("Done")
+- In Testing -> In Progress ("Changes required")
 
 ### Blocked
-- Blocked → In Progress ("Unblocked")
-- Blocked → Done ("Cancelled")
+- Blocked -> In Progress ("Unblocked")
+- Blocked -> Done ("Cancelled")
 
 ## Assignment policy (recommended)
 - Parent issue:
@@ -68,7 +68,7 @@ Suggested transitions to keep the board clean:
 - Assign issue to Leigh Morrow
 
 ### Rule 3 , After plan approval
-**When**: Status changes Plan Review → In Progress
+**When**: Status changes Plan Review -> In Progress
 
 **Action**:
 - Assign issue to AI Runner
