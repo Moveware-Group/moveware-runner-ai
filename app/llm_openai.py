@@ -59,13 +59,13 @@ class OpenAIClient:
         # Try Responses API format first (based on base_url/responses endpoint)
         if "/responses" in self.base_url or "responses" in self.base_url.lower():
             # Responses API uses 'input' parameter with combined prompt
+            # Only send parameters the Responses API actually supports
             combined_input = f"{system}\n\n{user}"
             payload = {
                 "model": model,
                 "input": combined_input,
-                "max_tokens": max_tokens,
-                "temperature": temperature
             }
+            
             try:
                 resp = self.responses_create(payload)
                 return self.extract_text(resp)
@@ -92,13 +92,11 @@ class OpenAIClient:
         except Exception:
             pass
         
-        # Final fallback: try responses endpoint with 'input' parameter
+        # Final fallback: try responses endpoint with 'input' parameter (minimal params)
         combined_input = f"{system}\n\n{user}"
         payload = {
             "model": model,
             "input": combined_input,
-            "max_tokens": max_tokens,
-            "temperature": temperature
         }
         resp = self.responses_create(payload)
         return self.extract_text(resp)
