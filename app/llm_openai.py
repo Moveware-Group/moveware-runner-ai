@@ -15,7 +15,20 @@ class OpenAIClient:
         self.api_key = api_key
         self.base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
 
+    def chat_completions_create(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Standard OpenAI Chat Completions API."""
+        url = f"{self.base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=120)
+        if r.status_code >= 400:
+            raise RuntimeError(f"OpenAI error {r.status_code}: {r.text}")
+        return r.json()
+
     def responses_create(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Legacy/custom responses endpoint (if using custom API)."""
         url = f"{self.base_url}/responses"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -37,3 +50,29 @@ class OpenAIClient:
                 if c.get("type") in ("output_text", "text") and isinstance(c.get("text"), str):
                     out.append(c["text"])
         return "\n".join(out).strip()
+
+    def responses_text(self, model: str, system: str, user: str, max_tokens: int = 4000, temperature: float = 0.2) -> str:
+        """Convenience method to create a response and extract text."""
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user}
+            ],
+            "max_tokens": max_tokens,
+            "temperature": temperature
+        }
+        
+        # Try standard chat completions API first
+        try:
+            resp = self.chat_completions_create(payload)
+            # Standard OpenAI response format
+            if "choices" in resp and len(resp["choices"]) > 0:
+                return resp["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            # Fall back to custom responses endpoint
+            pass
+        
+        # Try custom responses endpoint
+        resp = self.responses_create(payload)
+        return self.extract_text(resp)
