@@ -32,9 +32,9 @@ def _verify_secret(given: str | None) -> None:
 @app.post("/webhook/jira")
 async def jira_webhook(
     request: Request,
-    x_moveware_secret: Optional[str] = Header(default=None),
+    x_moveware_webhook_secret: Optional[str] = Header(default=None),
 ):
-    _verify_secret(x_moveware_secret)
+    _verify_secret(x_moveware_webhook_secret)
     payload: Dict[str, Any] = await request.json()
 
     issue_key = (
