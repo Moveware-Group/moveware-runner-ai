@@ -52,7 +52,28 @@ class OpenAIClient:
         return "\n".join(out).strip()
 
     def responses_text(self, model: str, system: str, user: str, max_tokens: int = 4000, temperature: float = 0.2) -> str:
-        """Convenience method to create a response and extract text."""
+        """Convenience method to create a response and extract text.
+        
+        Supports both standard Chat Completions API and Responses API.
+        """
+        # Try Responses API format first (based on base_url/responses endpoint)
+        if "/responses" in self.base_url or "responses" in self.base_url.lower():
+            # Responses API uses 'input' parameter with combined prompt
+            combined_input = f"{system}\n\n{user}"
+            payload = {
+                "model": model,
+                "input": combined_input,
+                "max_tokens": max_tokens,
+                "temperature": temperature
+            }
+            try:
+                resp = self.responses_create(payload)
+                return self.extract_text(resp)
+            except Exception as e:
+                # If Responses API fails, fall through to try Chat Completions
+                pass
+        
+        # Try standard Chat Completions API
         payload = {
             "model": model,
             "messages": [
@@ -63,16 +84,21 @@ class OpenAIClient:
             "temperature": temperature
         }
         
-        # Try standard chat completions API first
         try:
             resp = self.chat_completions_create(payload)
             # Standard OpenAI response format
             if "choices" in resp and len(resp["choices"]) > 0:
                 return resp["choices"][0]["message"]["content"].strip()
-        except Exception as e:
-            # Fall back to custom responses endpoint
+        except Exception:
             pass
         
-        # Try custom responses endpoint
+        # Final fallback: try responses endpoint with 'input' parameter
+        combined_input = f"{system}\n\n{user}"
+        payload = {
+            "model": model,
+            "input": combined_input,
+            "max_tokens": max_tokens,
+            "temperature": temperature
+        }
         resp = self.responses_create(payload)
         return self.extract_text(resp)
