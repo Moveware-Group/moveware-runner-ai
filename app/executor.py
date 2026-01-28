@@ -43,7 +43,7 @@ def execute_subtask(issue: JiraIssue) -> ExecutionResult:
     This is production-grade scaffolding, but intentionally conservative for the pilot.
     """
 
-    # 1) Checkout/update repo
+    # 1) Checkout/update repo (git_ops will use settings.GH_TOKEN by default)
     checkout_repo(settings.REPO_WORKDIR, settings.REPO_SSH, settings.BASE_BRANCH)
 
     # 2) Branch per sub-task

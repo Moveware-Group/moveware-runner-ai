@@ -32,9 +32,13 @@ def https_repo_url(repo: str, token: str) -> str:
     return f"https://github.com/{repo}.git"
 
 
-def checkout_repo(workdir: str, repo: str, base_branch: str, token: str) -> None:
+def checkout_repo(workdir: str, repo: str, base_branch: str, token: Optional[str] = None) -> None:
+    """Checkout or update a repository. If token is None, uses settings."""
+    from .config import settings
+    _token = token or settings.GH_TOKEN
+    
     ensure_dir(workdir)
-    repo_url = https_repo_url(repo, token)
+    repo_url = https_repo_url(repo, _token)
     if not (Path(workdir) / ".git").exists():
         run(["git", "clone", repo_url, "."], cwd=workdir)
     # Ensure origin is correct (handles switching from a non-token URL)
@@ -109,3 +113,28 @@ def create_or_update_pr(workdir: str, title: str, body: str, base: str, head: st
         env={"GH_TOKEN": token},
     )
     return out.strip()
+
+
+# Wrapper functions for executor.py compatibility
+def create_branch(workdir: str, branch: str) -> None:
+    """Create or checkout a branch. Wrapper for create_or_checkout_branch."""
+    create_or_checkout_branch(workdir, branch)
+
+
+def commit_and_push(workdir: str, issue_key: str, token: Optional[str] = None) -> str:
+    """Commit and push changes. Wrapper for commit_and_push_if_needed."""
+    from .config import settings
+    _token = token or settings.GH_TOKEN
+    
+    committed, msg = commit_and_push_if_needed(workdir, issue_key, _token)
+    return msg
+
+
+def create_pr(workdir: str, title: str, body: str, base: str, token: Optional[str] = None) -> str:
+    """Create a PR using current branch as head. Wrapper for create_or_update_pr."""
+    from .config import settings
+    _token = token or settings.GH_TOKEN
+    
+    # Get current branch
+    current_branch = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=workdir)
+    return create_or_update_pr(workdir, title, body, base, current_branch, _token)
