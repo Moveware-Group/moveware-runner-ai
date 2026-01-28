@@ -56,5 +56,8 @@ class Settings:
     DEBUG: bool = env("DEBUG", default="false").lower() in ("1", "true", "yes", "y")
 
 
+# Plan comment marker constant
+PARENT_PLAN_COMMENT_PREFIX = "[AI PLAN v1]"
+
 # This is what main.py expects
 settings = Settings()

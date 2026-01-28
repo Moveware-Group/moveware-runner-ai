@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Any, Dict, List
 
-from .config import (
-    OPENAI_API_KEY,
-    OPENAI_MODEL,
-    OPENAI_BASE_URL,
-    PARENT_PLAN_COMMENT_PREFIX,
-)
+from .config import settings, PARENT_PLAN_COMMENT_PREFIX
 from .llm_openai import OpenAIClient
 from .models import JiraIssue
+
+
+@dataclass
+class PlanResult:
+    """Result of plan generation."""
+    comment: str
+    plan_data: Dict[str, Any]
 
 
 def _system_prompt() -> str:
@@ -49,7 +52,7 @@ PLAN_SCHEMA_HINT = {
 
 
 def generate_plan(issue: JiraIssue) -> Dict[str, Any]:
-    client = OpenAIClient(OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
+    client = OpenAIClient(settings.OPENAI_API_KEY, base_url=settings.OPENAI_BASE_URL)
     prompt = (
         "Return JSON only. Do not wrap in markdown.\n"
         "Schema example:\n"
@@ -57,7 +60,7 @@ def generate_plan(issue: JiraIssue) -> Dict[str, Any]:
     )
 
     text = client.responses_text(
-        model=OPENAI_MODEL,
+        model=settings.OPENAI_MODEL,
         system=_system_prompt(),
         user=_user_prompt(issue) + "\n\n" + prompt,
     )
@@ -114,3 +117,10 @@ def format_plan_as_jira_comment(plan: Dict[str, Any]) -> str:
     lines.append(json.dumps(plan, indent=2))
     lines.append("{code}")
     return "\n".join(lines)
+
+
+def build_plan(issue: JiraIssue) -> PlanResult:
+    """Generate a plan for the given issue and format it for Jira."""
+    plan_data = generate_plan(issue)
+    comment = format_plan_as_jira_comment(plan_data)
+    return PlanResult(comment=comment, plan_data=plan_data)

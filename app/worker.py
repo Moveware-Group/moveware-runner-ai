@@ -5,24 +5,11 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
-from .config import (
-    JIRA_AI_ACCOUNT_ID,
-    JIRA_HUMAN_ACCOUNT_ID,
-    REPO_OWNER_SLUG,
-    REPO_NAME,
-    BASE_BRANCH,
-    STATUS_BACKLOG,
-    STATUS_PLAN_REVIEW,
-    STATUS_IN_PROGRESS,
-    STATUS_IN_TESTING,
-    STATUS_DONE,
-    STATUS_BLOCKED,
-    PARENT_PLAN_COMMENT_PREFIX,
-)
-from .db import dequeue_event, enqueue_job, init_db, mark_event_processed
+from .config import settings, PARENT_PLAN_COMMENT_PREFIX
+from .db import claim_next_run, init_db, update_run, add_event
 from .executor import ExecutionResult, execute_subtask
 from .jira import JiraClient
-from .models import JiraIssue
+from .models import JiraIssue, parse_issue
 from .planner import PlanResult, build_plan
 from .router import Action, Router
 
@@ -64,13 +51,14 @@ def _to_issue(payload: Dict[str, Any]) -> Optional[JiraIssue]:
         status=status,
         assignee_account_id=assignee_id,
         parent_key=parent_key,
+        labels=list(fields.get("labels") or []),
+        raw=payload,
     )
 
 
 def _fetch_issue(jira: JiraClient, issue_key: str) -> JiraIssue:
     raw = jira.get_issue(issue_key)
-    # Wrap into webhook-like shape for reuse
-    return _to_issue({"issue": raw})  # type: ignore
+    return parse_issue(raw)
 
 
 def _is_parent(issue: JiraIssue) -> bool:
@@ -108,15 +96,15 @@ def _create_subtasks_from_plan(ctx: Context, parent: JiraIssue) -> None:
     plan = _extract_plan_json_from_comments(ctx.jira, parent.key)
     if not plan:
         ctx.jira.add_comment(parent.key, "AI Runner could not read the plan JSON from the ticket comments.")
-        ctx.jira.transition_to_status(parent.key, STATUS_BLOCKED)
-        ctx.jira.assign_issue(parent.key, JIRA_HUMAN_ACCOUNT_ID)
+        ctx.jira.transition_to_status(parent.key, settings.JIRA_STATUS_BLOCKED)
+        ctx.jira.assign_issue(parent.key, settings.JIRA_HUMAN_ACCOUNT_ID)
         return
 
     subtasks = plan.get("subtasks") or []
     if not isinstance(subtasks, list) or not subtasks:
         ctx.jira.add_comment(parent.key, "AI plan did not include subtasks. Please update the plan.")
-        ctx.jira.transition_to_status(parent.key, STATUS_BLOCKED)
-        ctx.jira.assign_issue(parent.key, JIRA_HUMAN_ACCOUNT_ID)
+        ctx.jira.transition_to_status(parent.key, settings.JIRA_STATUS_BLOCKED)
+        ctx.jira.assign_issue(parent.key, settings.JIRA_HUMAN_ACCOUNT_ID)
         return
 
     created_keys = []
@@ -134,7 +122,7 @@ def _create_subtasks_from_plan(ctx: Context, parent: JiraIssue) -> None:
         )
         created_keys.append(key)
         # leave subtask in Backlog and assign AI; worker will pull one into In Progress
-        ctx.jira.assign_issue(key, JIRA_AI_ACCOUNT_ID)
+        ctx.jira.assign_issue(key, settings.JIRA_AI_ACCOUNT_ID)
 
     ctx.jira.add_comment(
         parent.key,
@@ -150,7 +138,7 @@ def _pick_next_subtask_to_start(ctx: Context, parent_key: str) -> Optional[str]:
         status = (fields.get("status") or {}).get("name")
         assignee = fields.get("assignee") or {}
         assignee_id = assignee.get("accountId") if isinstance(assignee, dict) else None
-        if status == STATUS_BACKLOG and assignee_id == JIRA_AI_ACCOUNT_ID:
+        if status == settings.JIRA_STATUS_BACKLOG and assignee_id == settings.JIRA_AI_ACCOUNT_ID:
             return st.get("key")
     return None
 
@@ -161,7 +149,7 @@ def _all_subtasks_done(ctx: Context, parent_key: str) -> bool:
         return False
     for st in subtasks:
         status = ((st.get("fields") or {}).get("status") or {}).get("name")
-        if status != STATUS_DONE:
+        if status != settings.JIRA_STATUS_DONE:
             return False
     return True
 
@@ -169,20 +157,20 @@ def _all_subtasks_done(ctx: Context, parent_key: str) -> bool:
 def _handle_plan_parent(ctx: Context, issue: JiraIssue) -> None:
     if not _is_parent(issue):
         return
-    if not issue.assignee_account_id == JIRA_AI_ACCOUNT_ID:
+    if not issue.assignee_account_id == settings.JIRA_AI_ACCOUNT_ID:
         return
 
     plan_res: PlanResult = build_plan(issue)
     ctx.jira.add_comment(issue.key, plan_res.comment)
-    ctx.jira.transition_to_status(issue.key, STATUS_PLAN_REVIEW)
-    ctx.jira.assign_issue(issue.key, JIRA_HUMAN_ACCOUNT_ID)
+    ctx.jira.transition_to_status(issue.key, settings.JIRA_STATUS_PLAN_REVIEW)
+    ctx.jira.assign_issue(issue.key, settings.settings.JIRA_HUMAN_ACCOUNT_ID)
 
 
 def _handle_parent_approved(ctx: Context, parent: JiraIssue) -> None:
     # Parent moved to In Progress (approval signal) and assigned to AI Runner.
-    if parent.status != STATUS_IN_PROGRESS:
+    if parent.status != settings.JIRA_STATUS_IN_PROGRESS:
         return
-    if parent.assignee_account_id != JIRA_AI_ACCOUNT_ID:
+    if parent.assignee_account_id != settings.JIRA_AI_ACCOUNT_ID:
         return
 
     # Create subtasks once.
@@ -193,16 +181,16 @@ def _handle_parent_approved(ctx: Context, parent: JiraIssue) -> None:
     # Start first subtask.
     next_key = _pick_next_subtask_to_start(ctx, parent.key)
     if next_key:
-        ctx.jira.transition_to_status(next_key, STATUS_IN_PROGRESS)
+        ctx.jira.transition_to_status(next_key, settings.JIRA_STATUS_IN_PROGRESS)
         ctx.jira.add_comment(parent.key, f"AI starting work on {next_key}.")
 
 
 def _handle_execute_subtask(ctx: Context, subtask: JiraIssue) -> None:
     if not subtask.is_subtask:
         return
-    if subtask.status != STATUS_IN_PROGRESS:
+    if subtask.status != settings.JIRA_STATUS_IN_PROGRESS:
         return
-    if subtask.assignee_account_id != JIRA_AI_ACCOUNT_ID:
+    if subtask.assignee_account_id != settings.JIRA_AI_ACCOUNT_ID:
         return
     if not subtask.parent_key:
         return
@@ -212,32 +200,39 @@ def _handle_execute_subtask(ctx: Context, subtask: JiraIssue) -> None:
 
     # Comment + transition + assign
     ctx.jira.add_comment(subtask.key, result.jira_comment)
-    ctx.jira.transition_to_status(subtask.key, STATUS_IN_TESTING)
-    ctx.jira.assign_issue(subtask.key, JIRA_HUMAN_ACCOUNT_ID)
+    ctx.jira.transition_to_status(subtask.key, settings.JIRA_STATUS_IN_TESTING)
+    ctx.jira.assign_issue(subtask.key, settings.settings.JIRA_HUMAN_ACCOUNT_ID)
 
     # Kick off next subtask sequentially
     next_key = _pick_next_subtask_to_start(ctx, subtask.parent_key)
     if next_key:
-        ctx.jira.transition_to_status(next_key, STATUS_IN_PROGRESS)
+        ctx.jira.transition_to_status(next_key, settings.JIRA_STATUS_IN_PROGRESS)
         ctx.jira.add_comment(subtask.parent_key, f"AI moving to next sub-task {next_key}.")
 
 
 def _handle_subtask_done(ctx: Context, subtask: JiraIssue) -> None:
     if not subtask.is_subtask or not subtask.parent_key:
         return
-    if subtask.status != STATUS_DONE:
+    if subtask.status != settings.JIRA_STATUS_DONE:
         return
     if _all_subtasks_done(ctx, subtask.parent_key):
-        ctx.jira.transition_to_status(subtask.parent_key, STATUS_DONE)
+        ctx.jira.transition_to_status(subtask.parent_key, settings.JIRA_STATUS_DONE)
         ctx.jira.add_comment(subtask.parent_key, "All sub-tasks are Done. Marking parent ticket Done.")
 
 
-def process_webhook_event(ctx: Context, event: Dict[str, Any]) -> None:
-    issue = _to_issue(event)
+def process_run(ctx: Context, run_id: int, issue_key: str, payload: Dict[str, Any]) -> None:
+    """Process a single run by fetching the issue and taking appropriate action."""
+    add_event(run_id, "info", f"Processing run for {issue_key}", {})
+    
+    # Fetch current issue state from Jira
+    issue = _fetch_issue(ctx.jira, issue_key)
     if not issue:
+        add_event(run_id, "error", f"Could not fetch issue {issue_key}", {})
+        update_run(run_id, status="failed", last_error="Could not fetch issue from Jira")
         return
 
     action: Action = ctx.router.decide(issue)
+    add_event(run_id, "info", f"Router decided action: {action.name}", {"reason": action.reason})
 
     if action.name == "PLAN_PARENT":
         _handle_plan_parent(ctx, issue)
@@ -247,28 +242,34 @@ def process_webhook_event(ctx: Context, event: Dict[str, Any]) -> None:
         _handle_execute_subtask(ctx, issue)
     elif action.name == "SUBTASK_DONE":
         _handle_subtask_done(ctx, issue)
+    
+    add_event(run_id, "info", "Run completed successfully", {})
+    update_run(run_id, status="completed", locked_by=None, locked_at=None)
 
 
-def worker_loop(poll_interval_seconds: float = 1.0) -> None:
+def worker_loop(poll_interval_seconds: float = 2.0, worker_id: str = "worker-1") -> None:
+    """Main worker loop that claims and processes runs."""
     init_db()
     ctx = Context(jira=JiraClient(), router=Router())
+    
+    print(f"Worker {worker_id} started, polling every {poll_interval_seconds}s")
 
     while True:
-        row = dequeue_event()
-        if not row:
+        result = claim_next_run(worker_id)
+        if not result:
             time.sleep(poll_interval_seconds)
             continue
 
-        event_id = row["id"]
-        payload = json.loads(row["payload"])
+        run_id, issue_key, payload = result
+        print(f"Claimed run {run_id} for issue {issue_key}")
+        
         try:
-            process_webhook_event(ctx, payload)
-            mark_event_processed(event_id)
+            process_run(ctx, run_id, issue_key, payload)
         except Exception as e:
-            # Don't lose the event; mark processed but leave trace in logs.
-            # In production you may prefer a retry + dead-letter queue.
-            print(f"ERROR processing event {event_id}: {e}")
-            mark_event_processed(event_id)
+            error_msg = f"ERROR processing run {run_id}: {e}"
+            print(error_msg)
+            add_event(run_id, "error", str(e), {})
+            update_run(run_id, status="failed", last_error=str(e), locked_by=None, locked_at=None)
 
 
 if __name__ == "__main__":
