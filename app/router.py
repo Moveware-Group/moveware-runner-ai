@@ -39,7 +39,7 @@ def _decide_internal(issue: JiraIssue) -> Optional[RouteDecision]:
 
     # Parent ticket behaviour
     if not issue.is_subtask:
-        if issue.status == settings.JIRA_STATUS_BACKLOG and issue.assignee_account_id == settings.settings.JIRA_AI_ACCOUNT_ID:
+        if issue.status == settings.JIRA_STATUS_BACKLOG and issue.assignee_account_id == settings.JIRA_AI_ACCOUNT_ID:
             return RouteDecision(action="PLAN_PARENT", issue_key=issue.key, reason="Parent in Backlog and assigned to AI")
 
         # After human approval, parent is moved to In Progress and assigned to AI

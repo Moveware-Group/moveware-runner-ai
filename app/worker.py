@@ -163,7 +163,7 @@ def _handle_plan_parent(ctx: Context, issue: JiraIssue) -> None:
     plan_res: PlanResult = build_plan(issue)
     ctx.jira.add_comment(issue.key, plan_res.comment)
     ctx.jira.transition_to_status(issue.key, settings.JIRA_STATUS_PLAN_REVIEW)
-    ctx.jira.assign_issue(issue.key, settings.settings.JIRA_HUMAN_ACCOUNT_ID)
+    ctx.jira.assign_issue(issue.key, settings.JIRA_HUMAN_ACCOUNT_ID)
 
 
 def _handle_parent_approved(ctx: Context, parent: JiraIssue) -> None:
@@ -201,7 +201,7 @@ def _handle_execute_subtask(ctx: Context, subtask: JiraIssue) -> None:
     # Comment + transition + assign
     ctx.jira.add_comment(subtask.key, result.jira_comment)
     ctx.jira.transition_to_status(subtask.key, settings.JIRA_STATUS_IN_TESTING)
-    ctx.jira.assign_issue(subtask.key, settings.settings.JIRA_HUMAN_ACCOUNT_ID)
+    ctx.jira.assign_issue(subtask.key, settings.JIRA_HUMAN_ACCOUNT_ID)
 
     # Kick off next subtask sequentially
     next_key = _pick_next_subtask_to_start(ctx, subtask.parent_key)
