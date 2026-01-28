@@ -23,9 +23,9 @@ def health() -> Dict[str, str]:
 
 
 def _verify_secret(given: str | None) -> None:
-    if not settings.jira_webhook_secret:
+    if not settings.JIRA_WEBHOOK_SECRET:
         raise HTTPException(500, "Server misconfigured")
-    if not given or not hmac.compare_digest(given, settings.jira_webhook_secret):
+    if not given or not hmac.compare_digest(given, settings.JIRA_WEBHOOK_SECRET):
         raise HTTPException(401, "Invalid webhook secret")
 
 
