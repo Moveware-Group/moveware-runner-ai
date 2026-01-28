@@ -231,6 +231,16 @@ def process_run(ctx: Context, run_id: int, issue_key: str, payload: Dict[str, An
         update_run(run_id, status="failed", last_error="Could not fetch issue from Jira")
         return
 
+    # Log issue state for debugging
+    add_event(run_id, "info", f"Issue state check", {
+        "key": issue.key,
+        "status": issue.status,
+        "assignee_id": issue.assignee_account_id,
+        "is_subtask": issue.is_subtask,
+        "expected_ai_id": settings.JIRA_AI_ACCOUNT_ID,
+        "expected_backlog_status": settings.JIRA_STATUS_BACKLOG
+    })
+    
     action: Action = ctx.router.decide(issue)
     add_event(run_id, "info", f"Router decided action: {action.name}", {"reason": action.reason})
 
