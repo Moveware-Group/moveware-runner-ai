@@ -6,14 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from .config import (
-    ANTHROPIC_API_KEY,
-    ANTHROPIC_BASE_URL,
-    ANTHROPIC_MODEL,
-    REPO_SSH,
-    REPO_WORKDIR,
-    BASE_BRANCH,
-)
+from .config import settings
 from .git_ops import checkout_repo, create_branch, commit_and_push, create_pr
 from .llm_anthropic import AnthropicClient
 from .models import JiraIssue
@@ -24,6 +17,7 @@ class ExecutionResult:
     branch: str
     pr_url: Optional[str]
     summary: str
+    jira_comment: str
 
 
 def _system_prompt() -> str:
@@ -50,21 +44,21 @@ def execute_subtask(issue: JiraIssue) -> ExecutionResult:
     """
 
     # 1) Checkout/update repo
-    checkout_repo(REPO_WORKDIR, REPO_SSH, BASE_BRANCH)
+    checkout_repo(settings.REPO_WORKDIR, settings.REPO_SSH, settings.BASE_BRANCH)
 
     # 2) Branch per sub-task
     branch = f"ai/{issue.key.lower()}"
-    create_branch(REPO_WORKDIR, branch)
+    create_branch(settings.REPO_WORKDIR, branch)
 
     # 3) Ask Claude to produce implementation notes (and optionally questions)
-    client = AnthropicClient(api_key=ANTHROPIC_API_KEY, base_url=ANTHROPIC_BASE_URL)
+    client = AnthropicClient(api_key=settings.ANTHROPIC_API_KEY, base_url=settings.ANTHROPIC_BASE_URL)
     prompt = (
         f"Jira Sub-task: {issue.key}\n"
         f"Summary: {issue.summary}\n\n"
         f"Description:\n{issue.description}\n"
     )
     raw = client.messages_json(
-        model=ANTHROPIC_MODEL,
+        model=settings.ANTHROPIC_MODEL,
         system=_system_prompt(),
         user=prompt,
         max_tokens=900,
@@ -83,7 +77,7 @@ def execute_subtask(issue: JiraIssue) -> ExecutionResult:
     notes = payload.get("notes") or ""
 
     # 4) Write a small artefact in-repo
-    out_dir = Path(REPO_WORKDIR) / "docs" / "ai-pilot"
+    out_dir = Path(settings.REPO_WORKDIR) / "docs" / "ai-pilot"
     out_dir.mkdir(parents=True, exist_ok=True)
     p = out_dir / f"{issue.key}.md"
     content = [f"# {issue.key}: {issue.summary}", ""]
@@ -97,14 +91,14 @@ def execute_subtask(issue: JiraIssue) -> ExecutionResult:
     p.write_text("\n".join(content), encoding="utf-8")
 
     # 5) Commit/push and PR
-    commit_and_push(REPO_WORKDIR, issue.key)
+    commit_and_push(settings.REPO_WORKDIR, issue.key)
     pr_url = None
     try:
         pr_url = create_pr(
-            REPO_WORKDIR,
+            settings.REPO_WORKDIR,
             title=f"{issue.key}: {issue.summary}",
             body=f"Automated pilot PR for {issue.key}.\n\n{notes[:800]}",
-            base=BASE_BRANCH,
+            base=settings.BASE_BRANCH,
         )
     except Exception as e:
         # Don't fail the whole run if PR creation errors (e.g. gh not authed yet)
@@ -112,4 +106,20 @@ def execute_subtask(issue: JiraIssue) -> ExecutionResult:
         notes += f"\n\nPR creation failed: {e}"
 
     summary = "Created branch, committed changes, and opened PR." if pr_url else "Created branch and committed changes."
-    return ExecutionResult(branch=branch, pr_url=pr_url, summary=summary)
+    
+    # Build Jira comment
+    jira_comment_lines = [
+        f"AI Runner has completed work on this sub-task.",
+        f"",
+        f"*Branch:* {branch}",
+    ]
+    if pr_url:
+        jira_comment_lines.append(f"*PR:* {pr_url}")
+    if notes:
+        jira_comment_lines.append(f"")
+        jira_comment_lines.append(f"*Notes:*")
+        jira_comment_lines.append(notes[:500])
+    
+    jira_comment = "\n".join(jira_comment_lines)
+    
+    return ExecutionResult(branch=branch, pr_url=pr_url, summary=summary, jira_comment=jira_comment)
