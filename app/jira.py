@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from .config import settings
+from .jira_adf import wiki_to_adf
 
 
 class JiraClient:
@@ -33,26 +34,9 @@ class JiraClient:
         """Add a comment to a Jira issue using Atlassian Document Format (ADF)."""
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}/comment"
         
-        # Jira Cloud v3 API requires ADF format
-        # For now, send as simple plain text - Jira wiki markup doesn't work in ADF
-        # TODO: Proper wiki markup to ADF conversion
-        payload = {
-            "body": {
-                "type": "doc",
-                "version": 1,
-                "content": [
-                    {
-                        "type": "paragraph",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": body_md
-                            }
-                        ]
-                    }
-                ]
-            }
-        }
+        # Convert Jira wiki markup to ADF format
+        adf_body = wiki_to_adf(body_md)
+        payload = {"body": adf_body}
         
         r = requests.post(url, headers=self._headers(), json=payload, timeout=self.timeout_s)
         r.raise_for_status()
