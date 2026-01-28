@@ -42,6 +42,10 @@ def _decide_internal(issue: JiraIssue) -> Optional[RouteDecision]:
         if issue.status == settings.JIRA_STATUS_BACKLOG and issue.assignee_account_id == settings.JIRA_AI_ACCOUNT_ID:
             return RouteDecision(action="PLAN_PARENT", issue_key=issue.key, reason="Parent in Backlog and assigned to AI")
 
+        # Plan revision: human added comments in Plan Review and assigned back to AI
+        if issue.status == settings.JIRA_STATUS_PLAN_REVIEW and issue.assignee_account_id == settings.JIRA_AI_ACCOUNT_ID:
+            return RouteDecision(action="REVISE_PLAN", issue_key=issue.key, reason="Parent in Plan Review and assigned to AI - revise plan based on comments")
+
         # After human approval, parent is moved to In Progress and assigned to AI
         if issue.status == settings.JIRA_STATUS_IN_PROGRESS and issue.assignee_account_id == settings.JIRA_AI_ACCOUNT_ID:
             return RouteDecision(action="PARENT_APPROVED", issue_key=issue.key, reason="Parent approved, ensure subtasks exist")

@@ -92,6 +92,86 @@ def _extract_plan_json_from_comments(jira: JiraClient, parent_key: str) -> Optio
     return None
 
 
+def _extract_human_feedback_after_plan(jira: JiraClient, parent_key: str) -> str:
+    """Extract human comments added after the most recent AI plan comment."""
+    comments = jira.get_comments(parent_key)
+    
+    # Find the index of the last AI plan comment
+    last_plan_idx = -1
+    for i, c in enumerate(comments):
+        body = c.get("body", "")
+        # Handle ADF format (dict) or plain text (str)
+        if isinstance(body, dict):
+            # Extract text from ADF format
+            body_text = _extract_text_from_adf(body)
+        else:
+            body_text = body
+            
+        if body_text.startswith(PARENT_PLAN_COMMENT_PREFIX):
+            last_plan_idx = i
+    
+    if last_plan_idx == -1:
+        return ""
+    
+    # Collect all human comments after the last plan
+    feedback_parts = []
+    for c in comments[last_plan_idx + 1:]:
+        author = c.get("author", {})
+        author_id = author.get("accountId") if isinstance(author, dict) else None
+        
+        # Skip AI's own comments
+        if author_id == settings.JIRA_AI_ACCOUNT_ID:
+            continue
+        
+        body = c.get("body", "")
+        if isinstance(body, dict):
+            body_text = _extract_text_from_adf(body)
+        else:
+            body_text = body
+            
+        if body_text.strip():
+            feedback_parts.append(body_text.strip())
+    
+    return "\n\n".join(feedback_parts)
+
+
+def _extract_text_from_adf(adf: Dict[str, Any]) -> str:
+    """Extract plain text from Atlassian Document Format."""
+    if not isinstance(adf, dict):
+        return str(adf)
+    
+    content = adf.get("content", [])
+    if not isinstance(content, list):
+        return ""
+    
+    parts = []
+    for node in content:
+        if not isinstance(node, dict):
+            continue
+        
+        node_type = node.get("type")
+        if node_type == "paragraph":
+            para_content = node.get("content", [])
+            text_parts = []
+            for item in para_content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    text_parts.append(item.get("text", ""))
+            parts.append(" ".join(text_parts))
+        elif node_type == "heading":
+            heading_content = node.get("content", [])
+            for item in heading_content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    parts.append(item.get("text", ""))
+        elif node_type in ("bulletList", "orderedList"):
+            list_items = node.get("content", [])
+            for list_item in list_items:
+                if isinstance(list_item, dict) and list_item.get("type") == "listItem":
+                    item_text = _extract_text_from_adf(list_item)
+                    parts.append(f"- {item_text}")
+    
+    return "\n".join(parts)
+
+
 def _create_subtasks_from_plan(ctx: Context, parent: JiraIssue) -> None:
     plan = _extract_plan_json_from_comments(ctx.jira, parent.key)
     if not plan:
@@ -163,6 +243,37 @@ def _handle_plan_parent(ctx: Context, issue: JiraIssue) -> None:
     plan_res: PlanResult = build_plan(issue)
     ctx.jira.add_comment(issue.key, plan_res.comment)
     ctx.jira.transition_to_status(issue.key, settings.JIRA_STATUS_PLAN_REVIEW)
+    ctx.jira.assign_issue(issue.key, settings.JIRA_HUMAN_ACCOUNT_ID)
+
+
+def _handle_revise_plan(ctx: Context, issue: JiraIssue) -> None:
+    """Handle plan revision request - human added feedback and assigned back to AI."""
+    if not _is_parent(issue):
+        return
+    if issue.status != settings.JIRA_STATUS_PLAN_REVIEW:
+        return
+    if issue.assignee_account_id != settings.JIRA_AI_ACCOUNT_ID:
+        return
+    
+    # Extract human feedback from comments
+    feedback = _extract_human_feedback_after_plan(ctx.jira, issue.key)
+    
+    if not feedback:
+        # No feedback found - just acknowledge
+        ctx.jira.add_comment(
+            issue.key,
+            "AI Runner did not find any feedback comments to revise the plan. Please add a comment with your requested changes."
+        )
+        ctx.jira.assign_issue(issue.key, settings.JIRA_HUMAN_ACCOUNT_ID)
+        return
+    
+    # Generate revised plan with feedback
+    plan_res: PlanResult = build_plan(issue, revision_feedback=feedback)
+    
+    # Post revised plan
+    ctx.jira.add_comment(issue.key, plan_res.comment)
+    
+    # Keep in Plan Review and reassign to human
     ctx.jira.assign_issue(issue.key, settings.JIRA_HUMAN_ACCOUNT_ID)
 
 
@@ -246,6 +357,8 @@ def process_run(ctx: Context, run_id: int, issue_key: str, payload: Dict[str, An
 
     if action.name == "PLAN_PARENT":
         _handle_plan_parent(ctx, issue)
+    elif action.name == "REVISE_PLAN":
+        _handle_revise_plan(ctx, issue)
     elif action.name == "PARENT_APPROVED":
         _handle_parent_approved(ctx, issue)
     elif action.name == "EXECUTE_SUBTASK":

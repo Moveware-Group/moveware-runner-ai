@@ -24,14 +24,25 @@ def _system_prompt() -> str:
     )
 
 
-def _user_prompt(issue: JiraIssue) -> str:
-    return (
+def _user_prompt(issue: JiraIssue, revision_feedback: str = "") -> str:
+    base = (
         f"Jira issue key: {issue.key}\n"
         f"Summary: {issue.summary}\n\n"
         "Description:\n"
         f"{issue.description}\n\n"
         "Repo context is limited in the pilot. If you need more information, add 'questions' in the plan."
     )
+    
+    if revision_feedback:
+        base += (
+            "\n\n---\n\n"
+            "REVISION REQUEST:\n"
+            "The plan has been reviewed and the following changes are requested:\n\n"
+            f"{revision_feedback}\n\n"
+            "Please revise the plan to address this feedback."
+        )
+    
+    return base
 
 
 PLAN_SCHEMA_HINT = {
@@ -51,7 +62,7 @@ PLAN_SCHEMA_HINT = {
 }
 
 
-def generate_plan(issue: JiraIssue) -> Dict[str, Any]:
+def generate_plan(issue: JiraIssue, revision_feedback: str = "") -> Dict[str, Any]:
     client = OpenAIClient(settings.OPENAI_API_KEY, base_url=settings.OPENAI_BASE_URL)
     prompt = (
         "Return JSON only. Do not wrap in markdown.\n"
@@ -62,7 +73,7 @@ def generate_plan(issue: JiraIssue) -> Dict[str, Any]:
     text = client.responses_text(
         model=settings.OPENAI_MODEL,
         system=_system_prompt(),
-        user=_user_prompt(issue) + "\n\n" + prompt,
+        user=_user_prompt(issue, revision_feedback) + "\n\n" + prompt,
     )
     try:
         data = json.loads(text)
@@ -76,10 +87,14 @@ def generate_plan(issue: JiraIssue) -> Dict[str, Any]:
     return data
 
 
-def format_plan_as_jira_comment(plan: Dict[str, Any]) -> str:
+def format_plan_as_jira_comment(plan: Dict[str, Any], is_revision: bool = False) -> str:
     # Keep it readable in Jira and include a machine-parseable prefix.
     lines: List[str] = []
-    lines.append(f"{PARENT_PLAN_COMMENT_PREFIX} {plan.get('plan_version','v1')}")
+    version = plan.get('plan_version', 'v1')
+    if is_revision:
+        lines.append(f"{PARENT_PLAN_COMMENT_PREFIX} {version} (revised)")
+    else:
+        lines.append(f"{PARENT_PLAN_COMMENT_PREFIX} {version}")
     lines.append("")
     if plan.get("overview"):
         lines.append("h3. Overview")
@@ -115,8 +130,9 @@ def format_plan_as_jira_comment(plan: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def build_plan(issue: JiraIssue) -> PlanResult:
+def build_plan(issue: JiraIssue, revision_feedback: str = "") -> PlanResult:
     """Generate a plan for the given issue and format it for Jira."""
-    plan_data = generate_plan(issue)
-    comment = format_plan_as_jira_comment(plan_data)
+    plan_data = generate_plan(issue, revision_feedback)
+    is_revision = bool(revision_feedback)
+    comment = format_plan_as_jira_comment(plan_data, is_revision=is_revision)
     return PlanResult(comment=comment, plan_data=plan_data)
