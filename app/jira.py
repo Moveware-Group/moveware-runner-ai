@@ -30,8 +30,30 @@ class JiraClient:
         return r.json()
 
     def add_comment(self, issue_key: str, body_md: str) -> None:
+        """Add a comment to a Jira issue using Atlassian Document Format (ADF)."""
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}/comment"
-        payload = {"body": body_md}
+        
+        # Jira Cloud v3 API requires ADF format
+        # For now, send as simple plain text - Jira wiki markup doesn't work in ADF
+        # TODO: Proper wiki markup to ADF conversion
+        payload = {
+            "body": {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": body_md
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+        
         r = requests.post(url, headers=self._headers(), json=payload, timeout=self.timeout_s)
         r.raise_for_status()
 
