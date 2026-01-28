@@ -112,10 +112,6 @@ def format_plan_as_jira_comment(plan: Dict[str, Any]) -> str:
         lines.append("h3. Questions / clarifications")
         lines.extend([f"- {q}" for q in plan["questions"]])
         lines.append("")
-    lines.append("----")
-    lines.append("{code:json}")
-    lines.append(json.dumps(plan, indent=2))
-    lines.append("{code}")
     return "\n".join(lines)
 
 
