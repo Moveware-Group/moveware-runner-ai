@@ -7,7 +7,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from app.config import settings
-from app.db import init_db, enqueue_run, append_event
+from app.db import init_db, enqueue_run, add_event
 
 app = FastAPI(title="Moveware AI Orchestrator")
 
@@ -46,5 +46,5 @@ async def jira_webhook(
         raise HTTPException(400, "Missing issue key")
 
     run_id = enqueue_run(issue_key=issue_key, payload=payload)
-    append_event(run_id, "enqueued", {"source": "jira_webhook"})
+    add_event(run_id, "info", "Webhook received", {"source": "jira_webhook"})
     return JSONResponse({"ok": True, "run_id": run_id})
