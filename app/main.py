@@ -38,9 +38,10 @@ async def jira_webhook(
     payload: Dict[str, Any] = await request.json()
 
     issue_key = (
-        payload.get("issue", {}).get("key")
-        or payload.get("issue", {}).get("id")
+        payload.get("issue_key")
         or payload.get("issueKey")
+        or payload.get("issue", {}).get("key")
+        or payload.get("issue", {}).get("id")
     )
     if not issue_key:
         raise HTTPException(400, "Missing issue key")
