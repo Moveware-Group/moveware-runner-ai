@@ -37,20 +37,20 @@ class Router:
 def _decide_internal(issue: JiraIssue) -> Optional[RouteDecision]:
     """Decide what (if any) background action should run for a Jira issue state."""
 
-    # Parent ticket behaviour
-    if not issue.is_subtask:
+    # Epic (parent) ticket behaviour - only Epics should be planned and broken down
+    if issue.issue_type == "Epic":
         if issue.status == settings.JIRA_STATUS_BACKLOG and issue.assignee_account_id == settings.JIRA_AI_ACCOUNT_ID:
-            return RouteDecision(action="PLAN_PARENT", issue_key=issue.key, reason="Parent in Backlog and assigned to AI")
+            return RouteDecision(action="PLAN_PARENT", issue_key=issue.key, reason="Epic in Backlog and assigned to AI")
 
         # Plan revision: human added comments in Plan Review and assigned back to AI
         if issue.status == settings.JIRA_STATUS_PLAN_REVIEW and issue.assignee_account_id == settings.JIRA_AI_ACCOUNT_ID:
-            return RouteDecision(action="REVISE_PLAN", issue_key=issue.key, reason="Parent in Plan Review and assigned to AI - revise plan based on comments")
+            return RouteDecision(action="REVISE_PLAN", issue_key=issue.key, reason="Epic in Plan Review and assigned to AI - revise plan based on comments")
 
-        # After human approval, parent is moved to Selected for Development and assigned to AI
+        # After human approval, Epic is moved to Selected for Development and assigned to AI
         if issue.status == settings.JIRA_STATUS_SELECTED_FOR_DEV and issue.assignee_account_id == settings.JIRA_AI_ACCOUNT_ID:
-            return RouteDecision(action="PARENT_APPROVED", issue_key=issue.key, reason="Parent approved, ensure subtasks exist")
+            return RouteDecision(action="PARENT_APPROVED", issue_key=issue.key, reason="Epic approved, ensure subtasks exist")
 
-        # When parent is Done and assigned to AI, nothing further.
+        # When Epic is Done and assigned to AI, nothing further.
         return None
 
     # Subtask behaviour

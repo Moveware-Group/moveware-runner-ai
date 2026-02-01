@@ -62,7 +62,8 @@ def _fetch_issue(jira: JiraClient, issue_key: str) -> JiraIssue:
 
 
 def _is_parent(issue: JiraIssue) -> bool:
-    return not issue.is_subtask
+    """A parent is an Epic that should be broken down into subtasks."""
+    return issue.issue_type == "Epic"
 
 
 def _has_plan_comment(jira: JiraClient, parent_key: str) -> bool:

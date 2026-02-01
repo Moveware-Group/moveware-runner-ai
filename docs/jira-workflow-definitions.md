@@ -13,8 +13,9 @@ Create these statuses (exact names):
 - **Blocked**
 
 ## Issue hierarchy
-- **Parent issue**: Feature/Epic/Task (represents one feature or one sprint unit)
-- **Sub-tasks**: execution units created under the parent by the runner
+- **Epic**: Parent issue type that AI will plan and break down into subtasks
+- **Sub-tasks**: execution units created under the Epic by the AI Runner
+- **Story/Task**: Regular issues (not processed as parents by AI)
 
 ## Transitions
 Suggested transitions to keep the board clean:
