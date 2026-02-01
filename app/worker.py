@@ -82,14 +82,47 @@ def _extract_plan_json_from_comments(jira: JiraClient, parent_key: str) -> Optio
     comments = jira.get_comments(parent_key)
     for c in reversed(comments):
         body = c.get("body")
-        if isinstance(body, str) and body.startswith(PARENT_PLAN_COMMENT_PREFIX):
-            # body = "[AI PLAN v1]\n```json\n{...}\n```"
-            try:
-                start = body.index("```json") + len("```json")
-                end = body.index("```", start)
-                return json.loads(body[start:end].strip())
-            except Exception:
-                return None
+        
+        # Handle both plain text and ADF format
+        if isinstance(body, dict):
+            # ADF format - check if it contains plan marker and extract code block
+            content = body.get("content", [])
+            has_plan_marker = False
+            code_block_text = None
+            
+            for node in content:
+                if not isinstance(node, dict):
+                    continue
+                    
+                # Check for plan marker in paragraph/heading
+                if node.get("type") in ("paragraph", "heading"):
+                    text_content = _extract_text_from_adf({"content": [node]})
+                    if text_content.startswith(PARENT_PLAN_COMMENT_PREFIX):
+                        has_plan_marker = True
+                
+                # Extract JSON from codeBlock
+                if node.get("type") == "codeBlock" and node.get("attrs", {}).get("language") == "json":
+                    code_content = node.get("content", [])
+                    if code_content and isinstance(code_content[0], dict):
+                        code_block_text = code_content[0].get("text", "")
+            
+            if has_plan_marker and code_block_text:
+                try:
+                    return json.loads(code_block_text.strip())
+                except Exception as e:
+                    print(f"Failed to parse plan JSON from ADF comment: {e}")
+                    continue
+                    
+        elif isinstance(body, str):
+            # Plain text format
+            if body.startswith(PARENT_PLAN_COMMENT_PREFIX):
+                try:
+                    start = body.index("```json") + len("```json")
+                    end = body.index("```", start)
+                    return json.loads(body[start:end].strip())
+                except Exception as e:
+                    print(f"Failed to parse plan JSON from text comment: {e}")
+                    continue
     return None
 
 
