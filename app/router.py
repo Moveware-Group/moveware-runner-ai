@@ -3,7 +3,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
+<<<<<<< Updated upstream
 from .config import settings
+=======
+from .config import (
+    STATUS_BACKLOG,
+    STATUS_PLAN_REVIEW,
+    STATUS_SELECTED_FOR_DEV,
+    STATUS_IN_PROGRESS,
+    STATUS_IN_TESTING,
+    STATUS_DONE,
+    STATUS_BLOCKED,
+    JIRA_AI_ACCOUNT_ID,
+    JIRA_HUMAN_ACCOUNT_ID,
+)
+>>>>>>> Stashed changes
 from .models import JiraIssue
 
 
@@ -42,6 +56,7 @@ def _decide_internal(issue: JiraIssue) -> Optional[RouteDecision]:
         if issue.status == settings.JIRA_STATUS_BACKLOG and issue.assignee_account_id == settings.JIRA_AI_ACCOUNT_ID:
             return RouteDecision(action="PLAN_PARENT", issue_key=issue.key, reason="Parent in Backlog and assigned to AI")
 
+<<<<<<< Updated upstream
         # Plan revision: human added comments in Plan Review and assigned back to AI
         if issue.status == settings.JIRA_STATUS_PLAN_REVIEW and issue.assignee_account_id == settings.JIRA_AI_ACCOUNT_ID:
             return RouteDecision(action="REVISE_PLAN", issue_key=issue.key, reason="Parent in Plan Review and assigned to AI - revise plan based on comments")
@@ -49,6 +64,11 @@ def _decide_internal(issue: JiraIssue) -> Optional[RouteDecision]:
         # After human approval, parent is moved to In Progress and assigned to AI
         if issue.status == settings.JIRA_STATUS_IN_PROGRESS and issue.assignee_account_id == settings.JIRA_AI_ACCOUNT_ID:
             return RouteDecision(action="PARENT_APPROVED", issue_key=issue.key, reason="Parent approved, ensure subtasks exist")
+=======
+        # After human approval, parent is moved to Selected for Development and assigned to AI
+        if issue.status == STATUS_SELECTED_FOR_DEV and issue.assignee_account_id == JIRA_AI_ACCOUNT_ID:
+            return RouteDecision(action="ENSURE_SUBTASKS", issue_key=issue.key, reason="Parent approved, ensure subtasks exist")
+>>>>>>> Stashed changes
 
         # When parent is Done and assigned to AI, nothing further.
         return None

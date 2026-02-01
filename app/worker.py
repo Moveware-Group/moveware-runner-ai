@@ -5,8 +5,27 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
+<<<<<<< Updated upstream
 from .config import settings, PARENT_PLAN_COMMENT_PREFIX
 from .db import claim_next_run, init_db, update_run, add_event
+=======
+from .config import (
+    JIRA_AI_ACCOUNT_ID,
+    JIRA_HUMAN_ACCOUNT_ID,
+    REPO_OWNER_SLUG,
+    REPO_NAME,
+    BASE_BRANCH,
+    STATUS_BACKLOG,
+    STATUS_PLAN_REVIEW,
+    STATUS_SELECTED_FOR_DEV,
+    STATUS_IN_PROGRESS,
+    STATUS_IN_TESTING,
+    STATUS_DONE,
+    STATUS_BLOCKED,
+    PARENT_PLAN_COMMENT_PREFIX,
+)
+from .db import dequeue_event, enqueue_job, init_db, mark_event_processed
+>>>>>>> Stashed changes
 from .executor import ExecutionResult, execute_subtask
 from .jira import JiraClient
 from .models import JiraIssue, parse_issue
@@ -278,8 +297,13 @@ def _handle_revise_plan(ctx: Context, issue: JiraIssue) -> None:
 
 
 def _handle_parent_approved(ctx: Context, parent: JiraIssue) -> None:
+<<<<<<< Updated upstream
     # Parent moved to In Progress (approval signal) and assigned to AI Runner.
     if parent.status != settings.JIRA_STATUS_IN_PROGRESS:
+=======
+    # Parent moved to Selected for Development (approval signal) and assigned to AI Runner.
+    if parent.status != STATUS_SELECTED_FOR_DEV:
+>>>>>>> Stashed changes
         return
     if parent.assignee_account_id != settings.JIRA_AI_ACCOUNT_ID:
         return
@@ -288,6 +312,10 @@ def _handle_parent_approved(ctx: Context, parent: JiraIssue) -> None:
     subtasks = ctx.jira.get_subtasks(parent.key)
     if not subtasks:
         _create_subtasks_from_plan(ctx, parent)
+
+    # Transition parent to In Progress to show AI has started work.
+    ctx.jira.transition_to_status(parent.key, STATUS_IN_PROGRESS)
+    ctx.jira.add_comment(parent.key, "AI Runner has started processing this ticket.")
 
     # Start first subtask.
     next_key = _pick_next_subtask_to_start(ctx, parent.key)
