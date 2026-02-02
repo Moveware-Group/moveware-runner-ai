@@ -121,18 +121,12 @@ def generate_plan(issue: JiraIssue, revision_feedback: str = "") -> Dict[str, An
 
 
 def format_plan_as_jira_comment(plan: Dict[str, Any], is_revision: bool = False) -> str:
-    # Keep it readable in Jira and include a machine-parseable prefix with raw JSON.
+    # Human-readable plan for Jira comments (raw JSON stored in database).
     lines: List[str] = []
     if is_revision:
         lines.append(f"{PARENT_PLAN_COMMENT_PREFIX} (revised)")
     else:
         lines.append(PARENT_PLAN_COMMENT_PREFIX)
-    lines.append("")
-    
-    # Include raw JSON for machine parsing
-    lines.append("{code:json}")
-    lines.append(json.dumps(plan, indent=2))
-    lines.append("{code}")
     lines.append("")
     
     if plan.get("overview"):

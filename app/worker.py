@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from .config import settings, PARENT_PLAN_COMMENT_PREFIX
-from .db import claim_next_run, init_db, update_run, add_event
+from .db import claim_next_run, init_db, update_run, add_event, save_plan, get_plan
 from .executor import ExecutionResult, execute_subtask
 from .jira import JiraClient
 from .models import JiraIssue, parse_issue
@@ -76,61 +76,6 @@ def _has_plan_comment(jira: JiraClient, parent_key: str) -> bool:
         return False
     except Exception:
         return False
-
-
-def _extract_plan_json_from_comments(jira: JiraClient, parent_key: str) -> Optional[Dict[str, Any]]:
-    comments = jira.get_comments(parent_key)
-    for c in reversed(comments):
-        body = c.get("body")
-        
-        # Handle both plain text and ADF format
-        if isinstance(body, dict):
-            # ADF format - check if it contains plan marker and extract code block
-            content = body.get("content", [])
-            has_plan_marker = False
-            code_block_text = None
-            
-            for node in content:
-                if not isinstance(node, dict):
-                    continue
-                    
-                # Check for plan marker in paragraph/heading
-                if node.get("type") in ("paragraph", "heading"):
-                    text_content = _extract_text_from_adf({"content": [node]})
-                    if text_content.startswith(PARENT_PLAN_COMMENT_PREFIX):
-                        has_plan_marker = True
-                
-                # Extract JSON from codeBlock
-                if node.get("type") == "codeBlock" and node.get("attrs", {}).get("language") == "json":
-                    code_content = node.get("content", [])
-                    if code_content and isinstance(code_content[0], dict):
-                        code_block_text = code_content[0].get("text", "")
-            
-            if has_plan_marker and code_block_text:
-                try:
-                    return json.loads(code_block_text.strip())
-                except Exception as e:
-                    print(f"Failed to parse plan JSON from ADF comment: {e}")
-                    continue
-                    
-        elif isinstance(body, str):
-            # Plain text format
-            if body.startswith(PARENT_PLAN_COMMENT_PREFIX):
-                try:
-                    # Try Jira's {code:json}...{code} format first
-                    if "{code:json}" in body:
-                        start = body.index("{code:json}") + len("{code:json}")
-                        end = body.index("{code}", start)
-                        return json.loads(body[start:end].strip())
-                    # Fall back to markdown ```json format
-                    elif "```json" in body:
-                        start = body.index("```json") + len("```json")
-                        end = body.index("```", start)
-                        return json.loads(body[start:end].strip())
-                except Exception as e:
-                    print(f"Failed to parse plan JSON from text comment: {e}")
-                    continue
-    return None
 
 
 def _extract_human_feedback_after_plan(jira: JiraClient, parent_key: str) -> str:
@@ -214,10 +159,11 @@ def _extract_text_from_adf(adf: Dict[str, Any]) -> str:
 
 
 def _create_stories_from_plan(ctx: Context, epic: JiraIssue) -> bool:
-    """Create Stories from Epic plan (v2 format). Returns True if successful."""
-    plan = _extract_plan_json_from_comments(ctx.jira, epic.key)
+    """Create Stories from Epic plan. Returns True if successful."""
+    # Retrieve plan from database
+    plan = get_plan(epic.key)
     if not plan:
-        ctx.jira.add_comment(epic.key, "AI Runner could not read the plan JSON from the ticket comments.")
+        ctx.jira.add_comment(epic.key, "AI Runner could not find a plan for this Epic. Please move to Backlog to generate a plan.")
         ctx.jira.transition_to_status(epic.key, settings.JIRA_STATUS_BLOCKED)
         ctx.jira.assign_issue(epic.key, settings.JIRA_HUMAN_ACCOUNT_ID)
         return False
@@ -371,6 +317,8 @@ def _handle_plan_parent(ctx: Context, issue: JiraIssue) -> None:
 
     try:
         plan_res: PlanResult = build_plan(issue)
+        # Save plan to database
+        save_plan(issue.key, plan_res.plan_data)
         ctx.jira.add_comment(issue.key, plan_res.comment)
         ctx.jira.transition_to_status(issue.key, settings.JIRA_STATUS_PLAN_REVIEW)
         ctx.jira.assign_issue(issue.key, settings.JIRA_HUMAN_ACCOUNT_ID)
@@ -405,6 +353,9 @@ def _handle_revise_plan(ctx: Context, issue: JiraIssue) -> None:
     
     # Generate revised plan with feedback
     plan_res: PlanResult = build_plan(issue, revision_feedback=feedback)
+    
+    # Save revised plan to database
+    save_plan(issue.key, plan_res.plan_data)
     
     # Post revised plan
     ctx.jira.add_comment(issue.key, plan_res.comment)

@@ -39,8 +39,18 @@ def init_db() -> None:
             FOREIGN KEY(run_id) REFERENCES runs(id)
         );
         """)
+        cx.execute("""
+        CREATE TABLE IF NOT EXISTS plans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            issue_key TEXT NOT NULL,
+            plan_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            UNIQUE(issue_key)
+        );
+        """)
         cx.execute("CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status);")
         cx.execute("CREATE INDEX IF NOT EXISTS idx_runs_issue ON runs(issue_key);")
+        cx.execute("CREATE INDEX IF NOT EXISTS idx_plans_issue ON plans(issue_key);")
 
 
 @contextmanager
@@ -153,3 +163,25 @@ def get_run(run_id: int) -> Dict[str, Any]:
         "created_at": row[8],
         "updated_at": row[9],
     }
+
+
+def save_plan(issue_key: str, plan_data: Dict[str, Any]) -> None:
+    """Save or update a plan for an issue."""
+    ts = now()
+    with connect() as cx:
+        cx.execute(
+            "INSERT OR REPLACE INTO plans(issue_key, plan_json, created_at) VALUES(?,?,?)",
+            (issue_key, json.dumps(plan_data), ts),
+        )
+
+
+def get_plan(issue_key: str) -> Optional[Dict[str, Any]]:
+    """Retrieve the plan for an issue."""
+    with connect() as cx:
+        row = cx.execute(
+            "SELECT plan_json FROM plans WHERE issue_key=?",
+            (issue_key,),
+        ).fetchone()
+    if not row:
+        return None
+    return json.loads(row[0])
