@@ -37,7 +37,6 @@ Epic (OD-1: "Create Online Documents platform")
 **Plan Format (v2):**
 ```json
 {
-  "plan_version": "v2",
   "overview": "Build Online Documents platform",
   "stories": [
     {

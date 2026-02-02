@@ -49,7 +49,6 @@ def _user_prompt(issue: JiraIssue, revision_feedback: str = "") -> str:
 
 
 PLAN_SCHEMA_HINT = {
-    "plan_version": "v2",
     "overview": "Short overview of approach",
     "assumptions": ["..."],
     "risks": ["..."],
@@ -76,7 +75,7 @@ def generate_plan(issue: JiraIssue, revision_feedback: str = "") -> Dict[str, An
     client = OpenAIClient(settings.OPENAI_API_KEY, base_url=settings.OPENAI_BASE_URL)
     prompt = (
         "Return JSON only. Do not wrap in markdown.\n"
-        "CRITICAL: Use plan_version='v2' with 'stories' array (NOT 'subtasks').\n"
+        "CRITICAL: Must include 'stories' array (NOT 'subtasks' at top level).\n"
         "Each story must have nested 'subtasks' array.\n"
         "Schema example:\n"
         + json.dumps(PLAN_SCHEMA_HINT, indent=2)
@@ -97,12 +96,11 @@ def generate_plan(issue: JiraIssue, revision_feedback: str = "") -> Dict[str, An
             raise
         data = json.loads(text[start : end + 1])
     
-    # Validate and fix format
+    # Validate and auto-fix if needed
     if "subtasks" in data and "stories" not in data:
-        # OpenAI returned v1 format, convert to v2
-        print("WARNING: OpenAI returned v1 format with subtasks, converting to v2 with stories")
+        # OpenAI returned old format with top-level subtasks, convert to stories format
+        print("WARNING: Plan has top-level subtasks instead of stories, auto-converting")
         data = {
-            "plan_version": "v2",
             "overview": data.get("overview", ""),
             "assumptions": data.get("assumptions", []),
             "risks": data.get("risks", []),
@@ -117,11 +115,7 @@ def generate_plan(issue: JiraIssue, revision_feedback: str = "") -> Dict[str, An
             "questions": data.get("questions", [])
         }
     elif "stories" not in data:
-        # No stories or subtasks - invalid
-        raise ValueError("Generated plan has neither 'stories' nor 'subtasks' array")
-    else:
-        # Ensure version is v2
-        data["plan_version"] = "v2"
+        raise ValueError("Generated plan must include 'stories' array")
     
     return data
 
@@ -129,11 +123,10 @@ def generate_plan(issue: JiraIssue, revision_feedback: str = "") -> Dict[str, An
 def format_plan_as_jira_comment(plan: Dict[str, Any], is_revision: bool = False) -> str:
     # Keep it readable in Jira and include a machine-parseable prefix.
     lines: List[str] = []
-    version = plan.get('plan_version', 'v1')
     if is_revision:
-        lines.append(f"{PARENT_PLAN_COMMENT_PREFIX} {version} (revised)")
+        lines.append(f"{PARENT_PLAN_COMMENT_PREFIX} (revised)")
     else:
-        lines.append(f"{PARENT_PLAN_COMMENT_PREFIX} {version}")
+        lines.append(PARENT_PLAN_COMMENT_PREFIX)
     lines.append("")
     if plan.get("overview"):
         lines.append("h3. Overview")

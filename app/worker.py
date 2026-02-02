@@ -215,24 +215,19 @@ def _create_stories_from_plan(ctx: Context, epic: JiraIssue) -> bool:
         ctx.jira.assign_issue(epic.key, settings.JIRA_HUMAN_ACCOUNT_ID)
         return False
 
-    # Check plan version
-    plan_version = plan.get("plan_version", "v1")
-    
-    # v2 plans have "stories", v1 plans have "subtasks"
+    # Validate plan has stories
     stories = plan.get("stories") or []
     if not isinstance(stories, list) or not stories:
-        # Check if this is a v1 plan with subtasks
+        # Check if plan has old format with top-level subtasks
         if plan.get("subtasks"):
             ctx.jira.add_comment(
                 epic.key,
-                "⚠️ This Epic has a v1 plan (with subtasks). The new workflow uses v2 plans (with Stories).\n\n"
-                "**Options:**\n"
-                "1. Keep existing subtasks and use old workflow (move back to Backlog, old code will process)\n"
-                "2. Update plan to v2 format with Stories (see docs/story-workflow.md)\n"
-                "3. Create a new Epic to test the Story-based workflow"
+                "⚠️ This plan has top-level subtasks instead of Stories.\n\n"
+                "The plan must have a 'stories' array where each story contains nested 'subtasks'.\n"
+                "Move Epic back to Backlog and the AI will regenerate in the correct format."
             )
         else:
-            ctx.jira.add_comment(epic.key, "AI plan did not include stories or subtasks. Please update the plan.")
+            ctx.jira.add_comment(epic.key, "AI plan did not include stories. Please move back to Backlog to regenerate.")
         ctx.jira.transition_to_status(epic.key, settings.JIRA_STATUS_BLOCKED)
         ctx.jira.assign_issue(epic.key, settings.JIRA_HUMAN_ACCOUNT_ID)
         return False
