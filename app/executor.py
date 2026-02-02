@@ -227,26 +227,17 @@ def execute_subtask(issue: JiraIssue) -> ExecutionResult:
         summary = f"Committed to Story branch ({branch}). Story PR will be updated automatically."
         pr_url = None  # Story owns the PR
     
-    # Build Jira comment
+    # Build Jira comment (keep it clean and concise)
     jira_comment_lines = [
-        f"✅ AI Runner completed implementation:",
+        f"✅ Implementation complete",
         f"",
-        f"**Branch:** {branch}",
+        f"*Branch:* `{branch}`",
     ]
     if pr_url:
-        jira_comment_lines.append(f"**PR:** {pr_url}")
+        jira_comment_lines.append(f"*PR:* {pr_url}")
     
     jira_comment_lines.append(f"")
-    jira_comment_lines.append(f"**Files Changed:**")
-    for fc in files_changed[:10]:  # Limit to 10 files in comment
-        jira_comment_lines.append(f"- {fc}")
-    if len(files_changed) > 10:
-        jira_comment_lines.append(f"- ...and {len(files_changed) - 10} more")
-    
-    if notes:
-        jira_comment_lines.append(f"")
-        jira_comment_lines.append(f"**Summary:**")
-        jira_comment_lines.append(notes[:500])
+    jira_comment_lines.append(f"*Changes:* {files_summary}")
     
     jira_comment = "\n".join(jira_comment_lines)
     
