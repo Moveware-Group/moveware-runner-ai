@@ -57,16 +57,16 @@ def execute_subtask(issue: JiraIssue) -> ExecutionResult:
         f"Summary: {issue.summary}\n\n"
         f"Description:\n{issue.description}\n"
     )
-    raw = client.messages_json(
-        model=settings.ANTHROPIC_MODEL,
-        system=_system_prompt(),
-        user=prompt,
-        max_tokens=900,
-        temperature=0.2,
-    )
+    raw = client.messages_create({
+        "model": settings.ANTHROPIC_MODEL,
+        "system": _system_prompt(),
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 4096,
+        "temperature": 0.2,
+    })
 
     # Extract assistant text and try to parse JSON
-    text = "".join([b.get("text", "") for b in raw.get("content", []) if b.get("type") == "text"]).strip()
+    text = AnthropicClient.extract_text(raw)
     payload: Dict[str, Any]
     try:
         payload = json.loads(text)
