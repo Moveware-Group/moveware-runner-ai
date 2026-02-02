@@ -287,13 +287,13 @@ def _create_subtasks_from_story(ctx: Context, story: JiraIssue) -> None:
 
 def _pick_next_subtask_to_start(ctx: Context, parent_key: str) -> Optional[str]:
     subtasks = ctx.jira.get_subtasks(parent_key)
-    # pick first Backlog assigned to AI
+    # pick first Backlog or Selected for Development assigned to AI
     for st in subtasks:
         fields = st.get("fields") or {}
         status = (fields.get("status") or {}).get("name")
         assignee = fields.get("assignee") or {}
         assignee_id = assignee.get("accountId") if isinstance(assignee, dict) else None
-        if status == settings.JIRA_STATUS_BACKLOG and assignee_id == settings.JIRA_AI_ACCOUNT_ID:
+        if status in (settings.JIRA_STATUS_BACKLOG, settings.JIRA_STATUS_SELECTED_FOR_DEV) and assignee_id == settings.JIRA_AI_ACCOUNT_ID:
             return st.get("key")
     return None
 
