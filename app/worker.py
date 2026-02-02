@@ -206,21 +206,36 @@ def _extract_text_from_adf(adf: Dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
-def _create_stories_from_plan(ctx: Context, epic: JiraIssue) -> None:
-    """Create Stories from Epic plan (v2 format)."""
+def _create_stories_from_plan(ctx: Context, epic: JiraIssue) -> bool:
+    """Create Stories from Epic plan (v2 format). Returns True if successful."""
     plan = _extract_plan_json_from_comments(ctx.jira, epic.key)
     if not plan:
         ctx.jira.add_comment(epic.key, "AI Runner could not read the plan JSON from the ticket comments.")
         ctx.jira.transition_to_status(epic.key, settings.JIRA_STATUS_BLOCKED)
         ctx.jira.assign_issue(epic.key, settings.JIRA_HUMAN_ACCOUNT_ID)
-        return
+        return False
 
+    # Check plan version
+    plan_version = plan.get("plan_version", "v1")
+    
+    # v2 plans have "stories", v1 plans have "subtasks"
     stories = plan.get("stories") or []
     if not isinstance(stories, list) or not stories:
-        ctx.jira.add_comment(epic.key, "AI plan did not include stories. Please update the plan.")
+        # Check if this is a v1 plan with subtasks
+        if plan.get("subtasks"):
+            ctx.jira.add_comment(
+                epic.key,
+                "⚠️ This Epic has a v1 plan (with subtasks). The new workflow uses v2 plans (with Stories).\n\n"
+                "**Options:**\n"
+                "1. Keep existing subtasks and use old workflow (move back to Backlog, old code will process)\n"
+                "2. Update plan to v2 format with Stories (see docs/story-workflow.md)\n"
+                "3. Create a new Epic to test the Story-based workflow"
+            )
+        else:
+            ctx.jira.add_comment(epic.key, "AI plan did not include stories or subtasks. Please update the plan.")
         ctx.jira.transition_to_status(epic.key, settings.JIRA_STATUS_BLOCKED)
         ctx.jira.assign_issue(epic.key, settings.JIRA_HUMAN_ACCOUNT_ID)
-        return
+        return False
 
     created_keys = []
     for story_data in stories:
@@ -252,10 +267,14 @@ def _create_stories_from_plan(ctx: Context, epic: JiraIssue) -> None:
         # Assign Story to AI in Backlog - it will be picked up for breakdown
         ctx.jira.assign_issue(story_key, settings.JIRA_AI_ACCOUNT_ID)
 
-    ctx.jira.add_comment(
-        epic.key,
-        "AI created Stories from the approved plan:\n" + "\n".join([f"- {k}" for k in created_keys]),
-    )
+    if created_keys:
+        ctx.jira.add_comment(
+            epic.key,
+            "AI created Stories from the approved plan:\n" + "\n".join([f"- {k}" for k in created_keys]),
+        )
+        return True
+    
+    return False
 
 
 def _create_subtasks_from_story(ctx: Context, story: JiraIssue) -> None:
@@ -392,16 +411,13 @@ def _handle_epic_approved(ctx: Context, epic: JiraIssue) -> None:
     if epic.assignee_account_id != settings.JIRA_AI_ACCOUNT_ID:
         return
 
-    # Check if Stories already exist (skip creating if they do)
-    # For now, we'll check if any linked issues exist - this is a simple heuristic
-    # In a full implementation, you'd query for linked Stories specifically
+    # Create Stories from Epic plan (v2 format)
+    success = _create_stories_from_plan(ctx, epic)
     
-    # Create Stories from Epic plan
-    _create_stories_from_plan(ctx, epic)
-    
-    # Transition Epic to In Progress
-    ctx.jira.transition_to_status(epic.key, settings.JIRA_STATUS_IN_PROGRESS)
-    ctx.jira.add_comment(epic.key, "AI Runner created Stories from the plan. Stories will be broken down into sub-tasks when approved.")
+    # Only transition if Stories were created successfully
+    if success:
+        ctx.jira.transition_to_status(epic.key, settings.JIRA_STATUS_IN_PROGRESS)
+        ctx.jira.add_comment(epic.key, "AI Runner created Stories from the plan. Stories will be broken down into sub-tasks when approved.")
 
 
 def _handle_story_approved(ctx: Context, story: JiraIssue) -> None:
