@@ -401,6 +401,10 @@ def _handle_story_approved(ctx: Context, story: JiraIssue) -> None:
         # Refresh subtasks after creation
         all_subtasks = ctx.jira.get_subtasks(story.key)
 
+    # Transition Story to In Progress first (before trying git operations)
+    ctx.jira.transition_to_status(story.key, settings.JIRA_STATUS_IN_PROGRESS)
+    ctx.jira.add_comment(story.key, "AI Runner has started processing this Story.")
+
     # Create Story branch and draft PR
     from .git_ops import checkout_repo, create_branch, create_pr
     
@@ -438,17 +442,17 @@ def _handle_story_approved(ctx: Context, story: JiraIssue) -> None:
         if pr_url:
             ctx.jira.add_comment(story.key, f"Story PR created: {pr_url}")
     except Exception as e:
-        ctx.jira.add_comment(story.key, f"Warning: Could not create Story PR: {e}")
+        error_msg = f"Warning: Could not create Story PR: {e}"
+        print(f"ERROR in _handle_story_approved: {error_msg}")
+        ctx.jira.add_comment(story.key, error_msg)
 
-    # Transition Story to In Progress
-    ctx.jira.transition_to_status(story.key, settings.JIRA_STATUS_IN_PROGRESS)
-    ctx.jira.add_comment(story.key, "AI Runner has started processing this Story.")
-
-    # Start first subtask
+    # Start first subtask (this must happen even if PR creation failed)
     next_key = _pick_next_subtask_to_start(ctx, story.key)
     if next_key:
         ctx.jira.transition_to_status(next_key, settings.JIRA_STATUS_IN_PROGRESS)
         ctx.jira.add_comment(story.key, f"AI starting work on {next_key}.")
+    else:
+        ctx.jira.add_comment(story.key, "Warning: No subtasks found to start.")
 
 
 def _handle_execute_subtask(ctx: Context, subtask: JiraIssue) -> None:
