@@ -73,8 +73,16 @@ def commit_and_push_if_needed(workdir: str, commit_message: str, token: str) -> 
     run(["git", "commit", "-m", commit_message], cwd=workdir)
 
     # Push (origin already contains token in URL)
-    out = run(["git", "push", "-u", "origin", "HEAD"], cwd=workdir)
-    return True, out
+    try:
+        out = run(["git", "push", "-u", "origin", "HEAD"], cwd=workdir)
+        return True, out
+    except RuntimeError as e:
+        # If push rejected due to non-fast-forward, force push with lease
+        if "rejected" in str(e) and "non-fast-forward" in str(e):
+            print(f"Push rejected, force pushing with lease: {e}")
+            out = run(["git", "push", "--force-with-lease", "-u", "origin", "HEAD"], cwd=workdir)
+            return True, out
+        raise
 
 
 def find_existing_pr_url(workdir: str, head: str, token: str) -> Optional[str]:
