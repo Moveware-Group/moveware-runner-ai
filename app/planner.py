@@ -76,6 +76,8 @@ def generate_plan(issue: JiraIssue, revision_feedback: str = "") -> Dict[str, An
     client = OpenAIClient(settings.OPENAI_API_KEY, base_url=settings.OPENAI_BASE_URL)
     prompt = (
         "Return JSON only. Do not wrap in markdown.\n"
+        "CRITICAL: Use plan_version='v2' with 'stories' array (NOT 'subtasks').\n"
+        "Each story must have nested 'subtasks' array.\n"
         "Schema example:\n"
         + json.dumps(PLAN_SCHEMA_HINT, indent=2)
     )
@@ -94,6 +96,33 @@ def generate_plan(issue: JiraIssue, revision_feedback: str = "") -> Dict[str, An
         if start == -1 or end == -1 or end <= start:
             raise
         data = json.loads(text[start : end + 1])
+    
+    # Validate and fix format
+    if "subtasks" in data and "stories" not in data:
+        # OpenAI returned v1 format, convert to v2
+        print("WARNING: OpenAI returned v1 format with subtasks, converting to v2 with stories")
+        data = {
+            "plan_version": "v2",
+            "overview": data.get("overview", ""),
+            "assumptions": data.get("assumptions", []),
+            "risks": data.get("risks", []),
+            "acceptance_criteria": data.get("acceptance_criteria", []),
+            "stories": [
+                {
+                    "summary": "Implementation",
+                    "description": data.get("overview", "Implement the requirements"),
+                    "subtasks": data.get("subtasks", [])
+                }
+            ],
+            "questions": data.get("questions", [])
+        }
+    elif "stories" not in data:
+        # No stories or subtasks - invalid
+        raise ValueError("Generated plan has neither 'stories' nor 'subtasks' array")
+    else:
+        # Ensure version is v2
+        data["plan_version"] = "v2"
+    
     return data
 
 
