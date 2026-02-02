@@ -33,22 +33,42 @@ def _system_prompt() -> str:
 def execute_subtask(issue: JiraIssue) -> ExecutionResult:
     """Executes a single Jira *sub-task*.
 
+    New behavior (Story-based):
+    - If subtask has "independent-pr" label: creates own branch/PR (old behavior)
+    - Otherwise: commits to parent Story's branch (story/STORY-KEY)
+    
     Pilot behaviour:
     - Ensures repo is checked out.
-    - Creates a branch named with the issue key.
-    - Adds/updates a docs note under /docs/ai-pilot/<ISSUE_KEY>.md.
+    - Creates/uses appropriate branch.
+    - Adds/updates implementation.
     - Commits and pushes.
-    - Creates a PR via `gh`.
-
-    This is production-grade scaffolding, but intentionally conservative for the pilot.
+    - Creates PR only if independent.
     """
 
-    # 1) Checkout/update repo (git_ops will use settings.GH_TOKEN by default)
+    # Check if this subtask should have its own PR
+    is_independent = "independent-pr" in (issue.labels or [])
+
+    # 1) Checkout/update repo
     checkout_repo(settings.REPO_WORKDIR, settings.REPO_SSH, settings.BASE_BRANCH)
 
-    # 2) Branch per sub-task
-    branch = f"ai/{issue.key.lower()}"
-    create_branch(settings.REPO_WORKDIR, branch)
+    # 2) Determine branch
+    if is_independent:
+        # Independent subtask: create its own branch
+        branch = f"ai/{issue.key.lower()}"
+        create_branch(settings.REPO_WORKDIR, branch)
+    else:
+        # Part of Story: use Story branch (story/STORY-KEY)
+        if not issue.parent_key:
+            raise RuntimeError(f"Subtask {issue.key} has no parent Story")
+        
+        story_branch = f"story/{issue.parent_key.lower()}"
+        # Check if Story branch exists, create if not
+        try:
+            checkout_or_create_story_branch(settings.REPO_WORKDIR, story_branch, settings.BASE_BRANCH)
+        except Exception:
+            # If Story branch doesn't exist, create it
+            create_branch(settings.REPO_WORKDIR, story_branch)
+        branch = story_branch
 
     # 3) Ask Claude to produce implementation notes (and optionally questions)
     client = AnthropicClient(api_key=settings.ANTHROPIC_API_KEY, base_url=settings.ANTHROPIC_BASE_URL)
@@ -90,22 +110,29 @@ def execute_subtask(issue: JiraIssue) -> ExecutionResult:
         content += ["## Notes", "", notes, ""]
     p.write_text("\n".join(content), encoding="utf-8")
 
-    # 5) Commit/push and PR
-    commit_and_push(settings.REPO_WORKDIR, issue.key)
+    # 5) Commit with subtask key in message
+    commit_message = f"{issue.key}: {issue.summary}"
+    commit_and_push(settings.REPO_WORKDIR, commit_message)
+    
+    # 6) Create PR only if independent
     pr_url = None
-    try:
-        pr_url = create_pr(
-            settings.REPO_WORKDIR,
-            title=f"{issue.key}: {issue.summary}",
-            body=f"Automated pilot PR for {issue.key}.\n\n{notes[:800]}",
-            base=settings.BASE_BRANCH,
-        )
-    except Exception as e:
-        # Don't fail the whole run if PR creation errors (e.g. gh not authed yet)
-        pr_url = None
-        notes += f"\n\nPR creation failed: {e}"
-
-    summary = "Created branch, committed changes, and opened PR." if pr_url else "Created branch and committed changes."
+    if is_independent:
+        try:
+            pr_url = create_pr(
+                settings.REPO_WORKDIR,
+                title=f"{issue.key}: {issue.summary}",
+                body=f"Automated pilot PR for {issue.key}.\n\n{notes[:800]}",
+                base=settings.BASE_BRANCH,
+            )
+        except Exception as e:
+            # Don't fail the whole run if PR creation errors
+            pr_url = None
+            notes += f"\n\nPR creation failed: {e}"
+        summary = "Created branch, committed changes, and opened PR." if pr_url else "Created branch and committed changes."
+    else:
+        # Not independent: committed to Story branch, PR already exists or will be created by Story
+        summary = f"Committed to Story branch ({branch}). Story PR will be updated automatically."
+        pr_url = None  # Story owns the PR
     
     # Build Jira comment
     jira_comment_lines = [

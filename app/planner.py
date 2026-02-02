@@ -19,7 +19,10 @@ class PlanResult:
 def _system_prompt() -> str:
     return (
         "You are an expert software technical planner. "
-        "Produce a safe, incremental implementation plan for the Jira ticket. "
+        "Break down the Epic into user-facing Stories. Each Story should be a cohesive feature slice. "
+        "Within each Story, define technical sub-tasks (commits). "
+        "Each Story will have ONE pull request containing all its sub-tasks. "
+        "Only mark a sub-task as 'independent: true' if it's infrastructure/build config that should have its own PR. "
         "The output MUST be valid JSON matching the schema exactly."
     )
 
@@ -46,16 +49,23 @@ def _user_prompt(issue: JiraIssue, revision_feedback: str = "") -> str:
 
 
 PLAN_SCHEMA_HINT = {
-    "plan_version": "v1",
+    "plan_version": "v2",
     "overview": "Short overview of approach",
     "assumptions": ["..."],
     "risks": ["..."],
     "acceptance_criteria": ["..."],
-    "subtasks": [
+    "stories": [
         {
-            "summary": "Short subtask title",
-            "description": "What to change and why",
+            "summary": "User-facing feature story title",
+            "description": "What user value this delivers and technical approach",
             "labels": ["optional"],
+            "subtasks": [
+                {
+                    "summary": "Technical task within this story",
+                    "description": "Specific implementation detail",
+                    "independent": False,  # Set True if needs own PR
+                }
+            ],
         }
     ],
     "questions": ["Optional questions needing clarification"],

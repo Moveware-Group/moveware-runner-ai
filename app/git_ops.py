@@ -61,7 +61,7 @@ def make_placeholder_change(workdir: str, issue_key: str, summary: str, note: st
     return str(p)
 
 
-def commit_and_push_if_needed(workdir: str, issue_key: str, token: str) -> Tuple[bool, str]:
+def commit_and_push_if_needed(workdir: str, commit_message: str, token: str) -> Tuple[bool, str]:
     run(["git", "add", "-A"], cwd=workdir)
 
     # If no changes, don't create an empty commit
@@ -70,7 +70,7 @@ def commit_and_push_if_needed(workdir: str, issue_key: str, token: str) -> Tuple
         return False, "No changes detected, skipping commit"
 
     # Commit
-    run(["git", "commit", "-m", f"{issue_key}: AI Runner change"], cwd=workdir)
+    run(["git", "commit", "-m", commit_message], cwd=workdir)
 
     # Push (origin already contains token in URL)
     out = run(["git", "push", "-u", "origin", "HEAD"], cwd=workdir)
@@ -121,12 +121,33 @@ def create_branch(workdir: str, branch: str) -> None:
     create_or_checkout_branch(workdir, branch)
 
 
-def commit_and_push(workdir: str, issue_key: str, token: Optional[str] = None) -> str:
-    """Commit and push changes. Wrapper for commit_and_push_if_needed."""
+def checkout_or_create_story_branch(workdir: str, story_branch: str, base_branch: str) -> None:
+    """Checkout Story branch if it exists on remote, otherwise create it from base."""
+    # Fetch to ensure we have latest remote state
+    run(["git", "fetch", "--all"], cwd=workdir)
+    
+    # Check if branch exists on remote
+    try:
+        run(["git", "rev-parse", f"origin/{story_branch}"], cwd=workdir)
+        # Branch exists on remote, checkout and pull
+        run(["git", "checkout", story_branch], cwd=workdir)
+        run(["git", "pull", "--ff-only"], cwd=workdir)
+    except RuntimeError:
+        # Branch doesn't exist on remote, create from base
+        run(["git", "checkout", base_branch], cwd=workdir)
+        run(["git", "checkout", "-b", story_branch], cwd=workdir)
+
+
+def commit_and_push(workdir: str, commit_message: str, token: Optional[str] = None) -> str:
+    """Commit and push changes. Wrapper for commit_and_push_if_needed.
+    
+    Args:
+        commit_message: Full commit message (e.g., "OD-5: add form validation")
+    """
     from .config import settings
     _token = token or settings.GH_TOKEN
     
-    committed, msg = commit_and_push_if_needed(workdir, issue_key, _token)
+    committed, msg = commit_and_push_if_needed(workdir, commit_message, _token)
     return msg
 
 

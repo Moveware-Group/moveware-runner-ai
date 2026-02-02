@@ -206,41 +206,115 @@ def _extract_text_from_adf(adf: Dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
-def _create_subtasks_from_plan(ctx: Context, parent: JiraIssue) -> None:
-    plan = _extract_plan_json_from_comments(ctx.jira, parent.key)
+def _create_stories_from_plan(ctx: Context, epic: JiraIssue) -> None:
+    """Create Stories from Epic plan (v2 format)."""
+    plan = _extract_plan_json_from_comments(ctx.jira, epic.key)
     if not plan:
-        ctx.jira.add_comment(parent.key, "AI Runner could not read the plan JSON from the ticket comments.")
-        ctx.jira.transition_to_status(parent.key, settings.JIRA_STATUS_BLOCKED)
-        ctx.jira.assign_issue(parent.key, settings.JIRA_HUMAN_ACCOUNT_ID)
+        ctx.jira.add_comment(epic.key, "AI Runner could not read the plan JSON from the ticket comments.")
+        ctx.jira.transition_to_status(epic.key, settings.JIRA_STATUS_BLOCKED)
+        ctx.jira.assign_issue(epic.key, settings.JIRA_HUMAN_ACCOUNT_ID)
         return
 
-    subtasks = plan.get("subtasks") or []
-    if not isinstance(subtasks, list) or not subtasks:
-        ctx.jira.add_comment(parent.key, "AI plan did not include subtasks. Please update the plan.")
-        ctx.jira.transition_to_status(parent.key, settings.JIRA_STATUS_BLOCKED)
-        ctx.jira.assign_issue(parent.key, settings.JIRA_HUMAN_ACCOUNT_ID)
+    stories = plan.get("stories") or []
+    if not isinstance(stories, list) or not stories:
+        ctx.jira.add_comment(epic.key, "AI plan did not include stories. Please update the plan.")
+        ctx.jira.transition_to_status(epic.key, settings.JIRA_STATUS_BLOCKED)
+        ctx.jira.assign_issue(epic.key, settings.JIRA_HUMAN_ACCOUNT_ID)
         return
 
     created_keys = []
-    for s in subtasks:
-        summary = (s.get("summary") or "").strip()
+    for story_data in stories:
+        summary = (story_data.get("summary") or "").strip()
         if not summary:
             continue
-        desc = s.get("description") or ""
-        key = ctx.jira.create_subtask(
-            project_key=None,
-            parent_key=parent.key,
+        desc = story_data.get("description") or ""
+        labels = story_data.get("labels") if isinstance(story_data.get("labels"), list) else None
+        
+        # Create Story
+        story_key = ctx.jira.create_story(
+            epic_key=epic.key,
             summary=summary,
             description=str(desc),
-            labels=s.get("labels") if isinstance(s.get("labels"), list) else None,
+            labels=labels,
+        )
+        created_keys.append(story_key)
+        
+        # Store subtasks in Story description or as a comment for later processing
+        subtasks_data = story_data.get("subtasks") or []
+        if subtasks_data:
+            # Add subtasks as a structured comment that we can parse later
+            subtasks_json = json.dumps(subtasks_data, indent=2)
+            ctx.jira.add_comment(
+                story_key,
+                f"[STORY BREAKDOWN]\n```json\n{subtasks_json}\n```"
+            )
+        
+        # Assign Story to AI in Backlog - it will be picked up for breakdown
+        ctx.jira.assign_issue(story_key, settings.JIRA_AI_ACCOUNT_ID)
+
+    ctx.jira.add_comment(
+        epic.key,
+        "AI created Stories from the approved plan:\n" + "\n".join([f"- {k}" for k in created_keys]),
+    )
+
+
+def _create_subtasks_from_story(ctx: Context, story: JiraIssue) -> None:
+    """Create sub-tasks from Story breakdown comment."""
+    # Look for [STORY BREAKDOWN] comment
+    comments = ctx.jira.get_comments(story.key)
+    subtasks_data = None
+    
+    for c in comments:
+        body = c.get("body")
+        if isinstance(body, dict):
+            body_text = _extract_text_from_adf(body)
+        elif isinstance(body, str):
+            body_text = body
+        else:
+            continue
+            
+        if "[STORY BREAKDOWN]" in body_text:
+            try:
+                start = body_text.index("```json") + len("```json")
+                end = body_text.index("```", start)
+                subtasks_data = json.loads(body_text[start:end].strip())
+                break
+            except Exception:
+                continue
+    
+    if not subtasks_data:
+        ctx.jira.add_comment(story.key, "AI Runner could not find Story breakdown. Please add sub-tasks manually.")
+        ctx.jira.transition_to_status(story.key, settings.JIRA_STATUS_BLOCKED)
+        ctx.jira.assign_issue(story.key, settings.JIRA_HUMAN_ACCOUNT_ID)
+        return
+
+    created_keys = []
+    for task in subtasks_data:
+        summary = (task.get("summary") or "").strip()
+        if not summary:
+            continue
+        desc = task.get("description") or ""
+        is_independent = task.get("independent", False)
+        
+        labels = []
+        if is_independent:
+            labels.append("independent-pr")
+        
+        # Create subtask under Story
+        key = ctx.jira.create_subtask(
+            project_key=None,
+            parent_key=story.key,
+            summary=summary,
+            description=str(desc),
+            labels=labels if labels else None,
         )
         created_keys.append(key)
-        # leave subtask in Backlog and assign AI; worker will pull one into In Progress
+        # Assign to AI in Backlog
         ctx.jira.assign_issue(key, settings.JIRA_AI_ACCOUNT_ID)
 
     ctx.jira.add_comment(
-        parent.key,
-        "AI created sub-tasks from the approved plan:\n" + "\n".join([f"- {k}" for k in created_keys]),
+        story.key,
+        "AI created sub-tasks for this Story:\n" + "\n".join([f"- {k}" for k in created_keys]),
     )
 
 
@@ -311,31 +385,94 @@ def _handle_revise_plan(ctx: Context, issue: JiraIssue) -> None:
     ctx.jira.assign_issue(issue.key, settings.JIRA_HUMAN_ACCOUNT_ID)
 
 
-def _handle_parent_approved(ctx: Context, parent: JiraIssue) -> None:
-    # Parent moved to Selected for Development (approval signal) and assigned to AI Runner.
-    if parent.status != settings.JIRA_STATUS_SELECTED_FOR_DEV:
+def _handle_epic_approved(ctx: Context, epic: JiraIssue) -> None:
+    """Handle Epic approval - creates Stories from plan."""
+    if epic.status != settings.JIRA_STATUS_SELECTED_FOR_DEV:
         return
-    if parent.assignee_account_id != settings.JIRA_AI_ACCOUNT_ID:
+    if epic.assignee_account_id != settings.JIRA_AI_ACCOUNT_ID:
         return
 
-    # Create subtasks once - only count active subtasks (not Blocked or Done)
-    all_subtasks = ctx.jira.get_subtasks(parent.key)
+    # Check if Stories already exist (skip creating if they do)
+    # For now, we'll check if any linked issues exist - this is a simple heuristic
+    # In a full implementation, you'd query for linked Stories specifically
+    
+    # Create Stories from Epic plan
+    _create_stories_from_plan(ctx, epic)
+    
+    # Transition Epic to In Progress
+    ctx.jira.transition_to_status(epic.key, settings.JIRA_STATUS_IN_PROGRESS)
+    ctx.jira.add_comment(epic.key, "AI Runner created Stories from the plan. Stories will be broken down into sub-tasks when approved.")
+
+
+def _handle_story_approved(ctx: Context, story: JiraIssue) -> None:
+    """Handle Story approval - creates sub-tasks and Story PR."""
+    if story.status != settings.JIRA_STATUS_SELECTED_FOR_DEV:
+        return
+    if story.assignee_account_id != settings.JIRA_AI_ACCOUNT_ID:
+        return
+
+    # Check for existing active subtasks
+    all_subtasks = ctx.jira.get_subtasks(story.key)
     active_subtasks = [
         st for st in all_subtasks
         if ((st.get("fields") or {}).get("status") or {}).get("name") not in [settings.JIRA_STATUS_BLOCKED, settings.JIRA_STATUS_DONE]
     ]
+    
     if not active_subtasks:
-        _create_subtasks_from_plan(ctx, parent)
+        # Create sub-tasks from Story breakdown
+        _create_subtasks_from_story(ctx, story)
+        
+        # Refresh subtasks after creation
+        all_subtasks = ctx.jira.get_subtasks(story.key)
 
-    # Transition parent to In Progress to show AI has started work.
-    ctx.jira.transition_to_status(parent.key, settings.JIRA_STATUS_IN_PROGRESS)
-    ctx.jira.add_comment(parent.key, "AI Runner has started processing this ticket.")
+    # Create Story branch and draft PR
+    from .git_ops import checkout_repo, create_branch, create_pr
+    
+    story_branch = f"story/{story.key.lower()}"
+    
+    try:
+        # Checkout repo and create Story branch
+        checkout_repo(settings.REPO_WORKDIR, settings.REPO_SSH, settings.BASE_BRANCH)
+        create_branch(settings.REPO_WORKDIR, story_branch)
+        
+        # Create draft PR with checklist of subtasks
+        subtask_list = "\n".join([
+            f"- [ ] {st.get('key')}: {(st.get('fields') or {}).get('summary')}" 
+            for st in all_subtasks
+        ])
+        
+        pr_body = f"""## Story: {story.key}
 
-    # Start first subtask.
-    next_key = _pick_next_subtask_to_start(ctx, parent.key)
+{story.description[:500] if story.description else 'No description'}
+
+### Sub-tasks:
+{subtask_list}
+
+---
+*This PR will be updated as sub-tasks are completed.*
+"""
+        
+        pr_url = create_pr(
+            settings.REPO_WORKDIR,
+            title=f"{story.key}: {story.summary}",
+            body=pr_body,
+            base=settings.BASE_BRANCH,
+        )
+        
+        if pr_url:
+            ctx.jira.add_comment(story.key, f"Story PR created: {pr_url}")
+    except Exception as e:
+        ctx.jira.add_comment(story.key, f"Warning: Could not create Story PR: {e}")
+
+    # Transition Story to In Progress
+    ctx.jira.transition_to_status(story.key, settings.JIRA_STATUS_IN_PROGRESS)
+    ctx.jira.add_comment(story.key, "AI Runner has started processing this Story.")
+
+    # Start first subtask
+    next_key = _pick_next_subtask_to_start(ctx, story.key)
     if next_key:
         ctx.jira.transition_to_status(next_key, settings.JIRA_STATUS_IN_PROGRESS)
-        ctx.jira.add_comment(parent.key, f"AI starting work on {next_key}.")
+        ctx.jira.add_comment(story.key, f"AI starting work on {next_key}.")
 
 
 def _handle_execute_subtask(ctx: Context, subtask: JiraIssue) -> None:
@@ -363,12 +500,34 @@ def _handle_execute_subtask(ctx: Context, subtask: JiraIssue) -> None:
         ctx.jira.add_comment(subtask.parent_key, f"AI moving to next sub-task {next_key}.")
 
 
+def _check_story_completion(ctx: Context, story: JiraIssue) -> None:
+    """Check if all sub-tasks are done and mark Story PR as ready."""
+    if story.issue_type != "Story":
+        return
+    
+    if _all_subtasks_done(ctx, story.key):
+        # TODO: Mark PR as ready for review via GitHub API
+        # For now, just comment on the Story
+        ctx.jira.add_comment(
+            story.key,
+            "✅ All sub-tasks completed! Story PR is ready for review."
+        )
+        ctx.jira.transition_to_status(story.key, settings.JIRA_STATUS_IN_TESTING)
+        ctx.jira.assign_issue(story.key, settings.JIRA_HUMAN_ACCOUNT_ID)
+
+
 def _handle_subtask_done(ctx: Context, subtask: JiraIssue) -> None:
     if not subtask.is_subtask or not subtask.parent_key:
         return
     if subtask.status != settings.JIRA_STATUS_DONE:
         return
-    if _all_subtasks_done(ctx, subtask.parent_key):
+    
+    # Check if parent is a Story - handle Story completion
+    parent = _fetch_issue(ctx.jira, subtask.parent_key)
+    if parent and parent.issue_type == "Story":
+        _check_story_completion(ctx, parent)
+    elif _all_subtasks_done(ctx, subtask.parent_key):
+        # Legacy behavior for non-Story parents (Epics, etc.)
         ctx.jira.transition_to_status(subtask.parent_key, settings.JIRA_STATUS_DONE)
         ctx.jira.add_comment(subtask.parent_key, "All sub-tasks are Done. Marking parent ticket Done.")
 
@@ -397,12 +556,16 @@ def process_run(ctx: Context, run_id: int, issue_key: str, payload: Dict[str, An
     action: Action = ctx.router.decide(issue)
     add_event(run_id, "info", f"Router decided action: {action.name}", {"reason": action.reason})
 
-    if action.name == "PLAN_PARENT":
-        _handle_plan_parent(ctx, issue)
+    if action.name == "PLAN_EPIC":
+        _handle_plan_parent(ctx, issue)  # Reuse existing Epic planning
     elif action.name == "REVISE_PLAN":
         _handle_revise_plan(ctx, issue)
-    elif action.name == "PARENT_APPROVED":
-        _handle_parent_approved(ctx, issue)
+    elif action.name == "EPIC_APPROVED":
+        _handle_epic_approved(ctx, issue)
+    elif action.name == "STORY_APPROVED":
+        _handle_story_approved(ctx, issue)
+    elif action.name == "CHECK_STORY_COMPLETION":
+        _check_story_completion(ctx, issue)
     elif action.name == "EXECUTE_SUBTASK":
         _handle_execute_subtask(ctx, issue)
     elif action.name == "SUBTASK_DONE":

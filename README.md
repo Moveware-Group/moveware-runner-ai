@@ -4,19 +4,30 @@ Production-oriented reference implementation of a **Jira → Orchestrator → Wo
 
 This repo is designed so the pilot can be run "like production": least-privilege system user, systemd services, idempotent run processing, auditable events, and clear separation between orchestration and execution.
 
-## High-level flow (pilot: Epic → sub-tasks)
+## High-level flow (Story-based workflow)
 
 1. **Epic assigned to AI Runner** (Status: Backlog)
-2. Worker generates an **Implementation Plan** (LLM), posts it as a comment, then moves the Epic to **Plan Review** and assigns to Leigh.
+2. Worker generates an **Implementation Plan with Stories** (LLM), posts it as a comment, then moves the Epic to **Plan Review** and assigns to Leigh.
 3. Leigh approves by transitioning **Plan Review → Selected for Development**.
-4. Worker creates **sub-tasks** from the plan, transitions Epic to **In Progress**, then processes subtasks sequentially:
-   - Moves a sub-task to **In Progress** (assigned to AI Runner)
-   - Implements the change (Claude API), commits with the Jira key, pushes a branch, creates a PR
-   - Transitions the sub-task to **In Testing**, assigns to Leigh, and comments with what was done + PR link
-5. Leigh reviews the PR:
-   - If changes needed: comment on the Jira sub-task and assign back to AI Runner
-   - If approved: transition sub-task to Done
-6. When all sub-tasks are Done, worker transitions the Epic to Done.
+4. Worker creates **Stories** from the plan, each Story has its own sub-task breakdown.
+5. When a Story is moved to **Selected for Development**:
+   - Worker creates Story branch (e.g., `story/OD-4-quote-submission`)
+   - Creates **one PR** for the entire Story (draft)
+   - Creates sub-tasks under the Story
+   - Starts processing sub-tasks sequentially
+6. For each sub-task (default behavior):
+   - Commits to the **Story branch** with message: `OD-5: add form validation`
+   - Pushes to Story branch (updates Story PR automatically)
+   - Transitions sub-task to **In Testing**
+   - Starts next sub-task
+7. When all sub-tasks are Done:
+   - Story PR marked as ready for review
+   - Story transitioned to **In Testing** and assigned to Leigh
+8. Leigh reviews the Story PR (contains all sub-task commits):
+   - If changes needed: comment on specific sub-task and assign back to AI Runner
+   - If approved: merge Story PR and mark Story as Done
+
+**See [docs/story-workflow.md](docs/story-workflow.md) for detailed workflow documentation.**
 
 ## Accounts + keys required
 

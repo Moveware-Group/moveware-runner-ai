@@ -157,3 +157,87 @@ class JiraClient:
         r.raise_for_status()
         result = r.json()
         return result.get("key", "")
+
+    def create_story(
+        self,
+        epic_key: str,
+        summary: str,
+        description: str = "",
+        project_key: Optional[str] = None,
+        labels: Optional[List[str]] = None,
+    ) -> str:
+        """Create a Story linked to an Epic. Returns the new Story key."""
+        # Get Epic to extract project
+        epic = self.get_issue(epic_key)
+        epic_fields = epic.get("fields", {})
+        project = epic_fields.get("project", {})
+        proj_key = project_key or project.get("key")
+        
+        if not proj_key:
+            raise ValueError(f"Could not determine project for Epic {epic_key}")
+
+        # Create Story
+        url = f"{self.base_url}/rest/api/3/issue"
+        payload: Dict[str, Any] = {
+            "fields": {
+                "project": {"key": proj_key},
+                "summary": summary,
+                "issuetype": {"name": "Story"},
+            }
+        }
+        
+        # Add description in ADF format if provided
+        if description:
+            payload["fields"]["description"] = {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": description
+                            }
+                        ]
+                    }
+                ]
+            }
+        
+        if labels:
+            payload["fields"]["labels"] = labels
+
+        r = requests.post(url, headers=self._headers(), json=payload, timeout=self.timeout_s)
+        r.raise_for_status()
+        result = r.json()
+        story_key = result.get("key", "")
+        
+        # Link Story to Epic using Epic Link field
+        # Note: Epic Link field name varies by Jira instance, commonly "customfield_10014"
+        # We'll try to find it dynamically or use the parent field
+        try:
+            self.link_to_epic(story_key, epic_key)
+        except Exception as e:
+            # If linking fails, add a comment instead
+            self.add_comment(story_key, f"Part of Epic: {epic_key}")
+        
+        return story_key
+
+    def link_to_epic(self, issue_key: str, epic_key: str) -> None:
+        """Link an issue to an Epic."""
+        url = f"{self.base_url}/rest/api/3/issue/{issue_key}"
+        # Try common Epic Link field names
+        for epic_link_field in ["customfield_10014", "customfield_10008", "parent"]:
+            try:
+                payload = {
+                    "fields": {
+                        epic_link_field: epic_key
+                    }
+                }
+                r = requests.put(url, headers=self._headers(), json=payload, timeout=self.timeout_s)
+                if r.status_code == 204 or r.status_code == 200:
+                    return
+            except Exception:
+                continue
+        # If all attempts fail, that's okay - we'll have the comment as fallback
+        pass
