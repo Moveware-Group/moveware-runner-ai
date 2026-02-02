@@ -367,10 +367,17 @@ def _handle_plan_parent(ctx: Context, issue: JiraIssue) -> None:
     if not issue.assignee_account_id == settings.JIRA_AI_ACCOUNT_ID:
         return
 
-    plan_res: PlanResult = build_plan(issue)
-    ctx.jira.add_comment(issue.key, plan_res.comment)
-    ctx.jira.transition_to_status(issue.key, settings.JIRA_STATUS_PLAN_REVIEW)
-    ctx.jira.assign_issue(issue.key, settings.JIRA_HUMAN_ACCOUNT_ID)
+    try:
+        plan_res: PlanResult = build_plan(issue)
+        ctx.jira.add_comment(issue.key, plan_res.comment)
+        ctx.jira.transition_to_status(issue.key, settings.JIRA_STATUS_PLAN_REVIEW)
+        ctx.jira.assign_issue(issue.key, settings.JIRA_HUMAN_ACCOUNT_ID)
+    except Exception as e:
+        print(f"ERROR in _handle_plan_parent: {e}")
+        ctx.jira.add_comment(issue.key, f"AI Runner failed to generate plan: {e}")
+        ctx.jira.transition_to_status(issue.key, settings.JIRA_STATUS_BLOCKED)
+        ctx.jira.assign_issue(issue.key, settings.JIRA_HUMAN_ACCOUNT_ID)
+        raise
 
 
 def _handle_revise_plan(ctx: Context, issue: JiraIssue) -> None:
