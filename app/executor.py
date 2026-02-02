@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .config import settings
-from .git_ops import checkout_repo, create_branch, commit_and_push, create_pr
+from .git_ops import checkout_repo, create_branch, commit_and_push, create_pr, checkout_or_create_story_branch
 from .llm_anthropic import AnthropicClient
 from .models import JiraIssue
 
@@ -20,13 +20,58 @@ class ExecutionResult:
     jira_comment: str
 
 
+def _get_repo_context(repo_path: Path) -> str:
+    """Get basic repository context for Claude."""
+    context = []
+    
+    # List key files and directories
+    context.append("Repository structure:")
+    try:
+        # Get top-level items
+        items = sorted(repo_path.iterdir())
+        for item in items[:20]:  # Limit to first 20 items
+            if item.name.startswith('.'):
+                continue
+            if item.is_dir():
+                context.append(f"  📁 {item.name}/")
+            else:
+                context.append(f"  📄 {item.name}")
+    except Exception:
+        context.append("  (Unable to list directory)")
+    
+    # Check for common config files
+    config_files = ["package.json", "requirements.txt", "Cargo.toml", "go.mod", "pom.xml"]
+    found_configs = [f for f in config_files if (repo_path / f).exists()]
+    if found_configs:
+        context.append(f"\nDetected project type from: {', '.join(found_configs)}")
+    
+    return "\n".join(context)
+
+
 def _system_prompt() -> str:
     return (
-        "You are a software engineer working inside a repository checked out on disk. "
-        "You will be given a Jira sub-task with requirements. "
-        "Return a JSON object with: {\"files_changed\": [...], \"notes\": \"...\"}. "
-        "IMPORTANT: For this pilot, do not attempt complex multi-file refactors. "
-        "Keep changes small and safe. If requirements are unclear, output JSON with an \"questions\" array instead."
+        "You are an expert software engineer implementing a Jira sub-task. "
+        "You will be given the task requirements and must implement the actual code changes.\n\n"
+        "Working directory: The repository is already checked out and you're on the correct branch.\n\n"
+        "Your response MUST be valid JSON with this structure:\n"
+        "{\n"
+        '  "implementation_plan": "Brief plan of what you\'ll implement",\n'
+        '  "files": [\n'
+        '    {\n'
+        '      "path": "relative/path/to/file.ext",\n'
+        '      "action": "create|update|delete",\n'
+        '      "content": "Full file content for create/update"\n'
+        '    }\n'
+        '  ],\n'
+        '  "summary": "Brief summary of changes made"\n'
+        "}\n\n"
+        "Guidelines:\n"
+        "- Implement production-quality code with proper error handling\n"
+        "- Follow best practices and conventions for the language/framework\n"
+        "- Include comments where helpful\n"
+        "- For updates, provide the COMPLETE file content (not diffs)\n"
+        "- Keep changes focused on the specific sub-task requirements\n"
+        "- If requirements are unclear, include an 'questions' array in JSON instead of 'files'"
     )
 
 
@@ -70,47 +115,88 @@ def execute_subtask(issue: JiraIssue) -> ExecutionResult:
             create_branch(settings.REPO_WORKDIR, story_branch)
         branch = story_branch
 
-    # 3) Ask Claude to produce implementation notes (and optionally questions)
+    # 3) Ask Claude to implement the code changes
     client = AnthropicClient(api_key=settings.ANTHROPIC_API_KEY, base_url=settings.ANTHROPIC_BASE_URL)
+    
+    # Get repository context
+    repo_path = Path(settings.REPO_WORKDIR)
+    context_info = _get_repo_context(repo_path)
+    
     prompt = (
-        f"Jira Sub-task: {issue.key}\n"
-        f"Summary: {issue.summary}\n\n"
-        f"Description:\n{issue.description}\n"
+        f"Implement this Jira sub-task:\n\n"
+        f"**Task:** {issue.key}\n"
+        f"**Summary:** {issue.summary}\n\n"
+        f"**Requirements:**\n{issue.description}\n\n"
+        f"**Repository Context:**\n{context_info}\n\n"
+        f"Provide your implementation as JSON following the specified format."
     )
+    
     raw = client.messages_create({
         "model": settings.ANTHROPIC_MODEL,
         "system": _system_prompt(),
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 4096,
+        "max_tokens": 8000,
         "temperature": 0.2,
+        "thinking": {
+            "type": "enabled",
+            "budget_tokens": 5000
+        }
     })
 
-    # Extract assistant text and try to parse JSON
+    # Extract assistant text and parse JSON
     text = AnthropicClient.extract_text(raw)
-    payload: Dict[str, Any]
+    
+    # Try to extract JSON from response (handle markdown code blocks)
+    json_text = text
+    if "```json" in text:
+        match = re.search(r'```json\s*\n(.*?)\n```', text, re.DOTALL)
+        if match:
+            json_text = match.group(1)
+    elif "```" in text:
+        match = re.search(r'```\s*\n(.*?)\n```', text, re.DOTALL)
+        if match:
+            json_text = match.group(1)
+    
     try:
-        payload = json.loads(text)
-    except Exception:
-        payload = {"notes": text}
+        payload = json.loads(json_text)
+    except Exception as e:
+        raise RuntimeError(f"Failed to parse Claude response as JSON: {e}\n\nResponse: {text[:500]}")
 
-    questions = payload.get("questions")
-    notes = payload.get("notes") or ""
+    # Check if there are questions instead of implementation
+    if "questions" in payload:
+        questions = payload["questions"]
+        questions_text = "\n".join([f"- {q}" for q in questions])
+        raise RuntimeError(f"Implementation blocked by questions:\n{questions_text}")
 
-    # 4) Write a small artefact in-repo
-    out_dir = Path(settings.REPO_WORKDIR) / "docs" / "ai-pilot"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    p = out_dir / f"{issue.key}.md"
-    content = [f"# {issue.key}: {issue.summary}", ""]
-    if questions:
-        content += ["## Questions", ""]
-        for q in questions:
-            content += [f"- {q}"]
-        content += [""]
-    if notes:
-        content += ["## Notes", "", notes, ""]
-    p.write_text("\n".join(content), encoding="utf-8")
+    # 4) Apply file changes
+    files_changed = []
+    files = payload.get("files", [])
+    
+    for file_op in files:
+        file_path = repo_path / file_op["path"]
+        action = file_op.get("action", "update")
+        
+        if action == "delete":
+            if file_path.exists():
+                file_path.unlink()
+                files_changed.append(f"Deleted {file_op['path']}")
+        elif action in ("create", "update"):
+            content = file_op.get("content", "")
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(content, encoding="utf-8")
+            action_word = "Created" if action == "create" else "Updated"
+            files_changed.append(f"{action_word} {file_op['path']}")
+    
+    notes = payload.get("summary", "") or payload.get("implementation_plan", "")
+    
+    if not files_changed:
+        raise RuntimeError("No file changes were made by Claude")
 
     # 5) Commit with subtask key in message
+    files_summary = ", ".join(files_changed[:5])  # Limit to first 5 files
+    if len(files_changed) > 5:
+        files_summary += f" (+{len(files_changed) - 5} more)"
+    
     commit_message = f"{issue.key}: {issue.summary}"
     commit_and_push(settings.REPO_WORKDIR, commit_message)
     
@@ -118,10 +204,17 @@ def execute_subtask(issue: JiraIssue) -> ExecutionResult:
     pr_url = None
     if is_independent:
         try:
+            pr_body = f"""## {issue.key}: {issue.summary}
+
+{notes}
+
+### Files Changed:
+{chr(10).join(['- ' + fc for fc in files_changed])}
+"""
             pr_url = create_pr(
                 settings.REPO_WORKDIR,
                 title=f"{issue.key}: {issue.summary}",
-                body=f"Automated pilot PR for {issue.key}.\n\n{notes[:800]}",
+                body=pr_body,
                 base=settings.BASE_BRANCH,
             )
         except Exception as e:
@@ -136,15 +229,23 @@ def execute_subtask(issue: JiraIssue) -> ExecutionResult:
     
     # Build Jira comment
     jira_comment_lines = [
-        f"AI Runner has completed work on this sub-task.",
+        f"✅ AI Runner completed implementation:",
         f"",
-        f"*Branch:* {branch}",
+        f"**Branch:** {branch}",
     ]
     if pr_url:
-        jira_comment_lines.append(f"*PR:* {pr_url}")
+        jira_comment_lines.append(f"**PR:** {pr_url}")
+    
+    jira_comment_lines.append(f"")
+    jira_comment_lines.append(f"**Files Changed:**")
+    for fc in files_changed[:10]:  # Limit to 10 files in comment
+        jira_comment_lines.append(f"- {fc}")
+    if len(files_changed) > 10:
+        jira_comment_lines.append(f"- ...and {len(files_changed) - 10} more")
+    
     if notes:
         jira_comment_lines.append(f"")
-        jira_comment_lines.append(f"*Notes:*")
+        jira_comment_lines.append(f"**Summary:**")
         jira_comment_lines.append(notes[:500])
     
     jira_comment = "\n".join(jira_comment_lines)
