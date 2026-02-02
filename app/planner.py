@@ -121,13 +121,20 @@ def generate_plan(issue: JiraIssue, revision_feedback: str = "") -> Dict[str, An
 
 
 def format_plan_as_jira_comment(plan: Dict[str, Any], is_revision: bool = False) -> str:
-    # Keep it readable in Jira and include a machine-parseable prefix.
+    # Keep it readable in Jira and include a machine-parseable prefix with raw JSON.
     lines: List[str] = []
     if is_revision:
         lines.append(f"{PARENT_PLAN_COMMENT_PREFIX} (revised)")
     else:
         lines.append(PARENT_PLAN_COMMENT_PREFIX)
     lines.append("")
+    
+    # Include raw JSON for machine parsing
+    lines.append("{code:json}")
+    lines.append(json.dumps(plan, indent=2))
+    lines.append("{code}")
+    lines.append("")
+    
     if plan.get("overview"):
         lines.append("h3. Overview")
         lines.append(str(plan["overview"]))
@@ -144,16 +151,18 @@ def format_plan_as_jira_comment(plan: Dict[str, Any], is_revision: bool = False)
         lines.append("h3. Acceptance criteria")
         lines.extend([f"- {c}" for c in plan["acceptance_criteria"]])
         lines.append("")
-    if plan.get("subtasks"):
-        lines.append("h3. Proposed sub-tasks")
-        for i, st in enumerate(plan["subtasks"], start=1):
-            lines.append(f"{i}. *{st.get('summary','Sub-task')}*")
-            desc = st.get("description", "").strip()
+    if plan.get("stories"):
+        lines.append("h3. Stories")
+        for i, story in enumerate(plan["stories"], start=1):
+            lines.append(f"{i}. *{story.get('summary','Story')}*")
+            desc = story.get("description", "").strip()
             if desc:
                 lines.append(desc)
-            labels = st.get("labels") or []
-            if labels:
-                lines.append(f"Labels: {', '.join(labels)}")
+            subtasks = story.get("subtasks") or []
+            if subtasks:
+                lines.append("Sub-tasks:")
+                for st in subtasks:
+                    lines.append(f"  - {st.get('summary', 'Task')}")
             lines.append("")
     if plan.get("questions"):
         lines.append("h3. Questions / clarifications")

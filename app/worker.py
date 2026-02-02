@@ -117,9 +117,16 @@ def _extract_plan_json_from_comments(jira: JiraClient, parent_key: str) -> Optio
             # Plain text format
             if body.startswith(PARENT_PLAN_COMMENT_PREFIX):
                 try:
-                    start = body.index("```json") + len("```json")
-                    end = body.index("```", start)
-                    return json.loads(body[start:end].strip())
+                    # Try Jira's {code:json}...{code} format first
+                    if "{code:json}" in body:
+                        start = body.index("{code:json}") + len("{code:json}")
+                        end = body.index("{code}", start)
+                        return json.loads(body[start:end].strip())
+                    # Fall back to markdown ```json format
+                    elif "```json" in body:
+                        start = body.index("```json") + len("```json")
+                        end = body.index("```", start)
+                        return json.loads(body[start:end].strip())
                 except Exception as e:
                     print(f"Failed to parse plan JSON from text comment: {e}")
                     continue
