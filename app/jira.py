@@ -128,10 +128,28 @@ class JiraClient:
                 "project": {"key": proj_key},
                 "parent": {"key": parent_key},
                 "summary": summary,
-                "description": description,
                 "issuetype": {"name": "Sub-task"},
             }
         }
+        
+        # Add description in ADF format if provided
+        if description:
+            payload["fields"]["description"] = {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": description
+                            }
+                        ]
+                    }
+                ]
+            }
+        
         if labels:
             payload["fields"]["labels"] = labels
 
