@@ -58,7 +58,7 @@ class Settings:
 
 
 # Plan comment marker constant
-PARENT_PLAN_COMMENT_PREFIX = "[AI PLAN v1]"
+PARENT_PLAN_COMMENT_PREFIX = "[AI PLAN]"
 
 # This is what main.py expects
 settings = Settings()
