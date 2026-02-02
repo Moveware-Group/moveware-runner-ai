@@ -318,9 +318,13 @@ def _handle_parent_approved(ctx: Context, parent: JiraIssue) -> None:
     if parent.assignee_account_id != settings.JIRA_AI_ACCOUNT_ID:
         return
 
-    # Create subtasks once.
-    subtasks = ctx.jira.get_subtasks(parent.key)
-    if not subtasks:
+    # Create subtasks once - only count active subtasks (not Blocked or Done)
+    all_subtasks = ctx.jira.get_subtasks(parent.key)
+    active_subtasks = [
+        st for st in all_subtasks
+        if ((st.get("fields") or {}).get("status") or {}).get("name") not in [settings.JIRA_STATUS_BLOCKED, settings.JIRA_STATUS_DONE]
+    ]
+    if not active_subtasks:
         _create_subtasks_from_plan(ctx, parent)
 
     # Transition parent to In Progress to show AI has started work.
