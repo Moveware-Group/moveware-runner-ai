@@ -135,7 +135,7 @@ def execute_subtask(issue: JiraIssue) -> ExecutionResult:
         "model": settings.ANTHROPIC_MODEL,
         "system": _system_prompt(),
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 8000,
+        "max_tokens": 16000,  # Increased for large file contents
         "temperature": 1,  # Required when thinking is enabled
         "thinking": {
             "type": "enabled",
