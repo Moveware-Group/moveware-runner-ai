@@ -147,19 +147,24 @@ def execute_subtask(issue: JiraIssue) -> ExecutionResult:
     text = AnthropicClient.extract_text(raw)
     
     # Try to extract JSON from response (handle markdown code blocks)
-    json_text = text
-    if "```json" in text:
-        match = re.search(r'```json\s*\n(.*?)\n```', text, re.DOTALL)
-        if match:
-            json_text = match.group(1)
-    elif "```" in text:
-        match = re.search(r'```\s*\n(.*?)\n```', text, re.DOTALL)
-        if match:
-            json_text = match.group(1)
+    json_text = text.strip()
+    
+    # Remove markdown code fence if present
+    if json_text.startswith("```"):
+        # Find the first newline after opening fence
+        first_newline = json_text.find("\n")
+        if first_newline != -1:
+            # Find the closing fence
+            closing_fence = json_text.rfind("```")
+            if closing_fence > first_newline:
+                json_text = json_text[first_newline + 1:closing_fence].strip()
     
     try:
         payload = json.loads(json_text)
     except Exception as e:
+        # Log more context for debugging
+        print(f"Failed to parse JSON. Error: {e}")
+        print(f"Extracted text (first 1000 chars): {json_text[:1000]}")
         raise RuntimeError(f"Failed to parse Claude response as JSON: {e}\n\nResponse: {text[:500]}")
 
     # Check if there are questions instead of implementation
