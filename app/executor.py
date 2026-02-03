@@ -136,7 +136,7 @@ def execute_subtask(issue: JiraIssue) -> ExecutionResult:
         "system": _system_prompt(),
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": 8000,
-        "temperature": 0.2,
+        "temperature": 1,  # Required when thinking is enabled
         "thinking": {
             "type": "enabled",
             "budget_tokens": 5000
