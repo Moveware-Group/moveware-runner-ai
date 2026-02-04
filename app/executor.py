@@ -309,7 +309,18 @@ def execute_subtask(issue: JiraIssue) -> ExecutionResult:
     notes = payload.get("summary", "") or payload.get("implementation_plan", "")
     
     if not files_changed:
-        raise RuntimeError("No file changes were made by Claude")
+        # Log what Claude actually planned to help debug
+        implementation_plan = payload.get("implementation_plan", "")
+        summary = payload.get("summary", "")
+        error_msg = f"No file changes were made by Claude.\n\nClaude's response:\n"
+        if implementation_plan:
+            error_msg += f"Plan: {implementation_plan}\n"
+        if summary:
+            error_msg += f"Summary: {summary}\n"
+        if "questions" in payload:
+            error_msg += f"Questions: {json.dumps(payload['questions'])}\n"
+        print(error_msg)
+        raise RuntimeError(error_msg)
 
     # 5) Commit with subtask key in message
     files_summary = ", ".join(files_changed[:5])  # Limit to first 5 files
