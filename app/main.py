@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from app.config import settings
-from app.db import init_db, enqueue_run, add_event, get_connection
+from app.db import init_db, enqueue_run, add_event, connect
 
 app = FastAPI(title="Moveware AI Orchestrator")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -68,60 +68,59 @@ async def status_api(detail: str = "summary") -> Dict[str, Any]:
     Args:
         detail: 'summary' for high-level view, 'detailed' for all progress events
     """
-    conn = get_connection()
-    cursor = conn.cursor()
-    
-    # Get recent runs with their latest progress events
-    if detail == "detailed":
-        # Detailed view: include all progress events
-        cursor.execute("""
-            SELECT 
-                r.id,
-                r.issue_key,
-                r.status,
-                r.locked_by,
-                r.locked_at,
-                r.created_at,
-                r.completed_at,
-                e.event_type,
-                e.message,
-                e.meta,
-                e.timestamp
-            FROM runs r
-            LEFT JOIN events e ON r.id = e.run_id AND e.event_type = 'progress'
-            WHERE r.created_at > ?
-            ORDER BY r.id DESC, e.timestamp DESC
-            LIMIT 200
-        """, (int(__import__('time').time()) - 3600,))  # Last hour
-    else:
-        # Summary view: just get the latest progress event per run
-        cursor.execute("""
-            SELECT 
-                r.id,
-                r.issue_key,
-                r.status,
-                r.locked_by,
-                r.locked_at,
-                r.created_at,
-                r.completed_at,
-                e.event_type,
-                e.message,
-                e.meta,
-                e.timestamp
-            FROM runs r
-            LEFT JOIN (
-                SELECT run_id, event_type, message, meta, timestamp, 
-                       ROW_NUMBER() OVER (PARTITION BY run_id ORDER BY timestamp DESC) as rn
-                FROM events
-                WHERE event_type = 'progress'
-            ) e ON r.id = e.run_id AND e.rn = 1
-            WHERE r.created_at > ?
-            ORDER BY r.id DESC
-            LIMIT 50
-        """, (int(__import__('time').time()) - 3600,))  # Last hour
-    
-    rows = cursor.fetchall()
-    conn.close()
+    with connect() as conn:
+        cursor = conn.cursor()
+        
+        # Get recent runs with their latest progress events
+        if detail == "detailed":
+            # Detailed view: include all progress events
+            cursor.execute("""
+                SELECT 
+                    r.id,
+                    r.issue_key,
+                    r.status,
+                    r.locked_by,
+                    r.locked_at,
+                    r.created_at,
+                    r.completed_at,
+                    e.event_type,
+                    e.message,
+                    e.meta,
+                    e.timestamp
+                FROM runs r
+                LEFT JOIN events e ON r.id = e.run_id AND e.event_type = 'progress'
+                WHERE r.created_at > ?
+                ORDER BY r.id DESC, e.timestamp DESC
+                LIMIT 200
+            """, (int(__import__('time').time()) - 3600,))  # Last hour
+        else:
+            # Summary view: just get the latest progress event per run
+            cursor.execute("""
+                SELECT 
+                    r.id,
+                    r.issue_key,
+                    r.status,
+                    r.locked_by,
+                    r.locked_at,
+                    r.created_at,
+                    r.completed_at,
+                    e.event_type,
+                    e.message,
+                    e.meta,
+                    e.timestamp
+                FROM runs r
+                LEFT JOIN (
+                    SELECT run_id, event_type, message, meta, timestamp, 
+                           ROW_NUMBER() OVER (PARTITION BY run_id ORDER BY timestamp DESC) as rn
+                    FROM events
+                    WHERE event_type = 'progress'
+                ) e ON r.id = e.run_id AND e.rn = 1
+                WHERE r.created_at > ?
+                ORDER BY r.id DESC
+                LIMIT 50
+            """, (int(__import__('time').time()) - 3600,))  # Last hour
+        
+        rows = cursor.fetchall()
     
     # Group results by run_id
     runs_dict: Dict[int, Dict[str, Any]] = {}
