@@ -20,8 +20,8 @@ class ExecutionResult:
     jira_comment: str
 
 
-def _get_repo_context(repo_path: Path) -> str:
-    """Get basic repository context for Claude."""
+def _get_repo_context(repo_path: Path, issue: JiraIssue) -> str:
+    """Get basic repository context for Claude, including relevant file contents."""
     context = []
     
     # List key files and directories
@@ -44,6 +44,35 @@ def _get_repo_context(repo_path: Path) -> str:
     found_configs = [f for f in config_files if (repo_path / f).exists()]
     if found_configs:
         context.append(f"\nDetected project type from: {', '.join(found_configs)}")
+    
+    # Read and include relevant files based on task
+    summary_lower = issue.summary.lower()
+    
+    # Always include package.json for Node/Next.js projects
+    package_json_path = repo_path / "package.json"
+    if package_json_path.exists():
+        try:
+            package_json_content = package_json_path.read_text(encoding="utf-8")
+            context.append("\n\nCurrent package.json:")
+            context.append("```json")
+            context.append(package_json_content)
+            context.append("```")
+        except Exception as e:
+            context.append(f"\n\nNote: Could not read package.json: {e}")
+    
+    # Include other relevant files based on keywords
+    if "config" in summary_lower or "env" in summary_lower:
+        for config_file in [".env.example", "next.config.js", "tsconfig.json"]:
+            config_path = repo_path / config_file
+            if config_path.exists():
+                try:
+                    content = config_path.read_text(encoding="utf-8")
+                    context.append(f"\n\nCurrent {config_file}:")
+                    context.append("```")
+                    context.append(content[:2000])  # Limit to first 2000 chars
+                    context.append("```")
+                except Exception:
+                    pass
     
     return "\n".join(context)
 
@@ -118,9 +147,9 @@ def execute_subtask(issue: JiraIssue) -> ExecutionResult:
     # 3) Ask Claude to implement the code changes
     client = AnthropicClient(api_key=settings.ANTHROPIC_API_KEY, base_url=settings.ANTHROPIC_BASE_URL)
     
-    # Get repository context
+    # Get repository context (includes file contents)
     repo_path = Path(settings.REPO_WORKDIR)
-    context_info = _get_repo_context(repo_path)
+    context_info = _get_repo_context(repo_path, issue)
     
     prompt = (
         f"Implement this Jira sub-task:\n\n"
