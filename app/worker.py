@@ -78,30 +78,12 @@ def _has_plan_comment(jira: JiraClient, parent_key: str) -> bool:
         return False
 
 
-def _extract_human_feedback_after_plan(jira: JiraClient, parent_key: str) -> str:
-    """Extract human comments added after the most recent AI plan comment."""
+def _extract_all_human_feedback(jira: JiraClient, parent_key: str) -> str:
+    """Extract ALL human comments from the Epic to provide full conversation context."""
     comments = jira.get_comments(parent_key)
     
-    # Find the index of the last AI plan comment
-    last_plan_idx = -1
-    for i, c in enumerate(comments):
-        body = c.get("body", "")
-        # Handle ADF format (dict) or plain text (str)
-        if isinstance(body, dict):
-            # Extract text from ADF format
-            body_text = _extract_text_from_adf(body)
-        else:
-            body_text = body
-            
-        if body_text.startswith(PARENT_PLAN_COMMENT_PREFIX):
-            last_plan_idx = i
-    
-    if last_plan_idx == -1:
-        return ""
-    
-    # Collect all human comments after the last plan
     feedback_parts = []
-    for c in comments[last_plan_idx + 1:]:
+    for c in comments:
         author = c.get("author", {})
         author_id = author.get("accountId") if isinstance(author, dict) else None
         
@@ -109,6 +91,7 @@ def _extract_human_feedback_after_plan(jira: JiraClient, parent_key: str) -> str
         if author_id == settings.JIRA_AI_ACCOUNT_ID:
             continue
         
+        # Get comment body
         body = c.get("body", "")
         if isinstance(body, dict):
             body_text = _extract_text_from_adf(body)
@@ -116,9 +99,16 @@ def _extract_human_feedback_after_plan(jira: JiraClient, parent_key: str) -> str
             body_text = body
             
         if body_text.strip():
-            feedback_parts.append(body_text.strip())
+            # Get timestamp for context
+            created = c.get("created", "")
+            author_name = author.get("displayName", "User") if isinstance(author, dict) else "User"
+            
+            feedback_parts.append(f"[{created}] {author_name}:\n{body_text.strip()}")
     
-    return "\n\n".join(feedback_parts)
+    if not feedback_parts:
+        return ""
+    
+    return "\n\n---\n\n".join(feedback_parts)
 
 
 def _extract_text_from_adf(adf: Dict[str, Any]) -> str:
@@ -339,8 +329,8 @@ def _handle_revise_plan(ctx: Context, issue: JiraIssue) -> None:
     if issue.assignee_account_id != settings.JIRA_AI_ACCOUNT_ID:
         return
     
-    # Extract human feedback from comments
-    feedback = _extract_human_feedback_after_plan(ctx.jira, issue.key)
+    # Extract ALL human feedback from the entire conversation
+    feedback = _extract_all_human_feedback(ctx.jira, issue.key)
     
     if not feedback:
         # No feedback found - just acknowledge

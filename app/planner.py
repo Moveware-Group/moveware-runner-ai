@@ -32,17 +32,22 @@ def _user_prompt(issue: JiraIssue, revision_feedback: str = "") -> str:
         f"Jira issue key: {issue.key}\n"
         f"Summary: {issue.summary}\n\n"
         "Description:\n"
-        f"{issue.description}\n\n"
-        "Repo context is limited in the pilot. If you need more information, add 'questions' in the plan."
+        f"{issue.description}\n"
     )
     
     if revision_feedback:
         base += (
             "\n\n---\n\n"
-            "REVISION REQUEST:\n"
-            "The plan has been reviewed and the following changes are requested:\n\n"
+            "PREVIOUS CONVERSATION HISTORY:\n"
+            "All human feedback and questions from the entire Epic discussion:\n\n"
             f"{revision_feedback}\n\n"
-            "Please revise the plan to address this feedback."
+            "---\n\n"
+            "IMPORTANT: Review ALL the conversation above before responding.\n"
+            "- Do NOT repeat questions that have already been answered\n"
+            "- Reference previous answers when relevant\n"
+            "- Only ask NEW questions if critical information is still missing\n"
+            "- Acknowledge what has already been clarified\n\n"
+            "Please revise the plan incorporating all the feedback and answers provided."
         )
     
     return base
