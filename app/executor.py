@@ -309,9 +309,10 @@ def execute_subtask(issue: JiraIssue) -> ExecutionResult:
     notes = payload.get("summary", "") or payload.get("implementation_plan", "")
     
     if not files_changed:
-        # Log what Claude actually planned to help debug
+        # Claude decided no changes were needed - this might be an error
         implementation_plan = payload.get("implementation_plan", "")
         summary = payload.get("summary", "")
+        
         error_msg = f"No file changes were made by Claude.\n\nClaude's response:\n"
         if implementation_plan:
             error_msg += f"Plan: {implementation_plan}\n"
@@ -319,10 +320,63 @@ def execute_subtask(issue: JiraIssue) -> ExecutionResult:
             error_msg += f"Summary: {summary}\n"
         if "questions" in payload:
             error_msg += f"Questions: {json.dumps(payload['questions'])}\n"
+        
         print(error_msg)
+        
+        # Add this to Jira so the user can see Claude's reasoning
+        jira_comment = (
+            "⚠️ No file changes were made\n\n"
+            "*Claude's Analysis:*\n"
+        )
+        if summary:
+            jira_comment += f"{summary}\n\n"
+        if implementation_plan:
+            jira_comment += f"*Plan:* {implementation_plan}\n\n"
+        jira_comment += (
+            "If changes are actually needed, please:\n"
+            "1. Add a comment explaining what's wrong or missing\n"
+            "2. Move back to 'In Progress' and assign to AI Runner"
+        )
+        
+        # Import here to avoid circular dependency
+        from .jira import JiraClient
+        from .config import settings
+        jira_client = JiraClient(
+            base_url=settings.JIRA_BASE_URL,
+            email=settings.JIRA_EMAIL,
+            api_token=settings.JIRA_API_TOKEN
+        )
+        jira_client.add_comment(issue.key, jira_comment)
+        
         raise RuntimeError(error_msg)
 
-    # 5) Commit with subtask key in message
+    # 5) Verify the changes (run npm install for Node projects)
+    verification_errors = []
+    package_json_path = repo_path / "package.json"
+    if package_json_path.exists() and any("package.json" in fc for fc in files_changed):
+        # package.json was modified, verify dependencies
+        try:
+            import subprocess
+            print("Running npm install to verify dependencies...")
+            result = subprocess.run(
+                ["npm", "install"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=120  # 2 minute timeout
+            )
+            if result.returncode != 0:
+                verification_errors.append(f"npm install failed:\n{result.stderr[:1000]}")
+        except subprocess.TimeoutExpired:
+            verification_errors.append("npm install timed out after 2 minutes")
+        except Exception as e:
+            verification_errors.append(f"Could not run npm install: {e}")
+    
+    # If verification failed, add error to notes
+    if verification_errors:
+        notes += "\n\n⚠️ Build Verification Issues:\n" + "\n".join(verification_errors)
+    
+    # 6) Commit with subtask key in message
     files_summary = ", ".join(files_changed[:5])  # Limit to first 5 files
     if len(files_changed) > 5:
         files_summary += f" (+{len(files_changed) - 5} more)"
@@ -368,6 +422,15 @@ def execute_subtask(issue: JiraIssue) -> ExecutionResult:
     
     jira_comment_lines.append(f"")
     jira_comment_lines.append(f"*Changes:* {files_summary}")
+    
+    # Add verification warnings if present
+    if verification_errors:
+        jira_comment_lines.append(f"")
+        jira_comment_lines.append(f"⚠️ *Build Verification:*")
+        for error in verification_errors:
+            # Truncate long errors
+            error_preview = error[:300] + "..." if len(error) > 300 else error
+            jira_comment_lines.append(error_preview)
     
     jira_comment = "\n".join(jira_comment_lines)
     
