@@ -21,58 +21,141 @@ class ExecutionResult:
 
 
 def _get_repo_context(repo_path: Path, issue: JiraIssue) -> str:
-    """Get basic repository context for Claude, including relevant file contents."""
+    """Get comprehensive repository context for Claude, including code and history."""
     context = []
     
-    # List key files and directories
+    # 1. Git commit history (last 10 commits)
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["git", "log", "--oneline", "-10"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode == 0 and result.stdout:
+            context.append("Recent commits:")
+            context.append("```")
+            context.append(result.stdout.strip())
+            context.append("```")
+            context.append("")
+    except Exception:
+        pass
+    
+    # 2. Repository structure (comprehensive for src/)
     context.append("Repository structure:")
     try:
-        # Get top-level items
+        # Top-level
         items = sorted(repo_path.iterdir())
-        for item in items[:20]:  # Limit to first 20 items
-            if item.name.startswith('.'):
+        for item in items[:30]:
+            if item.name.startswith('.') and item.name not in ['.env.example', '.eslintrc']:
                 continue
             if item.is_dir():
                 context.append(f"  📁 {item.name}/")
+                # Expand key directories
+                if item.name in ['src', 'app', 'components', 'lib', 'pages']:
+                    try:
+                        for subitem in sorted(item.rglob('*'))[:50]:
+                            if subitem.is_file() and not subitem.name.startswith('.'):
+                                rel_path = subitem.relative_to(repo_path)
+                                context.append(f"    📄 {rel_path}")
+                    except Exception:
+                        pass
             else:
                 context.append(f"  📄 {item.name}")
     except Exception:
         context.append("  (Unable to list directory)")
     
-    # Check for common config files
-    config_files = ["package.json", "requirements.txt", "Cargo.toml", "go.mod", "pom.xml"]
-    found_configs = [f for f in config_files if (repo_path / f).exists()]
-    if found_configs:
-        context.append(f"\nDetected project type from: {', '.join(found_configs)}")
+    context.append("")
     
-    # Read and include relevant files based on task
-    summary_lower = issue.summary.lower()
-    
-    # Always include package.json for Node/Next.js projects
+    # 3. Always include package.json for Node/Next.js projects
     package_json_path = repo_path / "package.json"
     if package_json_path.exists():
         try:
             package_json_content = package_json_path.read_text(encoding="utf-8")
-            context.append("\n\nCurrent package.json:")
+            context.append("Current package.json:")
             context.append("```json")
             context.append(package_json_content)
             context.append("```")
+            context.append("")
         except Exception as e:
-            context.append(f"\n\nNote: Could not read package.json: {e}")
+            context.append(f"Note: Could not read package.json: {e}\n")
     
-    # Include other relevant files based on keywords
-    if "config" in summary_lower or "env" in summary_lower:
-        for config_file in [".env.example", "next.config.js", "tsconfig.json"]:
-            config_path = repo_path / config_file
-            if config_path.exists():
+    # 4. Read relevant source files based on task keywords
+    summary_lower = issue.summary.lower()
+    desc_lower = (issue.description or "").lower()
+    combined_text = f"{summary_lower} {desc_lower}"
+    
+    # Map keywords to files
+    keyword_files = {
+        'layout': ['app/layout.tsx', 'src/app/layout.tsx', 'components/layout.tsx'],
+        'theme': ['styles/theme.ts', 'lib/theme.ts', 'src/styles/theme.ts', 'app/theme.ts'],
+        'config': ['next.config.js', 'next.config.mjs', 'tailwind.config.js', 'tsconfig.json'],
+        'api': ['app/api/**/*.ts', 'pages/api/**/*.ts'],
+        'auth': ['lib/auth.ts', 'middleware.ts', 'app/api/auth/**/*.ts'],
+        'database': ['lib/db.ts', 'lib/prisma.ts', 'prisma/schema.prisma'],
+    }
+    
+    files_to_read = set()
+    for keyword, file_patterns in keyword_files.items():
+        if keyword in combined_text:
+            files_to_read.update(file_patterns)
+    
+    # Read matched files
+    for file_pattern in files_to_read:
+        if '**' in file_pattern:
+            # Handle glob patterns
+            try:
+                from pathlib import Path
+                pattern_parts = file_pattern.split('**/')
+                if len(pattern_parts) == 2:
+                    base_dir = repo_path / pattern_parts[0].rstrip('/')
+                    if base_dir.exists():
+                        for file_path in base_dir.rglob(pattern_parts[1]):
+                            if file_path.is_file():
+                                try:
+                                    content = file_path.read_text(encoding="utf-8")
+                                    rel_path = file_path.relative_to(repo_path)
+                                    context.append(f"Current {rel_path}:")
+                                    context.append("```")
+                                    context.append(content[:5000])  # Limit per file
+                                    if len(content) > 5000:
+                                        context.append("... (truncated)")
+                                    context.append("```")
+                                    context.append("")
+                                except Exception:
+                                    pass
+            except Exception:
+                pass
+        else:
+            # Handle simple paths
+            file_path = repo_path / file_pattern
+            if file_path.exists():
                 try:
-                    content = config_path.read_text(encoding="utf-8")
-                    context.append(f"\n\nCurrent {config_file}:")
+                    content = file_path.read_text(encoding="utf-8")
+                    context.append(f"Current {file_pattern}:")
                     context.append("```")
-                    context.append(content[:2000])  # Limit to first 2000 chars
+                    context.append(content[:5000])  # Limit per file
+                    if len(content) > 5000:
+                        context.append("... (truncated)")
                     context.append("```")
+                    context.append("")
                 except Exception:
                     pass
+    
+    # 5. Include env example if it exists
+    env_example = repo_path / ".env.example"
+    if env_example.exists():
+        try:
+            content = env_example.read_text(encoding="utf-8")
+            context.append("Current .env.example:")
+            context.append("```")
+            context.append(content)
+            context.append("```")
+            context.append("")
+        except Exception:
+            pass
     
     return "\n".join(context)
 
