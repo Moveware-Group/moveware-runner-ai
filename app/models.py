@@ -19,6 +19,8 @@ class JiraIssue:
 
 
 def parse_issue(issue: Dict[str, Any]) -> JiraIssue:
+    from .jira_adf import adf_to_plain_text
+    
     fields = issue.get("fields") or {}
     issuetype = fields.get("issuetype") or {}
     status = fields.get("status") or {}
@@ -26,14 +28,16 @@ def parse_issue(issue: Dict[str, Any]) -> JiraIssue:
     parent = fields.get("parent") or {}
 
     desc = fields.get("description")
-    # Jira Cloud v3 description is often Atlassian Document Format. Keep as JSON string.
+    # Jira Cloud v3 description is often Atlassian Document Format (ADF).
+    # Convert ADF to plain text so Claude can understand it.
     description_text = ""
     if isinstance(desc, str):
         description_text = desc
+    elif isinstance(desc, dict):
+        # ADF object - convert to plain text
+        description_text = adf_to_plain_text(desc)
     elif desc is not None:
-        import json
-
-        description_text = json.dumps(desc, ensure_ascii=False)
+        description_text = str(desc)
 
     return JiraIssue(
         key=issue.get("key", ""),

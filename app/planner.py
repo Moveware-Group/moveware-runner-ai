@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from .config import settings, PARENT_PLAN_COMMENT_PREFIX
 from .llm_openai import OpenAIClient
 from .models import JiraIssue
+from .db import add_progress_event
 
 
 @dataclass
@@ -76,7 +77,10 @@ PLAN_SCHEMA_HINT = {
 }
 
 
-def generate_plan(issue: JiraIssue, revision_feedback: str = "") -> Dict[str, Any]:
+def generate_plan(issue: JiraIssue, revision_feedback: str = "", run_id: Optional[int] = None) -> Dict[str, Any]:
+    if run_id:
+        add_progress_event(run_id, "planning", "Calling OpenAI to generate plan", {})
+    
     client = OpenAIClient(settings.OPENAI_API_KEY, base_url=settings.OPENAI_BASE_URL)
     prompt = (
         "Return JSON only. Do not wrap in markdown.\n"
@@ -91,6 +95,9 @@ def generate_plan(issue: JiraIssue, revision_feedback: str = "") -> Dict[str, An
         system=_system_prompt(),
         user=_user_prompt(issue, revision_feedback) + "\n\n" + prompt,
     )
+    
+    if run_id:
+        add_progress_event(run_id, "planning", "Parsing and validating plan JSON", {})
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
@@ -170,9 +177,9 @@ def format_plan_as_jira_comment(plan: Dict[str, Any], is_revision: bool = False)
     return "\n".join(lines)
 
 
-def build_plan(issue: JiraIssue, revision_feedback: str = "") -> PlanResult:
+def build_plan(issue: JiraIssue, revision_feedback: str = "", run_id: Optional[int] = None) -> PlanResult:
     """Generate a plan for the given issue and format it for Jira."""
-    plan_data = generate_plan(issue, revision_feedback)
+    plan_data = generate_plan(issue, revision_feedback, run_id)
     is_revision = bool(revision_feedback)
     comment = format_plan_as_jira_comment(plan_data, is_revision=is_revision)
     return PlanResult(comment=comment, plan_data=plan_data)

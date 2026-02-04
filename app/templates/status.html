@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Runner Status Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: #0a0a0a;
+            color: #e0e0e0;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #333;
+        }
+        
+        h1 {
+            color: #00d4ff;
+            font-size: 2em;
+            font-weight: 600;
+        }
+        
+        .controls {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+        
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 60px;
+            height: 30px;
+        }
+        
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #555;
+            transition: 0.3s;
+            border-radius: 30px;
+        }
+        
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 22px;
+            width: 22px;
+            left: 4px;
+            bottom: 4px;
+            background-color: white;
+            transition: 0.3s;
+            border-radius: 50%;
+        }
+        
+        input:checked + .slider {
+            background-color: #00d4ff;
+        }
+        
+        input:checked + .slider:before {
+            transform: translateX(30px);
+        }
+        
+        .detail-label {
+            color: #aaa;
+            font-size: 0.9em;
+        }
+        
+        .last-updated {
+            color: #888;
+            font-size: 0.85em;
+        }
+        
+        .runs-container {
+            display: grid;
+            gap: 20px;
+        }
+        
+        .run-card {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 20px;
+            transition: all 0.3s;
+        }
+        
+        .run-card:hover {
+            border-color: #00d4ff;
+            box-shadow: 0 4px 12px rgba(0, 212, 255, 0.1);
+        }
+        
+        .run-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        
+        .run-title {
+            font-size: 1.3em;
+            font-weight: 600;
+            color: #fff;
+        }
+        
+        .status-badge {
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .status-queued {
+            background: #555;
+            color: #ccc;
+        }
+        
+        .status-running {
+            background: #00d4ff;
+            color: #000;
+            animation: pulse 2s infinite;
+        }
+        
+        .status-completed {
+            background: #00ff88;
+            color: #000;
+        }
+        
+        .status-failed {
+            background: #ff4444;
+            color: #fff;
+        }
+        
+        @keyframes pulse {
+            0%, 100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.7;
+            }
+        }
+        
+        .run-meta {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+            margin-bottom: 15px;
+            padding: 15px;
+            background: #0f0f0f;
+            border-radius: 6px;
+        }
+        
+        .meta-item {
+            font-size: 0.9em;
+        }
+        
+        .meta-label {
+            color: #888;
+            display: block;
+            margin-bottom: 3px;
+        }
+        
+        .meta-value {
+            color: #fff;
+            font-weight: 500;
+        }
+        
+        .progress-section {
+            margin-top: 15px;
+        }
+        
+        .progress-title {
+            color: #00d4ff;
+            font-size: 1em;
+            margin-bottom: 10px;
+            font-weight: 600;
+        }
+        
+        .progress-event {
+            padding: 12px;
+            background: #0f0f0f;
+            border-left: 3px solid #00d4ff;
+            margin-bottom: 8px;
+            border-radius: 4px;
+        }
+        
+        .progress-event.stage-claimed {
+            border-color: #888;
+        }
+        
+        .progress-event.stage-analyzing {
+            border-color: #ffaa00;
+        }
+        
+        .progress-event.stage-planning {
+            border-color: #aa00ff;
+        }
+        
+        .progress-event.stage-executing {
+            border-color: #00d4ff;
+        }
+        
+        .progress-event.stage-committing {
+            border-color: #0088ff;
+        }
+        
+        .progress-event.stage-verifying {
+            border-color: #ff8800;
+        }
+        
+        .progress-event.stage-completed {
+            border-color: #00ff88;
+        }
+        
+        .progress-event.stage-failed {
+            border-color: #ff4444;
+        }
+        
+        .progress-stage {
+            display: inline-block;
+            padding: 3px 8px;
+            background: #333;
+            border-radius: 3px;
+            font-size: 0.75em;
+            font-weight: 600;
+            text-transform: uppercase;
+            margin-right: 8px;
+            color: #00d4ff;
+        }
+        
+        .progress-message {
+            color: #ccc;
+            font-size: 0.95em;
+        }
+        
+        .progress-timestamp {
+            color: #666;
+            font-size: 0.8em;
+            margin-top: 4px;
+        }
+        
+        .no-data {
+            text-align: center;
+            padding: 60px 20px;
+            color: #666;
+            font-size: 1.1em;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #00d4ff;
+            font-size: 1.2em;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #333;
+            border-top-color: #00d4ff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>AI Runner Status Dashboard</h1>
+        <div class="controls">
+            <span class="detail-label">Show Details:</span>
+            <label class="toggle-switch">
+                <input type="checkbox" id="detailToggle">
+                <span class="slider"></span>
+            </label>
+            <span class="last-updated" id="lastUpdated">Loading...</span>
+        </div>
+    </div>
+    
+    <div id="runsContainer" class="runs-container">
+        <div class="loading">
+            <span class="spinner"></span>
+            Loading runs...
+        </div>
+    </div>
+    
+    <script>
+        let detailMode = 'summary';
+        let autoRefreshInterval = null;
+        
+        // Format timestamp to readable time
+        function formatTime(timestamp) {
+            if (!timestamp) return 'N/A';
+            const date = new Date(timestamp * 1000);
+            return date.toLocaleTimeString();
+        }
+        
+        // Format relative time (e.g., "2 minutes ago")
+        function formatRelativeTime(timestamp) {
+            if (!timestamp) return 'N/A';
+            const now = Date.now() / 1000;
+            const diff = now - timestamp;
+            
+            if (diff < 60) return 'just now';
+            if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+            if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+            return `${Math.floor(diff / 86400)}d ago`;
+        }
+        
+        // Fetch and render status
+        async function fetchStatus() {
+            try {
+                const response = await fetch(`/api/status?detail=${detailMode}`);
+                const data = await response.json();
+                
+                renderRuns(data.runs);
+                
+                document.getElementById('lastUpdated').textContent = 
+                    `Updated: ${formatTime(data.timestamp)}`;
+            } catch (error) {
+                console.error('Failed to fetch status:', error);
+                document.getElementById('runsContainer').innerHTML = 
+                    '<div class="no-data">Failed to load data. Check console for errors.</div>';
+            }
+        }
+        
+        // Render runs in the UI
+        function renderRuns(runs) {
+            const container = document.getElementById('runsContainer');
+            
+            if (!runs || runs.length === 0) {
+                container.innerHTML = '<div class="no-data">No recent runs found.</div>';
+                return;
+            }
+            
+            container.innerHTML = runs.map(run => {
+                const statusClass = `status-${run.status}`;
+                const latestProgress = run.progress_events[0];
+                
+                let progressHtml = '';
+                if (run.progress_events && run.progress_events.length > 0) {
+                    progressHtml = `
+                        <div class="progress-section">
+                            <div class="progress-title">Progress</div>
+                            ${run.progress_events.map(event => `
+                                <div class="progress-event stage-${event.stage}">
+                                    <span class="progress-stage">${event.stage}</span>
+                                    <span class="progress-message">${event.message}</span>
+                                    <div class="progress-timestamp">${formatTime(event.timestamp)}</div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    `;
+                }
+                
+                return `
+                    <div class="run-card">
+                        <div class="run-header">
+                            <div class="run-title">${run.issue_key}</div>
+                            <div class="status-badge ${statusClass}">${run.status}</div>
+                        </div>
+                        
+                        <div class="run-meta">
+                            <div class="meta-item">
+                                <span class="meta-label">Run ID</span>
+                                <span class="meta-value">#${run.run_id}</span>
+                            </div>
+                            <div class="meta-item">
+                                <span class="meta-label">Started</span>
+                                <span class="meta-value">${formatRelativeTime(run.created_at)}</span>
+                            </div>
+                            ${run.completed_at ? `
+                                <div class="meta-item">
+                                    <span class="meta-label">Completed</span>
+                                    <span class="meta-value">${formatRelativeTime(run.completed_at)}</span>
+                                </div>
+                            ` : ''}
+                            ${run.locked_by ? `
+                                <div class="meta-item">
+                                    <span class="meta-label">Worker</span>
+                                    <span class="meta-value">${run.locked_by}</span>
+                                </div>
+                            ` : ''}
+                        </div>
+                        
+                        ${progressHtml}
+                    </div>
+                `;
+            }).join('');
+        }
+        
+        // Toggle detail mode
+        document.getElementById('detailToggle').addEventListener('change', (e) => {
+            detailMode = e.target.checked ? 'detailed' : 'summary';
+            fetchStatus();
+        });
+        
+        // Auto-refresh every 5 seconds
+        function startAutoRefresh() {
+            fetchStatus(); // Initial fetch
+            autoRefreshInterval = setInterval(fetchStatus, 5000);
+        }
+        
+        // Start when page loads
+        startAutoRefresh();
+        
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+            }
+        });
+    </script>
+</body>
+</html>

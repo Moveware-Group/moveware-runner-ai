@@ -143,6 +143,20 @@ def add_event(run_id: int, level: str, message: str, meta: Optional[Dict[str, An
         )
 
 
+def add_progress_event(run_id: int, stage: str, detail: str, meta: Optional[Dict[str, Any]] = None) -> None:
+    """Add a standardized progress event for dashboard tracking.
+    
+    Args:
+        run_id: The run ID
+        stage: High-level stage (claimed, analyzing, planning, executing, committing, verifying, completed, failed)
+        detail: Detailed description of current action
+        meta: Optional metadata (file counts, timing, etc.)
+    """
+    full_meta = meta or {}
+    full_meta["stage"] = stage
+    add_event(run_id, "progress", detail, full_meta)
+
+
 def get_run(run_id: int) -> Dict[str, Any]:
     with connect() as cx:
         row = cx.execute(

@@ -1,4 +1,4 @@
-"""Convert Jira wiki markup to Atlassian Document Format (ADF)."""
+"""Convert Jira wiki markup to Atlassian Document Format (ADF) and vice versa."""
 from typing import Any, Dict, List
 import re
 
@@ -146,3 +146,55 @@ def parse_inline_formatting(text: str) -> List[Dict[str, Any]]:
         content = [{"type": "text", "text": text}]
     
     return content
+
+
+def adf_to_plain_text(adf: Any) -> str:
+    """Extract plain text from Atlassian Document Format (ADF).
+    
+    Converts ADF JSON structure to readable plain text, preserving:
+    - Paragraphs and line breaks
+    - List items (bullets and numbered)
+    - Headings
+    - Text content
+    
+    This is the inverse of wiki_to_adf(), used for reading Jira descriptions
+    that come as ADF objects.
+    """
+    if not isinstance(adf, dict):
+        return str(adf) if adf else ""
+    
+    content = adf.get("content", [])
+    if not isinstance(content, list):
+        return ""
+    
+    parts = []
+    for node in content:
+        if not isinstance(node, dict):
+            continue
+        
+        node_type = node.get("type")
+        if node_type == "paragraph":
+            para_content = node.get("content", [])
+            text_parts = []
+            for item in para_content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    text_parts.append(item.get("text", ""))
+            parts.append(" ".join(text_parts))
+        elif node_type == "heading":
+            heading_content = node.get("content", [])
+            for item in heading_content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    parts.append(item.get("text", ""))
+        elif node_type in ("bulletList", "orderedList"):
+            list_items = node.get("content", [])
+            for list_item in list_items:
+                if isinstance(list_item, dict) and list_item.get("type") == "listItem":
+                    item_text = adf_to_plain_text(list_item)
+                    parts.append(f"- {item_text}")
+        elif node_type == "codeBlock":
+            code_content = node.get("content", [])
+            for item in code_content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    parts.append(f"```\n{item.get('text', '')}\n```")
+    
+    return "\n".join(parts)

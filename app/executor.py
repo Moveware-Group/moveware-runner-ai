@@ -11,6 +11,7 @@ from .git_ops import checkout_repo, create_branch, commit_and_push, create_pr, c
 from .jira import JiraClient
 from .llm_anthropic import AnthropicClient
 from .models import JiraIssue
+from .db import add_progress_event
 
 
 @dataclass
@@ -188,7 +189,7 @@ def _system_prompt() -> str:
     )
 
 
-def execute_subtask(issue: JiraIssue) -> ExecutionResult:
+def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> ExecutionResult:
     """Executes a single Jira *sub-task*.
 
     New behavior (Story-based):
@@ -202,6 +203,9 @@ def execute_subtask(issue: JiraIssue) -> ExecutionResult:
     - Commits and pushes.
     - Creates PR only if independent.
     """
+    
+    if run_id:
+        add_progress_event(run_id, "executing", f"Preparing repository for {issue.key}", {})
 
     # Check if this subtask should have its own PR
     is_independent = "independent-pr" in (issue.labels or [])
@@ -227,6 +231,9 @@ def execute_subtask(issue: JiraIssue) -> ExecutionResult:
             # If Story branch doesn't exist, create it
             create_branch(settings.REPO_WORKDIR, story_branch)
         branch = story_branch
+    
+    if run_id:
+        add_progress_event(run_id, "executing", f"Analyzing task and planning implementation", {"branch": branch})
 
     # 3) Ask Claude to implement the code changes
     client = AnthropicClient(api_key=settings.ANTHROPIC_API_KEY, base_url=settings.ANTHROPIC_BASE_URL)
@@ -243,6 +250,9 @@ def execute_subtask(issue: JiraIssue) -> ExecutionResult:
         f"**Repository Context:**\n{context_info}\n\n"
         f"Provide your implementation as JSON following the specified format."
     )
+    
+    if run_id:
+        add_progress_event(run_id, "executing", f"Calling Claude to generate implementation", {})
     
     raw = client.messages_create({
         "model": settings.ANTHROPIC_MODEL,
@@ -291,6 +301,24 @@ def execute_subtask(issue: JiraIssue) -> ExecutionResult:
     # 4) Apply file changes
     files_changed = []
     files = payload.get("files", [])
+    
+    if run_id:
+        add_progress_event(run_id, "executing", f"Applying {len(files)} file changes", {"file_count": len(files)})
+    
+    for file_op in files:
+        file_path = repo_path / file_op["path"]
+        action = file_op.get("action", "update")
+        
+        if action == "delete":
+            if file_path.exists():
+                file_path.unlink()
+                files_changed.append(f"Deleted {file_op['path']}")
+        elif action in ("create", "update"):
+            content = file_op.get("content", "")
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(content, encoding="utf-8")
+            action_word = "Created" if action == "create" else "Updated"
+            files_changed.append(f"{action_word} {file_op['path']}")
     
     for file_op in files:
         file_path = repo_path / file_op["path"]
@@ -354,6 +382,8 @@ def execute_subtask(issue: JiraIssue) -> ExecutionResult:
     package_json_path = repo_path / "package.json"
     if package_json_path.exists() and any("package.json" in fc for fc in files_changed):
         # package.json was modified, verify dependencies
+        if run_id:
+            add_progress_event(run_id, "verifying", "Running npm install to verify dependencies", {})
         try:
             import subprocess
             print("Running npm install to verify dependencies...")
@@ -377,6 +407,9 @@ def execute_subtask(issue: JiraIssue) -> ExecutionResult:
     # If verification failed, add error to notes
     if verification_errors:
         notes += "\n\n⚠️ Build Verification Issues:\n" + "\n".join(verification_errors)
+    
+    if run_id:
+        add_progress_event(run_id, "committing", f"Committing changes: {len(files_changed)} files", {"file_count": len(files_changed)})
     
     # 6) Commit with subtask key in message
     files_summary = ", ".join(files_changed[:5])  # Limit to first 5 files

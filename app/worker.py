@@ -6,9 +6,10 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from .config import settings, PARENT_PLAN_COMMENT_PREFIX
-from .db import claim_next_run, init_db, update_run, add_event, save_plan, get_plan
+from .db import claim_next_run, init_db, update_run, add_event, save_plan, get_plan, add_progress_event
 from .executor import ExecutionResult, execute_subtask
 from .jira import JiraClient
+from .jira_adf import adf_to_plain_text
 from .models import JiraIssue, parse_issue
 from .planner import PlanResult, build_plan
 from .router import Action, Router
@@ -29,10 +30,13 @@ def _to_issue(payload: Dict[str, Any]) -> Optional[JiraIssue]:
 
     desc = fields.get("description")
     # Jira Cloud v3 returns description as Atlassian Document Format (ADF) object.
+    # Convert ADF to plain text so Claude can understand it.
     if isinstance(desc, dict):
-        desc_text = json.dumps(desc)
+        desc_text = adf_to_plain_text(desc)
+    elif isinstance(desc, str):
+        desc_text = desc
     else:
-        desc_text = desc or ""
+        desc_text = ""
 
     issuetype = fields.get("issuetype") or {}
     status = (fields.get("status") or {}).get("name", "")
@@ -94,7 +98,7 @@ def _extract_all_human_feedback(jira: JiraClient, parent_key: str) -> str:
         # Get comment body
         body = c.get("body", "")
         if isinstance(body, dict):
-            body_text = _extract_text_from_adf(body)
+            body_text = adf_to_plain_text(body)
         else:
             body_text = body
             
@@ -109,43 +113,6 @@ def _extract_all_human_feedback(jira: JiraClient, parent_key: str) -> str:
         return ""
     
     return "\n\n---\n\n".join(feedback_parts)
-
-
-def _extract_text_from_adf(adf: Dict[str, Any]) -> str:
-    """Extract plain text from Atlassian Document Format."""
-    if not isinstance(adf, dict):
-        return str(adf)
-    
-    content = adf.get("content", [])
-    if not isinstance(content, list):
-        return ""
-    
-    parts = []
-    for node in content:
-        if not isinstance(node, dict):
-            continue
-        
-        node_type = node.get("type")
-        if node_type == "paragraph":
-            para_content = node.get("content", [])
-            text_parts = []
-            for item in para_content:
-                if isinstance(item, dict) and item.get("type") == "text":
-                    text_parts.append(item.get("text", ""))
-            parts.append(" ".join(text_parts))
-        elif node_type == "heading":
-            heading_content = node.get("content", [])
-            for item in heading_content:
-                if isinstance(item, dict) and item.get("type") == "text":
-                    parts.append(item.get("text", ""))
-        elif node_type in ("bulletList", "orderedList"):
-            list_items = node.get("content", [])
-            for list_item in list_items:
-                if isinstance(list_item, dict) and list_item.get("type") == "listItem":
-                    item_text = _extract_text_from_adf(list_item)
-                    parts.append(f"- {item_text}")
-    
-    return "\n".join(parts)
 
 
 def _create_stories_from_plan(ctx: Context, epic: JiraIssue) -> bool:
@@ -224,7 +191,7 @@ def _create_subtasks_from_story(ctx: Context, story: JiraIssue) -> None:
     for c in comments:
         body = c.get("body")
         if isinstance(body, dict):
-            body_text = _extract_text_from_adf(body)
+            body_text = adf_to_plain_text(body)
         elif isinstance(body, str):
             body_text = body
         else:
@@ -299,14 +266,14 @@ def _all_subtasks_done(ctx: Context, parent_key: str) -> bool:
     return True
 
 
-def _handle_plan_parent(ctx: Context, issue: JiraIssue) -> None:
+def _handle_plan_parent(ctx: Context, issue: JiraIssue, run_id: Optional[int] = None) -> None:
     if not _is_parent(issue):
         return
     if not issue.assignee_account_id == settings.JIRA_AI_ACCOUNT_ID:
         return
 
     try:
-        plan_res: PlanResult = build_plan(issue)
+        plan_res: PlanResult = build_plan(issue, run_id=run_id)
         # Save plan to database
         save_plan(issue.key, plan_res.plan_data)
         ctx.jira.add_comment(issue.key, plan_res.comment)
@@ -320,7 +287,7 @@ def _handle_plan_parent(ctx: Context, issue: JiraIssue) -> None:
         raise
 
 
-def _handle_revise_plan(ctx: Context, issue: JiraIssue) -> None:
+def _handle_revise_plan(ctx: Context, issue: JiraIssue, run_id: Optional[int] = None) -> None:
     """Handle plan revision request - human added feedback and assigned back to AI."""
     if not _is_parent(issue):
         return
@@ -342,7 +309,7 @@ def _handle_revise_plan(ctx: Context, issue: JiraIssue) -> None:
         return
     
     # Generate revised plan with feedback
-    plan_res: PlanResult = build_plan(issue, revision_feedback=feedback)
+    plan_res: PlanResult = build_plan(issue, revision_feedback=feedback, run_id=run_id)
     
     # Save revised plan to database
     save_plan(issue.key, plan_res.plan_data)
@@ -445,7 +412,7 @@ def _handle_story_approved(ctx: Context, story: JiraIssue) -> None:
         ctx.jira.add_comment(story.key, "Warning: No subtasks found to start.")
 
 
-def _handle_execute_subtask(ctx: Context, subtask: JiraIssue) -> None:
+def _handle_execute_subtask(ctx: Context, subtask: JiraIssue, run_id: Optional[int] = None) -> None:
     if not subtask.is_subtask:
         return
     if subtask.status != settings.JIRA_STATUS_IN_PROGRESS:
@@ -456,7 +423,7 @@ def _handle_execute_subtask(ctx: Context, subtask: JiraIssue) -> None:
         return
 
     # Execute
-    result: ExecutionResult = execute_subtask(subtask)
+    result: ExecutionResult = execute_subtask(subtask, run_id)
 
     # Comment + transition + assign
     ctx.jira.add_comment(subtask.key, result.jira_comment)
@@ -504,7 +471,7 @@ def _handle_subtask_done(ctx: Context, subtask: JiraIssue) -> None:
 
 def process_run(ctx: Context, run_id: int, issue_key: str, payload: Dict[str, Any]) -> None:
     """Process a single run by fetching the issue and taking appropriate action."""
-    add_event(run_id, "info", f"Processing run for {issue_key}", {})
+    add_progress_event(run_id, "claimed", f"Processing {issue_key}", {})
     
     # Fetch current issue state from Jira
     issue = _fetch_issue(ctx.jira, issue_key)
@@ -523,25 +490,33 @@ def process_run(ctx: Context, run_id: int, issue_key: str, payload: Dict[str, An
         "expected_backlog_status": settings.JIRA_STATUS_BACKLOG
     })
     
+    add_progress_event(run_id, "analyzing", f"Determining action for {issue_key}", {"issue_type": issue.issue_type})
     action: Action = ctx.router.decide(issue)
     add_event(run_id, "info", f"Router decided action: {action.name}", {"reason": action.reason})
 
     if action.name == "PLAN_EPIC":
-        _handle_plan_parent(ctx, issue)  # Reuse existing Epic planning
+        add_progress_event(run_id, "planning", "Generating Epic plan", {})
+        _handle_plan_parent(ctx, issue, run_id)  # Reuse existing Epic planning
     elif action.name == "REVISE_PLAN":
-        _handle_revise_plan(ctx, issue)
+        add_progress_event(run_id, "planning", "Revising plan based on feedback", {})
+        _handle_revise_plan(ctx, issue, run_id)
     elif action.name == "EPIC_APPROVED":
+        add_progress_event(run_id, "executing", "Creating Stories from Epic plan", {})
         _handle_epic_approved(ctx, issue)
     elif action.name == "STORY_APPROVED":
+        add_progress_event(run_id, "executing", "Creating sub-tasks and Story PR", {})
         _handle_story_approved(ctx, issue)
     elif action.name == "CHECK_STORY_COMPLETION":
+        add_progress_event(run_id, "analyzing", "Checking Story completion", {})
         _check_story_completion(ctx, issue)
     elif action.name == "EXECUTE_SUBTASK":
-        _handle_execute_subtask(ctx, issue)
+        add_progress_event(run_id, "executing", f"Implementing {issue_key}", {})
+        _handle_execute_subtask(ctx, issue, run_id)
     elif action.name == "SUBTASK_DONE":
+        add_progress_event(run_id, "analyzing", "Checking parent Story status", {})
         _handle_subtask_done(ctx, issue)
     
-    add_event(run_id, "info", "Run completed successfully", {})
+    add_progress_event(run_id, "completed", "Run completed successfully", {})
     update_run(run_id, status="completed", locked_by=None, locked_at=None)
 
 
@@ -566,6 +541,7 @@ def worker_loop(poll_interval_seconds: float = 2.0, worker_id: str = "worker-1")
         except Exception as e:
             error_msg = f"ERROR processing run {run_id}: {e}"
             print(error_msg)
+            add_progress_event(run_id, "failed", f"Error: {str(e)[:100]}", {})
             add_event(run_id, "error", str(e), {})
             update_run(run_id, status="failed", last_error=str(e), locked_by=None, locked_at=None)
 
