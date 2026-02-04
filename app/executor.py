@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 
 from .config import settings
 from .git_ops import checkout_repo, create_branch, commit_and_push, create_pr, checkout_or_create_story_branch
+from .jira import JiraClient
 from .llm_anthropic import AnthropicClient
 from .models import JiraIssue
 
@@ -338,9 +339,7 @@ def execute_subtask(issue: JiraIssue) -> ExecutionResult:
             "2. Move back to 'In Progress' and assign to AI Runner"
         )
         
-        # Import here to avoid circular dependency
-        from .jira import JiraClient
-        from .config import settings
+        # Create Jira client to post comment
         jira_client = JiraClient(
             base_url=settings.JIRA_BASE_URL,
             email=settings.JIRA_EMAIL,
