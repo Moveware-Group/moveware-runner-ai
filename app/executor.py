@@ -358,18 +358,21 @@ def execute_subtask(issue: JiraIssue) -> ExecutionResult:
             import subprocess
             print("Running npm install to verify dependencies...")
             result = subprocess.run(
-                ["npm", "install"],
+                ["npm", "install", "--no-audit", "--prefer-offline"],
                 cwd=repo_path,
                 capture_output=True,
                 text=True,
-                timeout=120  # 2 minute timeout
+                timeout=60  # 1 minute timeout
             )
             if result.returncode != 0:
-                verification_errors.append(f"npm install failed:\n{result.stderr[:1000]}")
+                verification_errors.append(f"npm install failed:\n{result.stderr[:800]}")
+                print(f"npm install failed: {result.stderr}")
         except subprocess.TimeoutExpired:
-            verification_errors.append("npm install timed out after 2 minutes")
+            verification_errors.append("npm install timed out after 60 seconds")
+            print("npm install timed out")
         except Exception as e:
             verification_errors.append(f"Could not run npm install: {e}")
+            print(f"npm install exception: {e}")
     
     # If verification failed, add error to notes
     if verification_errors:
