@@ -1,0 +1,23 @@
+[Unit]
+Description=Online Docs Auto-Deploy Service
+After=network.target
+
+[Service]
+Type=simple
+User=moveware-ai
+WorkingDirectory=/srv/online-docs
+ExecStart=/srv/moveware-runner-ai/scripts/watch_and_deploy.sh /srv/online-docs online-docs 3000
+Restart=always
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=online-docs-deploy
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
