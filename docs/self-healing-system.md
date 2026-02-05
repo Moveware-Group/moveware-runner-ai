@@ -29,18 +29,29 @@ When the AI Runner generates code that fails to build, it automatically:
 
 ```
 6. Build fails with errors
-7. Extract file paths from error messages
-8. Read ALL affected files
-9. Show directory listings
-10. Include git diff
-11. Provide FULL codebase context (all lib/, app/, components/)
-12. Ask Claude: "Here are the errors, here's the code, fix it"
-13. Claude analyzes and generates fixes
-14. Apply fixes
-15. Re-run build
-16. If succeeds → Commit with note about auto-fix
-17. If still fails → Fail task with detailed errors for human
+7. ATTEMPT 1 - Claude (Anthropic):
+   ├─ Extract file paths from error messages
+   ├─ Read ALL affected files
+   ├─ Show directory listings
+   ├─ Include git diff
+   ├─ Provide FULL codebase context (all lib/, app/, components/)
+   ├─ Ask Claude: "Here are the errors, here's the code, fix it"
+   ├─ Apply fixes
+   └─ Re-run build
+8. If still fails → ATTEMPT 2 - Claude (retry):
+   ├─ Same process with updated context
+   ├─ Claude gets another chance
+   └─ Re-run build
+9. If STILL fails → ATTEMPT 3 - OpenAI GPT-4 (escalation):
+   ├─ Escalate to different model for "second opinion"
+   ├─ GPT-4 sees full context + Claude's failure history
+   ├─ Apply GPT-4's fixes
+   └─ Re-run build
+10. If succeeds at ANY step → Commit with note about auto-fix
+11. If all 3 attempts fail → Fail task with detailed errors for human
 ```
+
+**Key Innovation:** Multi-model approach leverages different AI architectures. Claude might miss something that GPT-4 catches, and vice versa.
 
 ## Context Provided During Self-Healing
 
@@ -179,9 +190,13 @@ The status dashboard shows self-healing in progress:
 Run #213 - OD-33
 ├─ executing: Calling Claude to generate implementation
 ├─ verifying: Running production build to verify code
-├─ fixing: Build failed, asking Claude to fix errors      ← Self-healing
-├─ verifying: Re-running build after fixes                 ← Retry
-└─ completed: Run completed successfully                   ✅
+├─ fixing: Build failed, asking Claude to fix (attempt 1/3)    ← Self-healing attempt 1
+├─ verifying: Re-running build after fixes
+├─ fixing: Build failed, asking Claude to fix (attempt 2/3)    ← Self-healing attempt 2
+├─ verifying: Re-running build after fixes
+├─ fixing: Build failed, asking OpenAI GPT-4 (attempt 3/3)    ← Escalation to GPT-4
+├─ verifying: Re-running build after fixes
+└─ completed: Run completed successfully (fixed by GPT-4)      ✅
 ```
 
 ### Log Messages
@@ -190,14 +205,32 @@ Run #213 - OD-33
 # Watch self-healing in action
 sudo journalctl -u moveware-ai-worker -f
 
-# Typical output:
+# Typical successful fix (Attempt 1):
 # Running production build to verify code...
 # Build failed: Export readData doesn't exist
-# VERIFICATION FAILED - Attempting to fix errors...
+# VERIFICATION FAILED - Attempt 1/3 using Claude
 # Calling Claude to fix build errors...
 # Applying 3 file fixes...
 # Re-running build verification after fixes...
-# ✅ Build succeeded after fixes!
+# ✅ Build succeeded after Claude fixes on attempt 1!
+
+# Multi-attempt scenario:
+# Running production build to verify code...
+# Build failed: Property 'getHero' does not exist
+# VERIFICATION FAILED - Attempt 1/3 using Claude
+# Calling Claude to fix build errors...
+# Build still failing after Claude fix
+# VERIFICATION FAILED - Attempt 2/3 using Claude
+# Calling Claude to fix build errors...
+# Build still failing after Claude fix
+# ============================================================
+# ESCALATING TO OPENAI: Claude failed 2 times
+# Getting second opinion from GPT-4...
+# ============================================================
+# VERIFICATION FAILED - Attempt 3/3 using OpenAI GPT-4
+# Calling OpenAI GPT-4 to fix build errors...
+# Applying 2 file fixes...
+# ✅ Build succeeded after OpenAI GPT-4 fixes on attempt 3!
 ```
 
 ## Configuration
@@ -281,16 +314,37 @@ timeout=300  # 5 minutes instead of 3
 
 ## Advanced Features
 
-### Multi-Attempt Self-Healing
+### Multi-Model Self-Healing Strategy ✅ **IMPLEMENTED**
 
-Future enhancement: Try fixing up to 3 times before giving up:
+The system now uses a sophisticated 3-attempt strategy with model escalation:
 
 ```python
 MAX_FIX_ATTEMPTS = 3
 for attempt in range(MAX_FIX_ATTEMPTS):
+    if attempt <= 2:
+        model = "Claude (Anthropic)"  # Attempts 1-2
+    else:
+        model = "OpenAI GPT-4"  # Attempt 3 - Escalation
+    
     if build_succeeds:
         break
-    apply_fixes()
+    apply_fixes(model)
+```
+
+**Why This Works:**
+
+1. **Different Architectures** - Claude and GPT-4 have different training, so they "see" code differently
+2. **Fresh Perspective** - If Claude gets stuck in a pattern, GPT-4 provides a new approach
+3. **Complementary Strengths** - Claude excels at following instructions, GPT-4 excels at creative problem-solving
+4. **Second Opinion** - Like asking a colleague to review when you're stuck
+
+**Example Success Story:**
+
+```
+Attempt 1 (Claude): Tries to add getHero() method, but places it incorrectly
+Attempt 2 (Claude): Tries again, still misses the TypeScript interface requirement  
+Attempt 3 (GPT-4): Recognizes the pattern from similar services, adds method + interface
+Result: ✅ Build succeeds
 ```
 
 ### Learning from Failures
