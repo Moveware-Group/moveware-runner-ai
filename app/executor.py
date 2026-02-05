@@ -553,6 +553,17 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
                         if run_id:
                             add_progress_event(run_id, "verifying", "Running production build to verify code", {})
                         
+                        # Clean up any existing build artifacts/locks
+                        try:
+                            next_dir = repo_path / ".next"
+                            if next_dir.exists():
+                                lock_file = next_dir / "lock"
+                                if lock_file.exists():
+                                    lock_file.unlink()
+                                    print("Removed stale .next/lock file")
+                        except Exception as e:
+                            print(f"Warning: Could not clean build locks: {e}")
+                        
                         print("Running production build to verify code...")
                         result = subprocess.run(
                             ["npm", "run", "build"],
@@ -594,21 +605,53 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
         if run_id:
             add_progress_event(run_id, "fixing", "Build failed, asking Claude to fix errors", {})
         
+        # Kill any competing Next.js build processes
+        try:
+            import subprocess
+            print("Checking for competing build processes...")
+            # Kill any existing next build processes
+            subprocess.run(
+                ["pkill", "-f", "next build"],
+                cwd=repo_path,
+                capture_output=True,
+                timeout=5
+            )
+            # Remove lock files
+            lock_file = repo_path / ".next" / "lock"
+            if lock_file.exists():
+                lock_file.unlink()
+                print("Removed .next/lock file")
+        except Exception as e:
+            print(f"Note: Could not clean up build locks: {e}")
+        
         # Ask Claude to fix the build errors
         fix_prompt = (
             f"The code you generated has build errors. Please fix ALL the errors below.\n\n"
             f"**Original Task:** {issue.key}\n"
             f"**Summary:** {issue.summary}\n\n"
-            f"**Build Errors:**\n```\n{error_msg}\n```\n\n"
+            f"**Build Errors:**\n```\n{error_msg[:1500]}\n```\n\n"  # Limit error size
             f"**Current Repository State:**\n{context_info}\n\n"
-            f"Provide the COMPLETE fixed files as JSON with the same format as before.\n"
+            f"**CRITICAL:** Your response MUST be ONLY valid JSON. No markdown, no explanation, JUST JSON.\n\n"
+            f"Provide the COMPLETE fixed files as JSON with this EXACT format:\n"
+            f"{{\n"
+            f'  "implementation_plan": "Brief explanation of fixes",\n'
+            f'  "files": [\n'
+            f'    {{\n'
+            f'      "path": "relative/path/to/file.ext",\n'
+            f'      "action": "update",\n'
+            f'      "content": "COMPLETE file content"\n'
+            f'    }}\n'
+            f'  ],\n'
+            f'  "summary": "Fixed build errors"\n'
+            f"}}\n\n"
             f"Focus ONLY on fixing the build errors. Do not add new features.\n\n"
             f"Common fixes:\n"
             f"- Add missing exports: If a function is used but not exported, add `export` keyword\n"
             f"- Fix import paths: Verify all imports point to files that exist\n"
-            f"- Use valid Tailwind classes: Only use standard Tailwind utilities\n"
+            f"- Use valid Tailwind classes: Only use standard Tailwind utilities like bg-blue-600, text-gray-900\n"
             f"- Export service instances: Services should be exported as `export const serviceName = ...`\n"
-            f"- Check TypeScript types: Ensure all properties and types match"
+            f"- Check TypeScript types: Ensure all properties and types match\n"
+            f"- Remove @apply directives with invalid classes from CSS files"
         )
         
         try:
@@ -627,18 +670,44 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
             
             fix_text = AnthropicClient.extract_text(fix_raw)
             
-            # Parse fix response
+            # Parse fix response - be more aggressive about finding JSON
             fix_json_text = fix_text.strip()
-            lines = fix_json_text.split('\n')
-            if lines[0].strip().startswith('```'):
-                lines = lines[1:]
-                for i in range(len(lines) - 1, -1, -1):
-                    if lines[i].strip() == '```':
-                        lines = lines[:i]
-                        break
-                fix_json_text = '\n'.join(lines)
             
-            fix_payload = json.loads(fix_json_text)
+            # Try to find JSON in the response
+            # Method 1: Remove markdown code fences
+            if '```' in fix_json_text:
+                lines = fix_json_text.split('\n')
+                # Find start of JSON block
+                start_idx = 0
+                for i, line in enumerate(lines):
+                    if line.strip().startswith('```'):
+                        start_idx = i + 1
+                        break
+                # Find end of JSON block
+                end_idx = len(lines)
+                for i in range(start_idx, len(lines)):
+                    if lines[i].strip() == '```':
+                        end_idx = i
+                        break
+                fix_json_text = '\n'.join(lines[start_idx:end_idx])
+            
+            # Method 2: Find first { and last }
+            if not fix_json_text.strip().startswith('{'):
+                first_brace = fix_json_text.find('{')
+                if first_brace >= 0:
+                    last_brace = fix_json_text.rfind('}')
+                    if last_brace > first_brace:
+                        fix_json_text = fix_json_text[first_brace:last_brace+1]
+            
+            # Try to parse JSON
+            try:
+                fix_payload = json.loads(fix_json_text)
+            except json.JSONDecodeError as e:
+                print(f"JSON parsing failed: {e}")
+                print(f"Attempted to parse (first 500 chars):\n{fix_json_text[:500]}")
+                # Log the full response for debugging
+                print(f"Full Claude response (first 1000 chars):\n{fix_text[:1000]}")
+                raise RuntimeError(f"Claude's fix response was not valid JSON: {e}")
             
             # Apply the fixes
             fix_files = fix_payload.get("files", [])
@@ -663,6 +732,16 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
                 verification_errors = []  # Reset errors
                 
                 if is_nextjs:
+                    # Clean locks before retry
+                    try:
+                        next_dir = repo_path / ".next"
+                        if next_dir.exists():
+                            lock_file = next_dir / "lock"
+                            if lock_file.exists():
+                                lock_file.unlink()
+                    except Exception:
+                        pass
+                    
                     result = subprocess.run(
                         ["npm", "run", "build"],
                         cwd=repo_path,
@@ -679,8 +758,17 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
                         print("✅ Build succeeded after fixes!")
                         notes += "\n\n⚠️ *Note: Initial build failed, but Claude automatically fixed the errors and build now succeeds.*"
             
+        except json.JSONDecodeError as e:
+            print(f"Failed to parse Claude's fix response as JSON: {e}")
+            verification_errors.append(
+                f"Auto-fix failed: Claude's response was not valid JSON.\n"
+                f"This usually means the errors are too complex for automatic fixing.\n"
+                f"Error: {e}"
+            )
         except Exception as e:
             print(f"Failed to auto-fix errors: {e}")
+            import traceback
+            traceback.print_exc()
             verification_errors.append(f"Auto-fix attempt failed: {e}")
         
         # If still failing after fix attempt, FAIL THE TASK
