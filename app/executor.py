@@ -226,7 +226,19 @@ def _system_prompt() -> str:
         "- Include comments where helpful\n"
         "- For updates, provide the COMPLETE file content (not diffs)\n"
         "- Keep changes focused on the specific sub-task requirements\n"
-        "- If requirements are unclear, include an 'questions' array in JSON instead of 'files'"
+        "- If requirements are unclear, include an 'questions' array in JSON instead of 'files'\n\n"
+        "UI/Frontend Requirements (for React/Next.js tasks):\n"
+        "- Create COMPLETE, production-ready user interfaces with proper styling\n"
+        "- Use Tailwind CSS for styling with responsive design (mobile-first)\n"
+        "- Implement proper component structure with TypeScript types\n"
+        "- Include loading states, error handling, and empty states in UI\n"
+        "- Create visually appealing layouts with proper spacing, typography, and colors\n"
+        "- Add interactive elements (hover states, focus states, transitions)\n"
+        "- Ensure accessibility (ARIA labels, keyboard navigation, semantic HTML)\n"
+        "- For pages, create a complete user experience, not just placeholder text\n"
+        "- Reference modern design patterns (cards, grids, forms, navigation)\n"
+        "- If implementing a form, include validation and user feedback\n"
+        "- Use the project's theme/branding consistently across all components"
     )
 
 
