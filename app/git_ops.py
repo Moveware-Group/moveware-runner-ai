@@ -177,7 +177,8 @@ def checkout_or_create_story_branch(workdir: str, story_branch: str, base_branch
         run(["git", "rev-parse", f"origin/{story_branch}"], cwd=workdir)
         # Branch exists on remote, checkout and pull
         run(["git", "checkout", story_branch], cwd=workdir)
-        run(["git", "pull", "--ff-only"], cwd=workdir)
+        # Explicitly specify remote and branch
+        run(["git", "pull", "--ff-only", "origin", story_branch], cwd=workdir)
     except RuntimeError:
         # Branch doesn't exist on remote, create from base
         run(["git", "checkout", base_branch], cwd=workdir)

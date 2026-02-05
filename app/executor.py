@@ -110,7 +110,6 @@ def _get_repo_context(repo_path: Path, issue: JiraIssue) -> str:
         if '**' in file_pattern:
             # Handle glob patterns
             try:
-                from pathlib import Path
                 pattern_parts = file_pattern.split('**/')
                 if len(pattern_parts) == 2:
                     base_dir = repo_path / pattern_parts[0].rstrip('/')
