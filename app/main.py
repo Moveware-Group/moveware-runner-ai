@@ -89,7 +89,7 @@ async def status_api(detail: str = "summary") -> Dict[str, Any]:
                     locked_by,
                     locked_at,
                     created_at,
-                    completed_at
+                    updated_at
                 FROM runs
                 WHERE created_at > ?
                 ORDER BY id DESC
@@ -102,14 +102,15 @@ async def status_api(detail: str = "summary") -> Dict[str, Any]:
             runs_list = []
             for run in runs:
                 run_id = run[0]
+                run_status = run[2]
                 run_data = {
                     "run_id": run_id,
                     "issue_key": run[1],
-                    "status": run[2],
+                    "status": run_status,
                     "locked_by": run[3],
                     "locked_at": run[4],
                     "created_at": run[5],
-                    "completed_at": run[6],
+                    "completed_at": run[6] if run_status in ('completed', 'failed') else None,
                     "progress_events": []
                 }
                 
@@ -117,25 +118,25 @@ async def status_api(detail: str = "summary") -> Dict[str, Any]:
                 if detail == "detailed":
                     # Get all progress events
                     cursor.execute("""
-                        SELECT event_type, message, meta, timestamp
+                        SELECT level, message, meta_json, ts
                         FROM events
-                        WHERE run_id = ? AND event_type = 'progress'
-                        ORDER BY timestamp DESC
+                        WHERE run_id = ? AND level = 'progress'
+                        ORDER BY ts DESC
                     """, (run_id,))
                 else:
                     # Get only the latest progress event
                     cursor.execute("""
-                        SELECT event_type, message, meta, timestamp
+                        SELECT level, message, meta_json, ts
                         FROM events
-                        WHERE run_id = ? AND event_type = 'progress'
-                        ORDER BY timestamp DESC
+                        WHERE run_id = ? AND level = 'progress'
+                        ORDER BY ts DESC
                         LIMIT 1
                     """, (run_id,))
                 
                 events = cursor.fetchall()
                 for event in events:
                     meta_dict = {}
-                    if event[2]:  # meta field
+                    if event[2]:  # meta_json field
                         try:
                             meta_dict = json.loads(event[2])
                         except:
