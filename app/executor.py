@@ -621,13 +621,32 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
                     verification_errors.append(f"Could not run build: {e}")
                     print(f"Build exception: {e}")
     
-    # If verification failed, try to fix the errors (self-healing)
-    if verification_errors:
+    # If verification failed, try to fix the errors (self-healing) with multi-attempt strategy
+    MAX_FIX_ATTEMPTS = 3
+    fix_attempt = 0
+    
+    while verification_errors and fix_attempt < MAX_FIX_ATTEMPTS:
+        fix_attempt += 1
         error_msg = "\n\n".join(verification_errors)
-        print(f"VERIFICATION FAILED - Attempting to fix errors...\n{error_msg}")
+        
+        # Determine which model to use
+        if fix_attempt <= 2:
+            model_name = "Claude"
+            model_provider = "anthropic"
+        else:
+            model_name = "OpenAI GPT-4"
+            model_provider = "openai"
+            print(f"\n{'='*60}")
+            print(f"ESCALATING TO OPENAI: Claude failed {fix_attempt-1} times")
+            print(f"Getting second opinion from GPT-4...")
+            print(f"{'='*60}\n")
+        
+        print(f"\nVERIFICATION FAILED - Attempt {fix_attempt}/{MAX_FIX_ATTEMPTS} using {model_name}")
+        print(f"Error summary: {error_msg[:200]}...")
         
         if run_id:
-            add_progress_event(run_id, "fixing", "Build failed, asking Claude to fix errors", {})
+            progress_msg = f"Build failed, asking {model_name} to fix errors (attempt {fix_attempt}/{MAX_FIX_ATTEMPTS})"
+            add_progress_event(run_id, "fixing", progress_msg, {"attempt": fix_attempt, "model": model_name})
         
         # Kill any competing Next.js build processes
         try:
@@ -728,9 +747,11 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
         # Get comprehensive repository context for fixing (includes ALL code)
         comprehensive_context = _get_repo_context(repo_path, issue, include_all_code=True)
         
-        # Ask Claude to fix the build errors
+        # Prepare fix prompt (same for both models)
         fix_prompt = (
-            f"The code you generated has build errors. Please fix ALL the errors below.\n\n"
+            f"The code has build errors. Please fix ALL the errors below.\n\n"
+            f"**Attempt:** {fix_attempt}/{MAX_FIX_ATTEMPTS}\n"
+            f"**Previous attempts:** {'Claude failed ' + str(fix_attempt-1) + ' time(s)' if fix_attempt > 1 else 'First attempt'}\n\n"
             f"**Original Task:** {issue.key}\n"
             f"**Summary:** {issue.summary}\n\n"
             f"**Build Errors:**\n```\n{error_msg[:1500]}\n```\n\n"  # Limit error size
@@ -774,20 +795,38 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
         )
         
         try:
-            print("Calling Claude to fix build errors...")
-            fix_raw = client.messages_create({
-                "model": settings.ANTHROPIC_MODEL,
-                "system": _system_prompt(),
-                "messages": [{"role": "user", "content": fix_prompt}],
-                "max_tokens": 16000,
-                "temperature": 1,
-                "thinking": {
-                    "type": "enabled",
-                    "budget_tokens": 5000
-                }
-            })
+            print(f"Calling {model_name} to fix build errors...")
             
-            fix_text = AnthropicClient.extract_text(fix_raw)
+            if model_provider == "anthropic":
+                # Use Claude
+                fix_raw = client.messages_create({
+                    "model": settings.ANTHROPIC_MODEL,
+                    "system": _system_prompt(),
+                    "messages": [{"role": "user", "content": fix_prompt}],
+                    "max_tokens": 16000,
+                    "temperature": 1,
+                    "thinking": {
+                        "type": "enabled",
+                        "budget_tokens": 5000
+                    }
+                })
+                fix_text = AnthropicClient.extract_text(fix_raw)
+            else:
+                # Use OpenAI as fallback
+                from app.llm.openai import OpenAIClient
+                openai_client = OpenAIClient(
+                    api_key=settings.OPENAI_API_KEY,
+                    model=settings.OPENAI_MODEL
+                )
+                
+                messages = [
+                    {"role": "system", "content": _system_prompt()},
+                    {"role": "user", "content": fix_prompt}
+                ]
+                
+                fix_raw = openai_client.chat_completion(messages, max_tokens=16000, temperature=1)
+                # OpenAI API returns: {"choices": [{"message": {"content": "..."}}]}
+                fix_text = fix_raw.get("choices", [{}])[0].get("message", {}).get("content", "")
             
             # Parse fix response - be more aggressive about finding JSON
             fix_json_text = fix_text.strip()
@@ -871,48 +910,57 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
                     
                     if result.returncode != 0:
                         error_output = result.stderr if result.stderr else result.stdout
-                        verification_errors.append(f"Build still failing after fix attempt:\n{error_output[:1000]}")
-                        print(f"Build still failing:\n{error_output[:500]}")
+                        verification_errors.append(f"Build still failing after fix attempt {fix_attempt}:\n{error_output[:1000]}")
+                        print(f"Build still failing after {model_name} fix:\n{error_output[:500]}")
                     else:
-                        print("✅ Build succeeded after fixes!")
-                        notes += "\n\n⚠️ *Note: Initial build failed, but Claude automatically fixed the errors and build now succeeds.*"
+                        print(f"✅ Build succeeded after {model_name} fixes on attempt {fix_attempt}!")
+                        notes += f"\n\n⚠️ *Note: Initial build failed, but {model_name} automatically fixed the errors on attempt {fix_attempt}.*"
+                        verification_errors = []  # Clear errors to break the retry loop
+                        break  # Exit the retry loop on success
             
         except json.JSONDecodeError as e:
-            print(f"Failed to parse Claude's fix response as JSON: {e}")
+            print(f"Failed to parse {model_name}'s fix response as JSON: {e}")
             verification_errors.append(
-                f"Auto-fix failed: Claude's response was not valid JSON.\n"
-                f"This usually means the errors are too complex for automatic fixing.\n"
+                f"Auto-fix attempt {fix_attempt} failed: {model_name}'s response was not valid JSON.\n"
                 f"Error: {e}"
             )
+            # Continue to next attempt
         except Exception as e:
-            print(f"Failed to auto-fix errors: {e}")
+            print(f"Failed to auto-fix errors with {model_name}: {e}")
             import traceback
             traceback.print_exc()
-            verification_errors.append(f"Auto-fix attempt failed: {e}")
+            verification_errors.append(f"Auto-fix attempt {fix_attempt} with {model_name} failed: {e}")
+            # Continue to next attempt
+    
+    # If still failing after all fix attempts, FAIL THE TASK
+    if verification_errors:
+        error_msg = "\n\n".join(verification_errors)
+        print(f"\n{'='*60}")
+        print(f"VERIFICATION STILL FAILING AFTER {fix_attempt} ATTEMPTS")
+        print(f"{'='*60}")
+        print(error_msg)
         
-        # If still failing after fix attempt, FAIL THE TASK
-        if verification_errors:
-            error_msg = "\n\n".join(verification_errors)
-            print(f"VERIFICATION STILL FAILING:\n{error_msg}")
-            
-            # Post detailed error to Jira
-            jira_client = JiraClient(
-                base_url=settings.JIRA_BASE_URL,
-                email=settings.JIRA_EMAIL,
-                api_token=settings.JIRA_API_TOKEN
-            )
-            
-            jira_comment = (
-                "❌ **Build Verification Failed**\n\n"
-                "The code changes did not pass verification even after attempting auto-fix.\n\n"
-                f"**Errors:**\n{error_msg}\n\n"
-                "---\n"
-                "*Code was not committed. Please review the errors and reassign the task.*"
-            )
-            jira_client.add_comment(issue.key, jira_comment)
-            
-            # Raise error to fail the task
-            raise RuntimeError(f"Build verification failed after fix attempt:\n{error_msg}")
+        # Post detailed error to Jira with attempt history
+        jira_client = JiraClient(
+            base_url=settings.JIRA_BASE_URL,
+            email=settings.JIRA_EMAIL,
+            api_token=settings.JIRA_API_TOKEN
+        )
+        
+        jira_comment = (
+            "❌ **Build Verification Failed After Multiple Attempts**\n\n"
+            f"Tried {fix_attempt} times to automatically fix the errors:\n"
+            f"- Attempts 1-2: Claude (Anthropic)\n"
+            f"- Attempt 3: OpenAI GPT-4 (escalation)\n\n"
+            "**All attempts failed. This issue requires human intervention.**\n\n"
+            f"**Final Errors:**\n```\n{error_msg[:2000]}\n```\n\n"
+            "---\n"
+            "*Code was not committed. This appears to be a complex issue that needs manual review.*"
+        )
+        jira_client.add_comment(issue.key, jira_comment)
+        
+        # Raise error to fail the task
+        raise RuntimeError(f"Build verification failed after {fix_attempt} attempts (Claude + OpenAI):\n{error_msg}")
     
     if run_id:
         add_progress_event(run_id, "committing", f"Committing changes: {len(files_changed)} files", {"file_count": len(files_changed)})

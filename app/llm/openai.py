@@ -30,3 +30,23 @@ class OpenAIClient:
         r = requests.post(url, json=payload, headers=headers, timeout=120)
         r.raise_for_status()
         return r.json()
+    
+    def chat_completion(self, messages: list, max_tokens: int = 4000, temperature: float = 1.0) -> Dict:
+        """Send a chat completion request to OpenAI API."""
+        if not self.api_key:
+            raise RuntimeError("Missing OPENAI_API_KEY")
+        
+        url = "https://api.openai.com/v1/chat/completions"
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        r = requests.post(url, json=payload, headers=headers, timeout=180)
+        r.raise_for_status()
+        return r.json()
