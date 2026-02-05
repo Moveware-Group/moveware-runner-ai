@@ -7,7 +7,7 @@ This guide explains how to set up NGINX to proxy the AI Runner dashboard at `ai-
 1. DNS record for `ai-console.holdingsite.com.au` pointing to your server's IP
 2. NGINX installed on the server
 3. Ports 80 and 443 open in firewall
-4. The AI Runner orchestrator running on port 8000
+4. The AI Runner orchestrator running on port 8088
 
 ## Quick Setup
 
@@ -58,7 +58,7 @@ sudo certbot --nginx -d ai-console.holdingsite.com.au
 
 The NGINX configuration (`ops/nginx/ai-console.conf`) sets up:
 
-- **Root Path (`/`)**: Proxies to the dashboard at `http://127.0.0.1:8000`
+- **Root Path (`/`)**: Proxies to the dashboard at `http://127.0.0.1:8088`
 - **Health Check (`/health`)**: Proxies to the health endpoint
 - **API Endpoints (`/api/`)**: Proxies to the JSON API
 - **WebSocket Support**: Ready for future real-time features
@@ -99,11 +99,11 @@ sudo nginx -t
 # Check if orchestrator is running
 sudo systemctl status moveware-ai-orchestrator
 
-# Check if port 8000 is listening
-sudo netstat -tlnp | grep 8000
+# Check if port 8088 is listening
+sudo netstat -tlnp | grep 8088
 
 # Test direct connection
-curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8088/health
 ```
 
 ### SSL certificate issues
