@@ -269,6 +269,18 @@ def _system_prompt() -> str:
         "- For updates, provide the COMPLETE file content (not diffs)\n"
         "- Keep changes focused on the specific sub-task requirements\n"
         "- If requirements are unclear, include an 'questions' array in JSON instead of 'files'\n\n"
+        "**CRITICAL BUILD VERIFICATION:**\n"
+        "- For Next.js/React projects, your code will be verified with `npm run build`\n"
+        "- If the build fails, the task will FAIL and you'll need to fix it\n"
+        "- Common build failures to avoid:\n"
+        "  * Missing exports (e.g., declaring `const x` but not exporting it)\n"
+        "  * Invalid Tailwind CSS classes (use only standard Tailwind classes)\n"
+        "  * Import errors (importing functions that don't exist)\n"
+        "  * TypeScript errors (wrong types, missing properties)\n"
+        "  * Using Node.js modules (fs, path) in client components\n"
+        "- TEST YOUR MENTAL MODEL: Before finishing, mentally trace each import/export\n"
+        "- Double-check that every exported function/variable is actually defined\n"
+        "- Verify Tailwind classes match the design system or use standard Tailwind\n\n"
         "UI/Frontend Requirements (for React/Next.js tasks):\n"
         "- **CRITICAL:** If a Design System (DESIGN.md) is provided in the repository context, YOU MUST follow it exactly\n"
         "  * Use the exact color classes, spacing, and component patterns specified\n"
@@ -493,36 +505,110 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
         
         raise RuntimeError(error_msg)
 
-    # 5) Verify the changes (run npm install for Node projects)
+    # 5) Verify the changes (run npm install and build for Node projects)
     verification_errors = []
     package_json_path = repo_path / "package.json"
-    if package_json_path.exists() and any("package.json" in fc for fc in files_changed):
-        # package.json was modified, verify dependencies
-        if run_id:
-            add_progress_event(run_id, "verifying", "Running npm install to verify dependencies", {})
-        try:
-            import subprocess
-            print("Running npm install to verify dependencies...")
-            result = subprocess.run(
-                ["npm", "install", "--no-audit", "--prefer-offline"],
-                cwd=repo_path,
-                capture_output=True,
-                text=True,
-                timeout=60  # 1 minute timeout
-            )
-            if result.returncode != 0:
-                verification_errors.append(f"npm install failed:\n{result.stderr[:800]}")
-                print(f"npm install failed: {result.stderr}")
-        except subprocess.TimeoutExpired:
-            verification_errors.append("npm install timed out after 60 seconds")
-            print("npm install timed out")
-        except Exception as e:
-            verification_errors.append(f"Could not run npm install: {e}")
-            print(f"npm install exception: {e}")
+    is_node_project = package_json_path.exists()
     
-    # If verification failed, add error to notes
+    if is_node_project:
+        # Check if package.json was modified or if this is a code change
+        needs_verification = (
+            any("package.json" in fc for fc in files_changed) or  # package.json changed
+            any(fc.endswith(('.ts', '.tsx', '.js', '.jsx', '.css')) for fc in files_changed)  # code changed
+        )
+        
+        if needs_verification:
+            import subprocess
+            
+            # Step 1: Install dependencies
+            if run_id:
+                add_progress_event(run_id, "verifying", "Running npm install to verify dependencies", {})
+            try:
+                print("Running npm install to verify dependencies...")
+                result = subprocess.run(
+                    ["npm", "install", "--no-audit", "--prefer-offline"],
+                    cwd=repo_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=60  # 1 minute timeout
+                )
+                if result.returncode != 0:
+                    verification_errors.append(f"npm install failed:\n{result.stderr[:800]}")
+                    print(f"npm install failed: {result.stderr}")
+            except subprocess.TimeoutExpired:
+                verification_errors.append("npm install timed out after 60 seconds")
+                print("npm install timed out")
+            except Exception as e:
+                verification_errors.append(f"Could not run npm install: {e}")
+                print(f"npm install exception: {e}")
+            
+            # Step 2: Run build for Next.js/React projects (CRITICAL for catching errors)
+            if not verification_errors:  # Only build if install succeeded
+                # Check if this is a Next.js project
+                try:
+                    package_json_content = package_json_path.read_text(encoding="utf-8")
+                    is_nextjs = '"next"' in package_json_content or "'next'" in package_json_content
+                    
+                    if is_nextjs:
+                        if run_id:
+                            add_progress_event(run_id, "verifying", "Running production build to verify code", {})
+                        
+                        print("Running production build to verify code...")
+                        result = subprocess.run(
+                            ["npm", "run", "build"],
+                            cwd=repo_path,
+                            capture_output=True,
+                            text=True,
+                            timeout=180  # 3 minute timeout for build
+                        )
+                        
+                        if result.returncode != 0:
+                            # Build failed - this is a CRITICAL error
+                            error_output = result.stderr if result.stderr else result.stdout
+                            verification_errors.append(
+                                f"❌ CRITICAL: Production build failed\n\n"
+                                f"Build output:\n{error_output[:2000]}\n\n"
+                                f"Common fixes:\n"
+                                f"- Check for missing exports in service files\n"
+                                f"- Verify all imported functions/types exist\n"
+                                f"- Check Tailwind CSS classes are valid\n"
+                                f"- Ensure 'use client' directive is added for client components\n"
+                                f"- Fix TypeScript type errors"
+                            )
+                            print(f"Build failed:\n{error_output[:1000]}")
+                        else:
+                            print("✅ Build succeeded!")
+                            
+                except subprocess.TimeoutExpired:
+                    verification_errors.append("Build timed out after 3 minutes")
+                    print("Build timed out")
+                except Exception as e:
+                    verification_errors.append(f"Could not run build: {e}")
+                    print(f"Build exception: {e}")
+    
+    # If verification failed, FAIL THE TASK (don't commit broken code)
     if verification_errors:
-        notes += "\n\n⚠️ Build Verification Issues:\n" + "\n".join(verification_errors)
+        error_msg = "\n\n".join(verification_errors)
+        print(f"VERIFICATION FAILED:\n{error_msg}")
+        
+        # Post detailed error to Jira
+        jira_client = JiraClient(
+            base_url=settings.JIRA_BASE_URL,
+            email=settings.JIRA_EMAIL,
+            api_token=settings.JIRA_API_TOKEN
+        )
+        
+        jira_comment = (
+            "❌ **Build Verification Failed**\n\n"
+            "The code changes did not pass verification. Please review and fix the following errors:\n\n"
+            f"{error_msg}\n\n"
+            "---\n"
+            "*Code was not committed. Task will be retried.*"
+        )
+        jira_client.add_comment(issue.key, jira_comment)
+        
+        # Raise error to fail the task
+        raise RuntimeError(f"Build verification failed:\n{error_msg}")
     
     if run_id:
         add_progress_event(run_id, "committing", f"Committing changes: {len(files_changed)} files", {"file_count": len(files_changed)})
