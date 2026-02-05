@@ -358,12 +358,12 @@ def _handle_story_approved(ctx: Context, story: JiraIssue) -> None:
         # Refresh subtasks after creation
         all_subtasks = ctx.jira.get_subtasks(story.key)
 
-    # Transition Story to In Progress first (before trying git operations)
+    # Transition Story to In Progress first
     ctx.jira.transition_to_status(story.key, settings.JIRA_STATUS_IN_PROGRESS)
-    ctx.jira.add_comment(story.key, "AI Runner has started processing this Story.")
+    ctx.jira.add_comment(story.key, "AI Runner has started processing this Story. PR will be created after first subtask commits.")
 
-    # Create Story branch and draft PR
-    from .git_ops import checkout_repo, create_branch, create_pr
+    # Create Story branch (but don't create PR yet - need commits first)
+    from .git_ops import checkout_repo, create_branch
     
     story_branch = f"story/{story.key.lower()}"
     
@@ -371,39 +371,13 @@ def _handle_story_approved(ctx: Context, story: JiraIssue) -> None:
         # Checkout repo and create Story branch
         checkout_repo(settings.REPO_WORKDIR, settings.REPO_SSH, settings.BASE_BRANCH)
         create_branch(settings.REPO_WORKDIR, story_branch)
-        
-        # Create draft PR with checklist of subtasks
-        subtask_list = "\n".join([
-            f"- [ ] {st.get('key')}: {(st.get('fields') or {}).get('summary')}" 
-            for st in all_subtasks
-        ])
-        
-        pr_body = f"""## Story: {story.key}
-
-{story.description[:500] if story.description else 'No description'}
-
-### Sub-tasks:
-{subtask_list}
-
----
-*This PR will be updated as sub-tasks are completed.*
-"""
-        
-        pr_url = create_pr(
-            settings.REPO_WORKDIR,
-            title=f"{story.key}: {story.summary}",
-            body=pr_body,
-            base=settings.BASE_BRANCH,
-        )
-        
-        if pr_url:
-            ctx.jira.add_comment(story.key, f"Story PR created: {pr_url}")
+        ctx.jira.add_comment(story.key, f"Created Story branch: {story_branch}")
     except Exception as e:
-        error_msg = f"Warning: Could not create Story PR: {e}"
+        error_msg = f"Warning: Could not create Story branch: {e}"
         print(f"ERROR in _handle_story_approved: {error_msg}")
         ctx.jira.add_comment(story.key, error_msg)
 
-    # Start first subtask (this must happen even if PR creation failed)
+    # Start first subtask
     next_key = _pick_next_subtask_to_start(ctx, story.key)
     if next_key:
         ctx.jira.transition_to_status(next_key, settings.JIRA_STATUS_IN_PROGRESS)
@@ -429,6 +403,46 @@ def _handle_execute_subtask(ctx: Context, subtask: JiraIssue, run_id: Optional[i
     ctx.jira.add_comment(subtask.key, result.jira_comment)
     ctx.jira.transition_to_status(subtask.key, settings.JIRA_STATUS_IN_TESTING)
     ctx.jira.assign_issue(subtask.key, settings.JIRA_HUMAN_ACCOUNT_ID)
+
+    # Check if parent is a Story and if PR needs to be created
+    parent = _fetch_issue(ctx.jira, subtask.parent_key)
+    if parent and parent.issue_type == "Story" and result.branch.startswith("story/"):
+        # Check if PR already exists for this Story
+        from .git_ops import create_pr
+        try:
+            # Get all subtasks for the Story to build checklist
+            all_subtasks = ctx.jira.get_subtasks(subtask.parent_key)
+            subtask_list = "\n".join([
+                f"- [ ] {st.get('key')}: {(st.get('fields') or {}).get('summary')}" 
+                for st in all_subtasks
+            ])
+            
+            pr_body = f"""## Story: {parent.key}
+
+{parent.description[:500] if parent.description else 'No description'}
+
+### Sub-tasks:
+{subtask_list}
+
+---
+*This PR will be updated as sub-tasks are completed.*
+"""
+            
+            # Try to create PR (will succeed only on first subtask)
+            pr_url = create_pr(
+                settings.REPO_WORKDIR,
+                title=f"{parent.key}: {parent.summary}",
+                body=pr_body,
+                base=settings.BASE_BRANCH,
+            )
+            
+            if pr_url and "already exists" not in pr_url.lower():
+                ctx.jira.add_comment(parent.key, f"Story PR created: {pr_url}")
+        except Exception as e:
+            # PR might already exist or other error - log but don't fail
+            error_msg = str(e).lower()
+            if "already exists" not in error_msg and "no commits" not in error_msg:
+                print(f"Note: Could not create/update Story PR: {e}")
 
     # Kick off next subtask sequentially
     next_key = _pick_next_subtask_to_start(ctx, subtask.parent_key)
