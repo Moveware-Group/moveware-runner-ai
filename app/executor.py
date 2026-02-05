@@ -160,6 +160,48 @@ def _get_repo_context(repo_path: Path, issue: JiraIssue) -> str:
         except Exception:
             pass
     
+    # 6. Always include DESIGN.md if it exists (design system)
+    design_md_path = repo_path / "DESIGN.md"
+    if design_md_path.exists():
+        try:
+            content = design_md_path.read_text(encoding="utf-8")
+            context.append("Design System (DESIGN.md):")
+            context.append("```markdown")
+            context.append(content[:10000])  # Include full design system (up to 10KB)
+            if len(content) > 10000:
+                context.append("... (truncated)")
+            context.append("```")
+            context.append("")
+            context.append("**IMPORTANT:** Follow the design system patterns above for all UI components.")
+            context.append("")
+        except Exception:
+            pass
+    else:
+        # If no DESIGN.md exists in repo, include the template for UI-related tasks
+        is_ui_task = any(keyword in combined_text for keyword in [
+            'ui', 'page', 'component', 'layout', 'form', 'button', 'style', 
+            'design', 'interface', 'frontend', 'react', 'next.js', 'tailwind'
+        ])
+        
+        if is_ui_task:
+            # Load design template from runner repo
+            try:
+                runner_repo_path = Path(__file__).parent.parent
+                template_path = runner_repo_path / "docs" / "DESIGN-TEMPLATE.md"
+                if template_path.exists():
+                    template_content = template_path.read_text(encoding="utf-8")
+                    context.append("Design System Template (for UI consistency):")
+                    context.append("```markdown")
+                    context.append(template_content[:10000])
+                    if len(template_content) > 10000:
+                        context.append("... (truncated)")
+                    context.append("```")
+                    context.append("")
+                    context.append("**IMPORTANT:** Follow the design patterns above. Consider creating DESIGN.md in the repo root.")
+                    context.append("")
+            except Exception as e:
+                print(f"Note: Could not load design template: {e}")
+    
     return "\n".join(context)
 
 
@@ -228,6 +270,11 @@ def _system_prompt() -> str:
         "- Keep changes focused on the specific sub-task requirements\n"
         "- If requirements are unclear, include an 'questions' array in JSON instead of 'files'\n\n"
         "UI/Frontend Requirements (for React/Next.js tasks):\n"
+        "- **CRITICAL:** If a Design System (DESIGN.md) is provided in the repository context, YOU MUST follow it exactly\n"
+        "  * Use the exact color classes, spacing, and component patterns specified\n"
+        "  * Copy button styles, card styles, and layout patterns from the design system\n"
+        "  * Match the typography scale and font weights\n"
+        "  * Use the specified icons library and interaction patterns\n"
         "- Create COMPLETE, production-ready user interfaces with proper styling\n"
         "- Use Tailwind CSS for styling with responsive design (mobile-first)\n"
         "- Implement proper component structure with TypeScript types\n"
@@ -238,7 +285,11 @@ def _system_prompt() -> str:
         "- For pages, create a complete user experience, not just placeholder text\n"
         "- Reference modern design patterns (cards, grids, forms, navigation)\n"
         "- If implementing a form, include validation and user feedback\n"
-        "- Use the project's theme/branding consistently across all components"
+        "- Use the project's theme/branding consistently across all components\n\n"
+        "Project Initialization:\n"
+        "- When creating a new Next.js/React project structure, ALWAYS include DESIGN.md in the files array\n"
+        "- Copy the design system template provided in context and customize it for the project\n"
+        "- This ensures consistent UI patterns from the start"
     )
 
 
