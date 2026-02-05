@@ -623,25 +623,80 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
         except Exception as e:
             print(f"Note: Could not clean up build locks: {e}")
         
-        # Extract file paths from error messages to provide relevant context
+        # Extract file paths from error messages and build comprehensive context
         error_files = set()
         import re
+        import subprocess
+        
         # Find file paths in error messages (e.g., ./online-docs/lib/services/brandingService.ts)
         file_pattern = r'\./[^\s:]+\.(ts|tsx|js|jsx|css)'
         for match in re.finditer(file_pattern, error_msg):
-            file_path_str = match.group(0).replace('./', '')
+            file_path_str = match.group(0).replace('./', '').replace('online-docs/', '')
             error_files.add(file_path_str)
         
-        # Read the actual content of files mentioned in errors
+        # Also extract imports mentioned in errors (e.g., "import from '../data/storage'")
+        import_pattern = r"from ['\"]([^'\"]+)['\"]"
+        for match in re.finditer(import_pattern, error_msg):
+            import_path = match.group(1)
+            # Resolve relative imports to absolute paths
+            for error_file in list(error_files):
+                if '../' in import_path:
+                    # Calculate relative path
+                    error_dir = Path(error_file).parent
+                    resolved = (error_dir / import_path).resolve()
+                    try:
+                        rel_to_repo = resolved.relative_to(repo_path)
+                        # Try common extensions
+                        for ext in ['.ts', '.tsx', '.js', '.jsx']:
+                            candidate = str(rel_to_repo) + ext
+                            if (repo_path / candidate).exists():
+                                error_files.add(candidate)
+                                break
+                    except Exception:
+                        pass
+        
+        # Build comprehensive error context with actual file contents
         error_file_contents = []
+        
+        # Add directory structure for relevant directories
+        relevant_dirs = set()
         for error_file in error_files:
+            relevant_dirs.add(str(Path(error_file).parent))
+        
+        for dir_path in sorted(relevant_dirs):
+            dir_full_path = repo_path / dir_path
+            if dir_full_path.exists() and dir_full_path.is_dir():
+                try:
+                    files_in_dir = [f.name for f in dir_full_path.iterdir() if f.is_file()]
+                    error_file_contents.append(f"\n**Files in {dir_path}/:**\n{', '.join(files_in_dir)}")
+                except Exception:
+                    pass
+        
+        # Add actual file contents of error files and their dependencies
+        for error_file in sorted(error_files):
             file_path = repo_path / error_file
             if file_path.exists():
                 try:
                     content = file_path.read_text(encoding="utf-8")
-                    error_file_contents.append(f"\n**Current {error_file}:**\n```\n{content[:3000]}\n```")
+                    error_file_contents.append(f"\n**Current {error_file}:**\n```typescript\n{content[:5000]}\n```")
+                    if len(content) > 5000:
+                        error_file_contents.append("... (file truncated)")
                 except Exception:
                     pass
+        
+        # Add git diff to show what was just changed (might reveal the issue)
+        try:
+            git_diff = subprocess.run(
+                ["git", "diff", "HEAD"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if git_diff.returncode == 0 and git_diff.stdout.strip():
+                error_file_contents.append(f"\n**Recent Changes (git diff):**\n```diff\n{git_diff.stdout[:2000]}\n```")
+        except Exception:
+            pass
         
         error_context = "\n".join(error_file_contents) if error_file_contents else ""
         
@@ -666,14 +721,28 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
             f'  ],\n'
             f'  "summary": "Fixed build errors"\n'
             f"}}\n\n"
-            f"Focus ONLY on fixing the build errors. Do not add new features.\n\n"
-            f"Common fixes:\n"
-            f"- Add missing exports: If a function is used but not exported, add `export` keyword\n"
-            f"- Fix import paths: Verify all imports point to files that exist\n"
-            f"- Use valid Tailwind classes: Only use standard Tailwind utilities like bg-blue-600, text-gray-900\n"
-            f"- Export service instances: Services should be exported as `export const serviceName = ...`\n"
-            f"- Check TypeScript types: Ensure all properties and types match\n"
-            f"- Remove @apply directives with invalid classes from CSS files"
+            f"**DEBUGGING STRATEGY:**\n"
+            f"1. Look at the error messages - they tell you exactly what's missing\n"
+            f"2. Look at the ACTUAL file contents provided above\n"
+            f"3. Compare what's imported vs what's exported\n"
+            f"4. Fix the mismatch by either:\n"
+            f"   a) Adding missing exports to the source file, OR\n"
+            f"   b) Changing imports to match what exists\n\n"
+            f"**COMMON PATTERNS FOR THIS ERROR:**\n"
+            f"- Error: 'Export readData doesn't exist'\n"
+            f"  → Solution: Check storage.ts - does it export readData? If not, what DOES it export?\n"
+            f"  → If it exports 'getData', change import from 'readData' to 'getData'\n"
+            f"  → If nothing similar exists, add the function to storage.ts\n\n"
+            f"- Error: 'The export X was not found'\n"
+            f"  → Look at the actual file contents above\n"
+            f"  → Find what IS exported (look for 'export' keyword)\n"
+            f"  → Either rename the export to X, or change imports to use actual name\n\n"
+            f"**OTHER COMMON FIXES:**\n"
+            f"- Use valid Tailwind classes: Only bg-blue-600, text-gray-900, etc. (not bg-background)\n"
+            f"- Remove @apply directives with invalid classes from CSS files\n"
+            f"- Export service instances: `export const serviceName = createService()`\n"
+            f"- Check TypeScript types: Ensure all properties exist\n\n"
+            f"Focus ONLY on fixing the build errors. Provide ALL files that need changes."
         )
         
         try:
