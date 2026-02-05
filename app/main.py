@@ -74,100 +74,98 @@ async def status_api(detail: str = "summary") -> Dict[str, Any]:
     Args:
         detail: 'summary' for high-level view, 'detailed' for all progress events
     """
-    with connect() as conn:
-        cursor = conn.cursor()
-        
-        # Get recent runs with their latest progress events
-        if detail == "detailed":
-            # Detailed view: include all progress events
+    try:
+        with connect() as conn:
+            cursor = conn.cursor()
+            
+            # Get recent runs (last hour)
+            one_hour_ago = int(__import__('time').time()) - 3600
+            
             cursor.execute("""
                 SELECT 
-                    r.id,
-                    r.issue_key,
-                    r.status,
-                    r.locked_by,
-                    r.locked_at,
-                    r.created_at,
-                    r.completed_at,
-                    e.event_type,
-                    e.message,
-                    e.meta,
-                    e.timestamp
-                FROM runs r
-                LEFT JOIN events e ON r.id = e.run_id AND e.event_type = 'progress'
-                WHERE r.created_at > ?
-                ORDER BY r.id DESC, e.timestamp DESC
-                LIMIT 200
-            """, (int(__import__('time').time()) - 3600,))  # Last hour
-        else:
-            # Summary view: just get the latest progress event per run
-            cursor.execute("""
-                SELECT 
-                    r.id,
-                    r.issue_key,
-                    r.status,
-                    r.locked_by,
-                    r.locked_at,
-                    r.created_at,
-                    r.completed_at,
-                    e.event_type,
-                    e.message,
-                    e.meta,
-                    e.timestamp
-                FROM runs r
-                LEFT JOIN (
-                    SELECT run_id, event_type, message, meta, timestamp, 
-                           ROW_NUMBER() OVER (PARTITION BY run_id ORDER BY timestamp DESC) as rn
-                    FROM events
-                    WHERE event_type = 'progress'
-                ) e ON r.id = e.run_id AND e.rn = 1
-                WHERE r.created_at > ?
-                ORDER BY r.id DESC
+                    id,
+                    issue_key,
+                    status,
+                    locked_by,
+                    locked_at,
+                    created_at,
+                    completed_at
+                FROM runs
+                WHERE created_at > ?
+                ORDER BY id DESC
                 LIMIT 50
-            """, (int(__import__('time').time()) - 3600,))  # Last hour
+            """, (one_hour_ago,))
+            
+            runs = cursor.fetchall()
+            
+            # Build result
+            runs_list = []
+            for run in runs:
+                run_id = run[0]
+                run_data = {
+                    "run_id": run_id,
+                    "issue_key": run[1],
+                    "status": run[2],
+                    "locked_by": run[3],
+                    "locked_at": run[4],
+                    "created_at": run[5],
+                    "completed_at": run[6],
+                    "progress_events": []
+                }
+                
+                # Get progress events for this run
+                if detail == "detailed":
+                    # Get all progress events
+                    cursor.execute("""
+                        SELECT event_type, message, meta, timestamp
+                        FROM events
+                        WHERE run_id = ? AND event_type = 'progress'
+                        ORDER BY timestamp DESC
+                    """, (run_id,))
+                else:
+                    # Get only the latest progress event
+                    cursor.execute("""
+                        SELECT event_type, message, meta, timestamp
+                        FROM events
+                        WHERE run_id = ? AND event_type = 'progress'
+                        ORDER BY timestamp DESC
+                        LIMIT 1
+                    """, (run_id,))
+                
+                events = cursor.fetchall()
+                for event in events:
+                    meta_dict = {}
+                    if event[2]:  # meta field
+                        try:
+                            meta_dict = json.loads(event[2])
+                        except:
+                            pass
+                    
+                    event_data = {
+                        "message": event[1],
+                        "stage": meta_dict.get("stage", "unknown"),
+                        "timestamp": event[3]
+                    }
+                    
+                    if detail == "detailed":
+                        event_data["meta"] = meta_dict
+                    
+                    run_data["progress_events"].append(event_data)
+                
+                runs_list.append(run_data)
         
-        rows = cursor.fetchall()
+        return {
+            "detail_level": detail,
+            "runs": runs_list,
+            "timestamp": int(__import__('time').time())
+        }
     
-    # Group results by run_id
-    runs_dict: Dict[int, Dict[str, Any]] = {}
-    for row in rows:
-        run_id = row[0]
-        if run_id not in runs_dict:
-            runs_dict[run_id] = {
-                "run_id": run_id,
-                "issue_key": row[1],
-                "status": row[2],
-                "locked_by": row[3],
-                "locked_at": row[4],
-                "created_at": row[5],
-                "completed_at": row[6],
-                "progress_events": []
-            }
-        
-        if row[7]:  # event_type exists
-            meta_dict = {}
-            if row[9]:  # meta field
-                try:
-                    meta_dict = json.loads(row[9])
-                except:
-                    pass
-            
-            event = {
-                "message": row[8],
-                "stage": meta_dict.get("stage", "unknown"),
-                "timestamp": row[10]
-            }
-            
-            if detail == "detailed":
-                event["meta"] = meta_dict
-            
-            runs_dict[run_id]["progress_events"].append(event)
-    
-    # Convert to list and sort by run_id descending
-    runs_list = sorted(runs_dict.values(), key=lambda x: x["run_id"], reverse=True)
-    
-    return {
-        "detail_level": detail,
-        "runs": runs_list,
-        "timestamp": int(__import__('time').time())
-    }
+    except Exception as e:
+        # Return error response that won't crash the dashboard
+        return {
+            "detail_level": detail,
+            "runs": [],
+            "timestamp": int(__import__('time').time()),
+            "error": str(e)
+        }
+
