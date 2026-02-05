@@ -812,19 +812,21 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
                 })
                 fix_text = AnthropicClient.extract_text(fix_raw)
             else:
-                # Use OpenAI as fallback (using Responses API like planning does)
-                from app.llm.openai import OpenAIClient
+                # Use OpenAI as fallback (using same client as planner)
+                from app.llm_openai import OpenAIClient
                 openai_client = OpenAIClient(
                     api_key=settings.OPENAI_API_KEY,
-                    model=settings.OPENAI_MODEL
+                    base_url=settings.OPENAI_BASE_URL
                 )
                 
-                # Combine system prompt and user prompt for Responses API
-                full_prompt = f"{_system_prompt()}\n\n{fix_prompt}"
-                
-                fix_raw = openai_client.complete(full_prompt, max_output_tokens=16000)
-                # Responses API returns: {"output": "..."}
-                fix_text = fix_raw.get("output", "")
+                # Use responses_text() which properly parses the response
+                fix_text = openai_client.responses_text(
+                    model=settings.OPENAI_MODEL,
+                    system=_system_prompt(),
+                    user=fix_prompt,
+                    max_tokens=16000,
+                    temperature=1.0
+                )
             
             # Parse fix response - be more aggressive about finding JSON
             fix_json_text = fix_text.strip()
