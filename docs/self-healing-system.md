@@ -42,10 +42,10 @@ When the AI Runner generates code that fails to build, it automatically:
    ├─ Same process with updated context
    ├─ Claude gets another chance
    └─ Re-run build
-9. If STILL fails → ATTEMPT 3 - OpenAI GPT-4 (escalation):
+9. If STILL fails → ATTEMPT 3 - OpenAI (escalation):
    ├─ Escalate to different model for "second opinion"
-   ├─ GPT-4 sees full context + Claude's failure history
-   ├─ Apply GPT-4's fixes
+   ├─ OpenAI sees full context + Claude's failure history
+   ├─ Apply OpenAI's fixes
    └─ Re-run build
 10. If succeeds at ANY step → Commit with note about auto-fix
 11. If all 3 attempts fail → Fail task with detailed errors for human
@@ -194,9 +194,9 @@ Run #213 - OD-33
 ├─ verifying: Re-running build after fixes
 ├─ fixing: Build failed, asking Claude to fix (attempt 2/3)    ← Self-healing attempt 2
 ├─ verifying: Re-running build after fixes
-├─ fixing: Build failed, asking OpenAI GPT-4 (attempt 3/3)    ← Escalation to GPT-4
+├─ fixing: Build failed, asking OpenAI (attempt 3/3)          ← Escalation to OpenAI
 ├─ verifying: Re-running build after fixes
-└─ completed: Run completed successfully (fixed by GPT-4)      ✅
+└─ completed: Run completed successfully (fixed by OpenAI)     ✅
 ```
 
 ### Log Messages
@@ -225,12 +225,12 @@ sudo journalctl -u moveware-ai-worker -f
 # Build still failing after Claude fix
 # ============================================================
 # ESCALATING TO OPENAI: Claude failed 2 times
-# Getting second opinion from GPT-4...
+# Getting second opinion from gpt-5.2-codex...
 # ============================================================
-# VERIFICATION FAILED - Attempt 3/3 using OpenAI GPT-4
-# Calling OpenAI GPT-4 to fix build errors...
+# VERIFICATION FAILED - Attempt 3/3 using OpenAI (gpt-5.2-codex)
+# Calling OpenAI (gpt-5.2-codex) to fix build errors...
 # Applying 2 file fixes...
-# ✅ Build succeeded after OpenAI GPT-4 fixes on attempt 3!
+# ✅ Build succeeded after OpenAI (gpt-5.2-codex) fixes on attempt 3!
 ```
 
 ## Configuration
@@ -343,7 +343,7 @@ for attempt in range(MAX_FIX_ATTEMPTS):
 ```
 Attempt 1 (Claude): Tries to add getHero() method, but places it incorrectly
 Attempt 2 (Claude): Tries again, still misses the TypeScript interface requirement  
-Attempt 3 (GPT-4): Recognizes the pattern from similar services, adds method + interface
+Attempt 3 (OpenAI): Recognizes the pattern from similar services, adds method + interface
 Result: ✅ Build succeeds
 ```
 

@@ -634,11 +634,11 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
             model_name = "Claude"
             model_provider = "anthropic"
         else:
-            model_name = "OpenAI GPT-4"
+            model_name = f"OpenAI ({settings.OPENAI_MODEL})"
             model_provider = "openai"
             print(f"\n{'='*60}")
             print(f"ESCALATING TO OPENAI: Claude failed {fix_attempt-1} times")
-            print(f"Getting second opinion from GPT-4...")
+            print(f"Getting second opinion from {settings.OPENAI_MODEL}...")
             print(f"{'='*60}\n")
         
         print(f"\nVERIFICATION FAILED - Attempt {fix_attempt}/{MAX_FIX_ATTEMPTS} using {model_name}")
@@ -812,21 +812,19 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
                 })
                 fix_text = AnthropicClient.extract_text(fix_raw)
             else:
-                # Use OpenAI as fallback
+                # Use OpenAI as fallback (using Responses API like planning does)
                 from app.llm.openai import OpenAIClient
                 openai_client = OpenAIClient(
                     api_key=settings.OPENAI_API_KEY,
                     model=settings.OPENAI_MODEL
                 )
                 
-                messages = [
-                    {"role": "system", "content": _system_prompt()},
-                    {"role": "user", "content": fix_prompt}
-                ]
+                # Combine system prompt and user prompt for Responses API
+                full_prompt = f"{_system_prompt()}\n\n{fix_prompt}"
                 
-                fix_raw = openai_client.chat_completion(messages, max_tokens=16000, temperature=1)
-                # OpenAI API returns: {"choices": [{"message": {"content": "..."}}]}
-                fix_text = fix_raw.get("choices", [{}])[0].get("message", {}).get("content", "")
+                fix_raw = openai_client.complete(full_prompt, max_output_tokens=16000)
+                # Responses API returns: {"output": "..."}
+                fix_text = fix_raw.get("output", "")
             
             # Parse fix response - be more aggressive about finding JSON
             fix_json_text = fix_text.strip()

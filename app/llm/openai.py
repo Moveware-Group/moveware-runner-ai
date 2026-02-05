@@ -32,18 +32,13 @@ class OpenAIClient:
         return r.json()
     
     def chat_completion(self, messages: list, max_tokens: int = 4000, temperature: float = 1.0) -> Dict:
-        """Send a chat completion request to OpenAI API."""
+        """Send a chat completion request to OpenAI API.
+        
+        Note: For gpt-5.2-codex, use complete() method with /v1/responses instead.
+        This method is for standard chat models like gpt-4o, gpt-4-turbo, etc.
+        """
         if not self.api_key:
             raise RuntimeError("Missing OPENAI_API_KEY")
-        
-        # Validate model name
-        valid_models = ["gpt-4o", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo", "gpt-4o-mini"]
-        if self.model not in valid_models:
-            raise RuntimeError(
-                f"Invalid OpenAI model: {self.model}\n"
-                f"Valid models: {', '.join(valid_models)}\n"
-                f"Update OPENAI_MODEL in .env file"
-            )
         
         url = "https://api.openai.com/v1/chat/completions"
         payload = {
@@ -63,8 +58,8 @@ class OpenAIClient:
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 404:
                 raise RuntimeError(
-                    f"OpenAI model '{self.model}' not found (404).\n"
-                    f"Valid models: {', '.join(valid_models)}\n"
-                    f"Update OPENAI_MODEL in .env to use a valid model like 'gpt-4o'"
+                    f"OpenAI model '{self.model}' not found at /v1/chat/completions.\n"
+                    f"For gpt-5.2-codex, the system should use the complete() method instead.\n"
+                    f"If using standard OpenAI models, valid options: gpt-4o, gpt-4-turbo, gpt-4, gpt-3.5-turbo"
                 ) from e
             raise

@@ -103,9 +103,9 @@ class HeroService {
 // Build fails: storage.read doesn't exist
 ```
 
-**Attempt 3 - GPT-4 (escalation):**
+**Attempt 3 - OpenAI Codex (escalation):**
 ```typescript
-// GPT-4 looks at other services, sees the pattern
+// Codex looks at other services, sees the pattern
 class HeroService {
   async getHero(): Promise<Hero | null> {
     const data = await getData<Hero>('hero');  // ✅ Correct pattern
@@ -150,13 +150,13 @@ Feb 05 15:45:26 VERIFICATION FAILED - Attempt 2/3 using Claude
 Feb 05 15:45:33 Build still failing after Claude fix
 Feb 05 15:45:34 ============================================================
 Feb 05 15:45:34 ESCALATING TO OPENAI: Claude failed 2 times
-Feb 05 15:45:34 Getting second opinion from GPT-4...
+Feb 05 15:45:34 Getting second opinion from OpenAI Codex...
 Feb 05 15:45:34 ============================================================
-Feb 05 15:45:35 VERIFICATION FAILED - Attempt 3/3 using OpenAI GPT-4
-Feb 05 15:45:42 Calling OpenAI GPT-4 to fix build errors...
+Feb 05 15:45:35 VERIFICATION FAILED - Attempt 3/3 using OpenAI Codex
+Feb 05 15:45:42 Calling OpenAI Codex to fix build errors...
 Feb 05 15:45:55 Applying 2 file fixes...
 Feb 05 15:45:55 Re-running build verification after fixes...
-Feb 05 15:46:08 ✅ Build succeeded after OpenAI GPT-4 fixes on attempt 3!
+Feb 05 15:46:08 ✅ Build succeeded after OpenAI Codex fixes on attempt 3!
 ```
 
 ### All Attempts Failed (Needs Human)
@@ -189,10 +189,10 @@ ANTHROPIC_API_KEY=sk-ant-...
 ANTHROPIC_MODEL=claude-sonnet-4-20250514
 
 OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-4o  # Recommended: gpt-4o, gpt-4-turbo, gpt-4, gpt-3.5-turbo
+OPENAI_MODEL=gpt-5.2-codex  # Uses OpenAI Responses API
 ```
 
-**Important:** Make sure to use a valid OpenAI model name. Common mistake: `gpt-5.2-codex` doesn't exist - use `gpt-4o` instead.
+**Note:** The system uses OpenAI's Responses API (`/v1/responses`), not the Chat Completions API. This works with models like `gpt-5.2-codex`.
 
 ### Adjusting Attempts
 
@@ -226,7 +226,7 @@ else:
 | Model | Input (per 1M tokens) | Output (per 1M tokens) | Typical Fix Cost |
 |-------|----------------------|------------------------|------------------|
 | Claude Sonnet 4 | $3.00 | $15.00 | $0.10 - $0.30 |
-| GPT-4 Turbo | $10.00 | $30.00 | $0.30 - $0.80 |
+| GPT-5.2 Codex | Variable | Variable | $0.30 - $0.80 |
 
 ### Scenario Analysis
 
@@ -238,15 +238,15 @@ else:
 - Cost: $0.30 (2 Claude attempts)
 - Time: 30 seconds
 
-**Scenario 3: GPT-4 succeeds on attempt 3 (5% of cases)**
-- Cost: $0.80 (2 Claude + 1 GPT-4)
+**Scenario 3: OpenAI succeeds on attempt 3 (5% of cases)**
+- Cost: $0.80 (2 Claude + 1 OpenAI)
 - Time: 45 seconds
 
 **Scenario 4: All fail (10% of cases)**
-- Cost: $1.10 (2 Claude + 1 GPT-4)
+- Cost: $1.10 (2 Claude + 1 OpenAI)
 - Time: 60 seconds + human time ($40/hour = $0.67/min = $40 for 60 min)
 
-**ROI:** Even with GPT-4, automated fixing is **50x cheaper** than human intervention when it succeeds.
+**ROI:** Even with OpenAI Codex, automated fixing is **50x cheaper** than human intervention when it succeeds.
 
 ## Monitoring
 
@@ -266,16 +266,16 @@ GROUP BY model_used;
 -- model_used | total_attempts | successes | success_rate
 -- -----------+----------------+-----------+-------------
 -- Claude     | 850            | 680       | 80.0%
--- GPT-4      | 150            | 120       | 80.0%
+-- OpenAI     | 150            | 120       | 80.0%
 ```
 
 ### Recommended Alerts
 
 Set up alerts for:
 
-1. **High GPT-4 Usage** - If >20% of fixes escalate to GPT-4
+1. **High OpenAI Usage** - If >20% of fixes escalate to OpenAI
    ```
-   Alert: GPT-4 usage above 20% (currently 35%)
+   Alert: OpenAI usage above 20% (currently 35%)
    Action: Review Claude prompts, may need improvement
    ```
 
@@ -376,7 +376,7 @@ grep "Build succeeded after" /var/log/ai-worker.log | \
 # Expected output:
 # 750 Claude attempt 1
 #  80 Claude attempt 2
-#  50 GPT-4 attempt 3
+#  50 OpenAI attempt 3
 #  20 (all failed)
 ```
 
