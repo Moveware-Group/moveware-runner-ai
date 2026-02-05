@@ -586,29 +586,126 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
                     verification_errors.append(f"Could not run build: {e}")
                     print(f"Build exception: {e}")
     
-    # If verification failed, FAIL THE TASK (don't commit broken code)
+    # If verification failed, try to fix the errors (self-healing)
     if verification_errors:
         error_msg = "\n\n".join(verification_errors)
-        print(f"VERIFICATION FAILED:\n{error_msg}")
+        print(f"VERIFICATION FAILED - Attempting to fix errors...\n{error_msg}")
         
-        # Post detailed error to Jira
-        jira_client = JiraClient(
-            base_url=settings.JIRA_BASE_URL,
-            email=settings.JIRA_EMAIL,
-            api_token=settings.JIRA_API_TOKEN
+        if run_id:
+            add_progress_event(run_id, "fixing", "Build failed, asking Claude to fix errors", {})
+        
+        # Ask Claude to fix the build errors
+        fix_prompt = (
+            f"The code you generated has build errors. Please fix ALL the errors below.\n\n"
+            f"**Original Task:** {issue.key}\n"
+            f"**Summary:** {issue.summary}\n\n"
+            f"**Build Errors:**\n```\n{error_msg}\n```\n\n"
+            f"**Current Repository State:**\n{context_info}\n\n"
+            f"Provide the COMPLETE fixed files as JSON with the same format as before.\n"
+            f"Focus ONLY on fixing the build errors. Do not add new features.\n\n"
+            f"Common fixes:\n"
+            f"- Add missing exports: If a function is used but not exported, add `export` keyword\n"
+            f"- Fix import paths: Verify all imports point to files that exist\n"
+            f"- Use valid Tailwind classes: Only use standard Tailwind utilities\n"
+            f"- Export service instances: Services should be exported as `export const serviceName = ...`\n"
+            f"- Check TypeScript types: Ensure all properties and types match"
         )
         
-        jira_comment = (
-            "❌ **Build Verification Failed**\n\n"
-            "The code changes did not pass verification. Please review and fix the following errors:\n\n"
-            f"{error_msg}\n\n"
-            "---\n"
-            "*Code was not committed. Task will be retried.*"
-        )
-        jira_client.add_comment(issue.key, jira_comment)
+        try:
+            print("Calling Claude to fix build errors...")
+            fix_raw = client.messages_create({
+                "model": settings.ANTHROPIC_MODEL,
+                "system": _system_prompt(),
+                "messages": [{"role": "user", "content": fix_prompt}],
+                "max_tokens": 16000,
+                "temperature": 1,
+                "thinking": {
+                    "type": "enabled",
+                    "budget_tokens": 5000
+                }
+            })
+            
+            fix_text = AnthropicClient.extract_text(fix_raw)
+            
+            # Parse fix response
+            fix_json_text = fix_text.strip()
+            lines = fix_json_text.split('\n')
+            if lines[0].strip().startswith('```'):
+                lines = lines[1:]
+                for i in range(len(lines) - 1, -1, -1):
+                    if lines[i].strip() == '```':
+                        lines = lines[:i]
+                        break
+                fix_json_text = '\n'.join(lines)
+            
+            fix_payload = json.loads(fix_json_text)
+            
+            # Apply the fixes
+            fix_files = fix_payload.get("files", [])
+            if fix_files:
+                print(f"Applying {len(fix_files)} file fixes...")
+                fixed_files = []
+                for file_op in fix_files:
+                    file_path = repo_path / file_op["path"]
+                    action = file_op.get("action", "update")
+                    
+                    if action in ("create", "update"):
+                        content = file_op.get("content", "")
+                        file_path.parent.mkdir(parents=True, exist_ok=True)
+                        file_path.write_text(content, encoding="utf-8")
+                        fixed_files.append(file_op['path'])
+                
+                # Re-run verification after fixes
+                print("Re-running build verification after fixes...")
+                if run_id:
+                    add_progress_event(run_id, "verifying", "Re-running build after fixes", {})
+                
+                verification_errors = []  # Reset errors
+                
+                if is_nextjs:
+                    result = subprocess.run(
+                        ["npm", "run", "build"],
+                        cwd=repo_path,
+                        capture_output=True,
+                        text=True,
+                        timeout=180
+                    )
+                    
+                    if result.returncode != 0:
+                        error_output = result.stderr if result.stderr else result.stdout
+                        verification_errors.append(f"Build still failing after fix attempt:\n{error_output[:1000]}")
+                        print(f"Build still failing:\n{error_output[:500]}")
+                    else:
+                        print("✅ Build succeeded after fixes!")
+                        notes += "\n\n⚠️ *Note: Initial build failed, but Claude automatically fixed the errors and build now succeeds.*"
+            
+        except Exception as e:
+            print(f"Failed to auto-fix errors: {e}")
+            verification_errors.append(f"Auto-fix attempt failed: {e}")
         
-        # Raise error to fail the task
-        raise RuntimeError(f"Build verification failed:\n{error_msg}")
+        # If still failing after fix attempt, FAIL THE TASK
+        if verification_errors:
+            error_msg = "\n\n".join(verification_errors)
+            print(f"VERIFICATION STILL FAILING:\n{error_msg}")
+            
+            # Post detailed error to Jira
+            jira_client = JiraClient(
+                base_url=settings.JIRA_BASE_URL,
+                email=settings.JIRA_EMAIL,
+                api_token=settings.JIRA_API_TOKEN
+            )
+            
+            jira_comment = (
+                "❌ **Build Verification Failed**\n\n"
+                "The code changes did not pass verification even after attempting auto-fix.\n\n"
+                f"**Errors:**\n{error_msg}\n\n"
+                "---\n"
+                "*Code was not committed. Please review the errors and reassign the task.*"
+            )
+            jira_client.add_comment(issue.key, jira_comment)
+            
+            # Raise error to fail the task
+            raise RuntimeError(f"Build verification failed after fix attempt:\n{error_msg}")
     
     if run_id:
         add_progress_event(run_id, "committing", f"Committing changes: {len(files_changed)} files", {"file_count": len(files_changed)})
