@@ -189,8 +189,10 @@ ANTHROPIC_API_KEY=sk-ant-...
 ANTHROPIC_MODEL=claude-sonnet-4-20250514
 
 OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-4o  # or gpt-4-turbo
+OPENAI_MODEL=gpt-4o  # Recommended: gpt-4o, gpt-4-turbo, gpt-4, gpt-3.5-turbo
 ```
+
+**Important:** Make sure to use a valid OpenAI model name. Common mistake: `gpt-5.2-codex` doesn't exist - use `gpt-4o` instead.
 
 ### Adjusting Attempts
 

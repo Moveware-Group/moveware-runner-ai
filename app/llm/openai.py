@@ -36,6 +36,15 @@ class OpenAIClient:
         if not self.api_key:
             raise RuntimeError("Missing OPENAI_API_KEY")
         
+        # Validate model name
+        valid_models = ["gpt-4o", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo", "gpt-4o-mini"]
+        if self.model not in valid_models:
+            raise RuntimeError(
+                f"Invalid OpenAI model: {self.model}\n"
+                f"Valid models: {', '.join(valid_models)}\n"
+                f"Update OPENAI_MODEL in .env file"
+            )
+        
         url = "https://api.openai.com/v1/chat/completions"
         payload = {
             "model": self.model,
@@ -47,6 +56,15 @@ class OpenAIClient:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        r = requests.post(url, json=payload, headers=headers, timeout=180)
-        r.raise_for_status()
-        return r.json()
+        try:
+            r = requests.post(url, json=payload, headers=headers, timeout=180)
+            r.raise_for_status()
+            return r.json()
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 404:
+                raise RuntimeError(
+                    f"OpenAI model '{self.model}' not found (404).\n"
+                    f"Valid models: {', '.join(valid_models)}\n"
+                    f"Update OPENAI_MODEL in .env to use a valid model like 'gpt-4o'"
+                ) from e
+            raise
