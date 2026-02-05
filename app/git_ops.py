@@ -32,6 +32,29 @@ def https_repo_url(repo: str, token: str) -> str:
     return f"https://github.com/{repo}.git"
 
 
+def clean_working_directory(workdir: str) -> None:
+    """Clean uncommitted changes in the working directory.
+    
+    This is needed because automated processes (like npm install) may modify
+    files like package-lock.json and tsconfig.json, which would block git
+    checkout operations. Since the AI Runner commits all intentional changes,
+    any uncommitted changes are safe to discard.
+    """
+    try:
+        # Check if there are any uncommitted changes
+        status = run(["git", "status", "--porcelain"], cwd=workdir)
+        if status.strip():
+            print(f"Cleaning uncommitted changes in {workdir}")
+            # Reset all tracked files to HEAD
+            run(["git", "reset", "--hard", "HEAD"], cwd=workdir)
+            # Remove untracked files and directories
+            run(["git", "clean", "-fd"], cwd=workdir)
+            print("Working directory cleaned successfully")
+    except Exception as e:
+        # If git commands fail, log but don't crash - repo might not exist yet
+        print(f"Warning: Could not clean working directory: {e}")
+
+
 def checkout_repo(workdir: str, repo: str, base_branch: str, token: Optional[str] = None) -> None:
     """Checkout or update a repository. If token is None, uses settings."""
     from .config import settings
@@ -41,15 +64,26 @@ def checkout_repo(workdir: str, repo: str, base_branch: str, token: Optional[str
     repo_url = https_repo_url(repo, _token)
     if not (Path(workdir) / ".git").exists():
         run(["git", "clone", repo_url, "."], cwd=workdir)
+    
     # Ensure origin is correct (handles switching from a non-token URL)
     run(["git", "remote", "set-url", "origin", repo_url], cwd=workdir)
+    
+    # Clean any uncommitted changes before fetching/checking out
+    # This handles cases where npm install or other processes modified files
+    clean_working_directory(workdir)
+    
     run(["git", "fetch", "--all", "--prune"], cwd=workdir)
     run(["git", "checkout", base_branch], cwd=workdir)
     run(["git", "pull", "--ff-only"], cwd=workdir)
 
 
 def create_or_checkout_branch(workdir: str, branch: str) -> None:
-    # -B recreates local branch pointer; safe because we always push by HEAD later.
+    """Create or checkout a branch, cleaning working directory first.
+    
+    -B recreates local branch pointer; safe because we always push by HEAD later.
+    """
+    # Clean any uncommitted changes before checkout
+    clean_working_directory(workdir)
     run(["git", "checkout", "-B", branch], cwd=workdir)
 
 
@@ -131,6 +165,9 @@ def create_branch(workdir: str, branch: str) -> None:
 
 def checkout_or_create_story_branch(workdir: str, story_branch: str, base_branch: str) -> None:
     """Checkout Story branch if it exists on remote, otherwise create it from base."""
+    # Clean any uncommitted changes before checkout operations
+    clean_working_directory(workdir)
+    
     # Fetch to ensure we have latest remote state
     run(["git", "fetch", "--all"], cwd=workdir)
     
