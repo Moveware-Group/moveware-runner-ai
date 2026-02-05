@@ -623,13 +623,36 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
         except Exception as e:
             print(f"Note: Could not clean up build locks: {e}")
         
+        # Extract file paths from error messages to provide relevant context
+        error_files = set()
+        import re
+        # Find file paths in error messages (e.g., ./online-docs/lib/services/brandingService.ts)
+        file_pattern = r'\./[^\s:]+\.(ts|tsx|js|jsx|css)'
+        for match in re.finditer(file_pattern, error_msg):
+            file_path_str = match.group(0).replace('./', '')
+            error_files.add(file_path_str)
+        
+        # Read the actual content of files mentioned in errors
+        error_file_contents = []
+        for error_file in error_files:
+            file_path = repo_path / error_file
+            if file_path.exists():
+                try:
+                    content = file_path.read_text(encoding="utf-8")
+                    error_file_contents.append(f"\n**Current {error_file}:**\n```\n{content[:3000]}\n```")
+                except Exception:
+                    pass
+        
+        error_context = "\n".join(error_file_contents) if error_file_contents else ""
+        
         # Ask Claude to fix the build errors
         fix_prompt = (
             f"The code you generated has build errors. Please fix ALL the errors below.\n\n"
             f"**Original Task:** {issue.key}\n"
             f"**Summary:** {issue.summary}\n\n"
             f"**Build Errors:**\n```\n{error_msg[:1500]}\n```\n\n"  # Limit error size
-            f"**Current Repository State:**\n{context_info}\n\n"
+            f"{error_context}\n\n"  # Show actual file contents with errors
+            f"**Repository Context:**\n{context_info}\n\n"
             f"**CRITICAL:** Your response MUST be ONLY valid JSON. No markdown, no explanation, JUST JSON.\n\n"
             f"Provide the COMPLETE fixed files as JSON with this EXACT format:\n"
             f"{{\n"
