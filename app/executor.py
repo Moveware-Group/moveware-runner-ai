@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 from .config import settings
 from .git_ops import checkout_repo, create_branch, commit_and_push, create_pr, checkout_or_create_story_branch
 from .jira import JiraClient
+from .jira_adf import adf_to_plain_text
 from .llm_anthropic import AnthropicClient
 from .models import JiraIssue
 from .db import add_progress_event
@@ -162,6 +163,46 @@ def _get_repo_context(repo_path: Path, issue: JiraIssue) -> str:
     return "\n".join(context)
 
 
+def _get_human_comments(issue_key: str) -> str:
+    """Fetch human comments from the Jira issue to provide clarifications and context."""
+    try:
+        jira = JiraClient(
+            base_url=settings.JIRA_BASE_URL,
+            email=settings.JIRA_EMAIL,
+            api_token=settings.JIRA_API_TOKEN
+        )
+        comments = jira.get_comments(issue_key)
+        
+        human_comments = []
+        for c in comments:
+            author = c.get("author", {})
+            author_id = author.get("accountId") if isinstance(author, dict) else None
+            
+            # Skip AI's own comments
+            if author_id == settings.JIRA_AI_ACCOUNT_ID:
+                continue
+            
+            # Get comment body
+            body = c.get("body", "")
+            if isinstance(body, dict):
+                body_text = adf_to_plain_text(body)
+            else:
+                body_text = body
+                
+            if body_text.strip():
+                author_name = author.get("displayName", "User") if isinstance(author, dict) else "User"
+                created = c.get("created", "")
+                human_comments.append(f"[{created}] {author_name}:\n{body_text.strip()}")
+        
+        if not human_comments:
+            return ""
+        
+        return "\n\n".join(human_comments)
+    except Exception as e:
+        print(f"Warning: Could not fetch comments for {issue_key}: {e}")
+        return ""
+
+
 def _system_prompt() -> str:
     return (
         "You are an expert software engineer implementing a Jira sub-task. "
@@ -242,11 +283,23 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
     repo_path = Path(settings.REPO_WORKDIR)
     context_info = _get_repo_context(repo_path, issue)
     
+    # Get human comments for additional context/clarifications
+    human_comments = _get_human_comments(issue.key)
+    
     prompt = (
         f"Implement this Jira sub-task:\n\n"
         f"**Task:** {issue.key}\n"
         f"**Summary:** {issue.summary}\n\n"
         f"**Requirements:**\n{issue.description}\n\n"
+    )
+    
+    if human_comments:
+        prompt += (
+            f"**Additional Clarifications from Comments:**\n"
+            f"{human_comments}\n\n"
+        )
+    
+    prompt += (
         f"**Repository Context:**\n{context_info}\n\n"
         f"Provide your implementation as JSON following the specified format."
     )
