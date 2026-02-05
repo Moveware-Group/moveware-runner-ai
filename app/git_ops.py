@@ -74,7 +74,8 @@ def checkout_repo(workdir: str, repo: str, base_branch: str, token: Optional[str
     
     run(["git", "fetch", "--all", "--prune"], cwd=workdir)
     run(["git", "checkout", base_branch], cwd=workdir)
-    run(["git", "pull", "--ff-only"], cwd=workdir)
+    # Explicitly specify remote and branch to avoid ambiguity
+    run(["git", "pull", "--ff-only", "origin", base_branch], cwd=workdir)
 
 
 def create_or_checkout_branch(workdir: str, branch: str) -> None:
