@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional, List
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app.config import settings
@@ -18,6 +18,12 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 @app.on_event("startup")
 def _startup() -> None:
     init_db()
+
+
+@app.get("/")
+def root():
+    """Redirect root to the dashboard."""
+    return RedirectResponse(url="/status")
 
 
 @app.get("/health")
