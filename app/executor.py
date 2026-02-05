@@ -293,6 +293,18 @@ def _system_prompt() -> str:
         "- For updates, provide the COMPLETE file content (not diffs)\n"
         "- Keep changes focused on the specific sub-task requirements\n"
         "- If requirements are unclear, include an 'questions' array in JSON instead of 'files'\n\n"
+        "**🚨 CRITICAL SCOPE RULES - MUST FOLLOW:**\n"
+        "- ONLY implement what is EXPLICITLY stated in the task requirements\n"
+        "- Do NOT add features, pages, or components that are not mentioned in the requirements\n"
+        "- Do NOT add 'nice to have' functionality or try to be 'helpful' by adding extras\n"
+        "- Do NOT create dashboard pages, admin panels, or analytics unless specifically requested\n"
+        "- Do NOT add authentication, logging, or monitoring unless explicitly required\n"
+        "- If you think something is missing from the requirements:\n"
+        "  * DO NOT implement it\n"
+        "  * Instead, add a question in the 'questions' array asking for clarification\n"
+        "- Every file you create or modify MUST be directly mentioned or implied by the task\n"
+        "- When in doubt, implement LESS rather than MORE\n"
+        "- Remember: Adding unauthorized features wastes time and creates bugs\n\n"
         "**CRITICAL BUILD VERIFICATION:**\n"
         "- For Next.js/React projects, your code will be verified with `npm run build`\n"
         "- If the build fails, the task will FAIL and you'll need to fix it\n"
@@ -400,6 +412,9 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
     
     prompt += (
         f"**Repository Context:**\n{context_info}\n\n"
+        f"**REMINDER - SCOPE CHECK:**\n"
+        f"Before implementing, verify that EVERY file you create is explicitly mentioned in the requirements above.\n"
+        f"If you're creating a file that isn't directly requested, STOP and ask a question instead.\n\n"
         f"Provide your implementation as JSON following the specified format."
     )
     
