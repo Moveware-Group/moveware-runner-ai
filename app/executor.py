@@ -23,8 +23,14 @@ class ExecutionResult:
     jira_comment: str
 
 
-def _get_repo_context(repo_path: Path, issue: JiraIssue) -> str:
-    """Get comprehensive repository context for Claude, including code and history."""
+def _get_repo_context(repo_path: Path, issue: JiraIssue, include_all_code: bool = False) -> str:
+    """Get comprehensive repository context for Claude, including code and history.
+    
+    Args:
+        repo_path: Path to repository
+        issue: Jira issue being processed
+        include_all_code: If True, includes all source files (used for error fixing)
+    """
     context = []
     
     # 1. Git commit history (last 10 commits)
@@ -90,20 +96,39 @@ def _get_repo_context(repo_path: Path, issue: JiraIssue) -> str:
     desc_lower = (issue.description or "").lower()
     combined_text = f"{summary_lower} {desc_lower}"
     
-    # Map keywords to files
-    keyword_files = {
-        'layout': ['app/layout.tsx', 'src/app/layout.tsx', 'components/layout.tsx'],
-        'theme': ['styles/theme.ts', 'lib/theme.ts', 'src/styles/theme.ts', 'app/theme.ts'],
-        'config': ['next.config.js', 'next.config.mjs', 'tailwind.config.js', 'tsconfig.json'],
-        'api': ['app/api/**/*.ts', 'pages/api/**/*.ts'],
-        'auth': ['lib/auth.ts', 'middleware.ts', 'app/api/auth/**/*.ts'],
-        'database': ['lib/db.ts', 'lib/prisma.ts', 'prisma/schema.prisma'],
-    }
-    
     files_to_read = set()
-    for keyword, file_patterns in keyword_files.items():
-        if keyword in combined_text:
-            files_to_read.update(file_patterns)
+    
+    if include_all_code:
+        # For error fixing: include ALL source files for full context
+        context.append("\n**=== COMPREHENSIVE CODE CONTEXT ===**\n")
+        try:
+            # Include all TypeScript/JavaScript/CSS files in key directories
+            for pattern in ['lib/**/*.ts', 'lib/**/*.tsx', 'app/**/*.ts', 'app/**/*.tsx', 
+                           'app/**/*.css', 'components/**/*.ts', 'components/**/*.tsx']:
+                pattern_parts = pattern.split('**/')
+                if len(pattern_parts) == 2:
+                    base_dir = repo_path / pattern_parts[0].rstrip('/')
+                    if base_dir.exists():
+                        for file_path in base_dir.rglob(pattern_parts[1]):
+                            if file_path.is_file():
+                                files_to_read.add(str(file_path.relative_to(repo_path)))
+        except Exception:
+            pass
+    else:
+        # Normal mode: keyword-based file selection
+        # Map keywords to files
+        keyword_files = {
+            'layout': ['app/layout.tsx', 'src/app/layout.tsx', 'components/layout.tsx'],
+            'theme': ['styles/theme.ts', 'lib/theme.ts', 'src/styles/theme.ts', 'app/theme.ts'],
+            'config': ['next.config.js', 'next.config.mjs', 'tailwind.config.js', 'tsconfig.json'],
+            'api': ['app/api/**/*.ts', 'pages/api/**/*.ts'],
+            'auth': ['lib/auth.ts', 'middleware.ts', 'app/api/auth/**/*.ts'],
+            'database': ['lib/db.ts', 'lib/prisma.ts', 'prisma/schema.prisma'],
+        }
+        
+        for keyword, file_patterns in keyword_files.items():
+            if keyword in combined_text:
+                files_to_read.update(file_patterns)
     
     # Read matched files
     for file_pattern in files_to_read:
@@ -700,6 +725,9 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
         
         error_context = "\n".join(error_file_contents) if error_file_contents else ""
         
+        # Get comprehensive repository context for fixing (includes ALL code)
+        comprehensive_context = _get_repo_context(repo_path, issue, include_all_code=True)
+        
         # Ask Claude to fix the build errors
         fix_prompt = (
             f"The code you generated has build errors. Please fix ALL the errors below.\n\n"
@@ -707,7 +735,7 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
             f"**Summary:** {issue.summary}\n\n"
             f"**Build Errors:**\n```\n{error_msg[:1500]}\n```\n\n"  # Limit error size
             f"{error_context}\n\n"  # Show actual file contents with errors
-            f"**Repository Context:**\n{context_info}\n\n"
+            f"**Full Repository Context (for debugging):**\n{comprehensive_context}\n\n"
             f"**CRITICAL:** Your response MUST be ONLY valid JSON. No markdown, no explanation, JUST JSON.\n\n"
             f"Provide the COMPLETE fixed files as JSON with this EXACT format:\n"
             f"{{\n"
