@@ -4,7 +4,7 @@
 
 set -e
 
-echo "Setting up NGINX for ai-console.holdingsite.com.au..."
+echo "Setting up NGINX for ai-console.moveconnect.com..."
 
 # 1. Copy NGINX config to sites-available
 echo "1. Copying NGINX configuration..."
@@ -26,7 +26,7 @@ echo ""
 echo "✅ NGINX configuration deployed successfully!"
 echo ""
 echo "Next steps:"
-echo "1. Ensure DNS for ai-console.holdingsite.com.au points to this server"
-echo "2. Test HTTP access: http://ai-console.holdingsite.com.au"
+echo "1. Ensure DNS for ai-console.moveconnect.com points to this server"
+echo "2. Test HTTP access: http://ai-console.moveconnect.com"
 echo "3. Set up SSL with: sudo ./scripts/setup_ssl_dashboard.sh"
 echo ""

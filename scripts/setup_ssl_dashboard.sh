@@ -4,7 +4,7 @@
 
 set -e
 
-DOMAIN="ai-console.holdingsite.com.au"
+DOMAIN="ai-console.moveconnect.com"
 EMAIL="your-email@example.com"  # Update this!
 
 echo "Setting up SSL for ${DOMAIN}..."

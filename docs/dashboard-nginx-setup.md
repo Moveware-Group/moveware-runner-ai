@@ -1,10 +1,10 @@
 # AI Runner Dashboard - NGINX Setup Guide
 
-This guide explains how to set up NGINX to proxy the AI Runner dashboard at `ai-console.holdingsite.com.au`.
+This guide explains how to set up NGINX to proxy the AI Runner dashboard at `ai-console.moveconnect.com`.
 
 ## Prerequisites
 
-1. DNS record for `ai-console.holdingsite.com.au` pointing to your server's IP
+1. DNS record for `ai-console.moveconnect.com` pointing to your server's IP
 2. NGINX installed on the server
 3. Ports 80 and 443 open in firewall
 4. The AI Runner orchestrator running on port 8088
@@ -25,7 +25,7 @@ sudo chmod +x scripts/setup_nginx_dashboard.sh scripts/setup_ssl_dashboard.sh
 sudo ./scripts/setup_nginx_dashboard.sh
 
 # 4. Test HTTP access
-curl -I http://ai-console.holdingsite.com.au
+curl -I http://ai-console.moveconnect.com
 
 # 5. Set up SSL (update EMAIL in script first!)
 sudo nano scripts/setup_ssl_dashboard.sh  # Update EMAIL variable
@@ -48,10 +48,10 @@ sudo nginx -t
 sudo systemctl reload nginx
 
 # 5. Test HTTP access
-curl http://ai-console.holdingsite.com.au/health
+curl http://ai-console.moveconnect.com/health
 
 # 6. Set up SSL with Certbot
-sudo certbot --nginx -d ai-console.holdingsite.com.au
+sudo certbot --nginx -d ai-console.moveconnect.com
 ```
 
 ## What's Configured
@@ -68,10 +68,10 @@ The NGINX configuration (`ops/nginx/ai-console.conf`) sets up:
 
 After setup:
 
-- **HTTP**: http://ai-console.holdingsite.com.au
-- **HTTPS**: https://ai-console.holdingsite.com.au (after SSL setup)
-- **Health Check**: http://ai-console.holdingsite.com.au/health
-- **API**: http://ai-console.holdingsite.com.au/api/status
+- **HTTP**: http://ai-console.moveconnect.com
+- **HTTPS**: https://ai-console.moveconnect.com (after SSL setup)
+- **Health Check**: http://ai-console.moveconnect.com/health
+- **API**: http://ai-console.moveconnect.com/api/status
 
 ## Dashboard Features
 
@@ -121,10 +121,10 @@ sudo certbot renew --force-renewal
 ### DNS not resolving
 ```bash
 # Check DNS
-nslookup ai-console.holdingsite.com.au
+nslookup ai-console.moveconnect.com
 
 # Test with IP directly
-curl -H "Host: ai-console.holdingsite.com.au" http://your-server-ip/health
+curl -H "Host: ai-console.moveconnect.com" http://your-server-ip/health
 ```
 
 ## Security Considerations
