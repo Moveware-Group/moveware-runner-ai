@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+import os
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
@@ -14,6 +15,7 @@ from .models import JiraIssue, parse_issue
 from .planner import PlanResult, build_plan
 from .router import Action, Router
 from .repo_config import get_repo_for_issue
+from .logger import ContextLogger, get_logger
 
 
 @dataclass
@@ -570,27 +572,51 @@ def process_run(ctx: Context, run_id: int, issue_key: str, payload: Dict[str, An
     update_run(run_id, status="completed", locked_by=None, locked_at=None)
 
 
-def worker_loop(poll_interval_seconds: float = 2.0, worker_id: str = "worker-1") -> None:
-    """Main worker loop that claims and processes runs."""
+def worker_loop(poll_interval_seconds: float = 2.0, worker_id: str = "worker-1", use_smart_queue: Optional[bool] = None) -> None:
+    """
+    Main worker loop that claims and processes runs.
+    
+    Args:
+        poll_interval_seconds: Seconds between polls
+        worker_id: Worker identifier
+        use_smart_queue: If True, use priority queue. If None, reads from USE_SMART_QUEUE env var (default: True)
+    """
     init_db()
     ctx = Context(jira=JiraClient(), router=Router())
     
-    print(f"Worker {worker_id} started, polling every {poll_interval_seconds}s")
+    # Initialize logger
+    logger = get_logger()
+    
+    # Determine which claim function to use
+    if use_smart_queue is None:
+        use_smart_queue = os.getenv("USE_SMART_QUEUE", "true").lower() in ("true", "1", "yes")
+    
+    if use_smart_queue:
+        from .queue_manager import claim_next_run_smart
+        claim_func = lambda w: claim_next_run_smart(w, max_concurrent_per_repo=1, respect_priorities=True)
+        logger.info(f"Worker {worker_id} started with SMART QUEUE (priorities + conflict avoidance), polling every {poll_interval_seconds}s")
+    else:
+        claim_func = claim_next_run
+        logger.info(f"Worker {worker_id} started with BASIC QUEUE (FIFO), polling every {poll_interval_seconds}s")
 
     while True:
-        result = claim_next_run(worker_id)
+        result = claim_func(worker_id)
         if not result:
             time.sleep(poll_interval_seconds)
             continue
 
         run_id, issue_key, payload = result
-        print(f"Claimed run {run_id} for issue {issue_key}")
+        
+        # Create context logger for this run
+        run_logger = ContextLogger(run_id=run_id, issue_key=issue_key, worker_id=worker_id)
+        run_logger.info(f"Claimed run for processing")
         
         try:
             process_run(ctx, run_id, issue_key, payload)
+            run_logger.info(f"Run completed successfully")
         except Exception as e:
             error_msg = f"ERROR processing run {run_id}: {e}"
-            print(error_msg)
+            run_logger.error(error_msg, exc_info=True)
             add_progress_event(run_id, "failed", f"Error: {str(e)[:100]}", {})
             add_event(run_id, "error", str(e), {})
             update_run(run_id, status="failed", last_error=str(e), locked_by=None, locked_at=None)

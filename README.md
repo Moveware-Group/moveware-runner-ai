@@ -78,12 +78,64 @@ pip install -r requirements.txt
 cp .env.example .env
 # edit .env
 
+# Validate configuration
+python validate_config.py
+
+# Run orchestrator (webhook receiver + dashboard)
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8088
+
+# Run worker (in separate terminal)
 python -m app.worker
+
+# Run tests
+python test_all_improvements.py
 ```
 
-## Production notes
+## Dashboard
 
+Access the web dashboard at: http://localhost:8088/status
+
+Features:
+- Real-time run status updates
+- Performance metrics (success rate, cost, duration)
+- Error category breakdown
+- Queue statistics
+- Auto-refresh every 5 seconds
+
+Production: https://ai-console.moveconnect.com
+
+## Production features
+
+### Multi-Model AI
+- **Planning**: Claude (extended thinking) + ChatGPT review
+- **Execution**: Claude with prompt caching (90% cost reduction)
+- **Self-healing**: Error classification + targeted fixes + escalation
+
+### Quality Assurance
+- **Pre-commit checks**: TypeScript, ESLint, imports, package.json
+- **Test execution**: Runs test suite before commit
+- **Build verification**: Catches errors before commit
+- **Rollback tags**: Safety net for every commit
+
+### Queue Management
+- **Smart queue**: Priority-based (URGENT > HIGH > NORMAL > LOW)
+- **Conflict avoidance**: Max 1 run per repo concurrently
+- **Load balancing**: Distributes across repositories
+- **Auto-priority**: Detects from Jira labels
+
+### Observability
+- **Metrics tracking**: Timing, costs, tokens, success rates
+- **Enhanced logging**: Structured JSON or colored console
+- **Dashboard**: Real-time metrics and queue visualization
+- **Health endpoints**: Detailed system status
+
+### Reliability
+- **Retry with backoff**: Handles rate limits gracefully
+- **Error classification**: 8 categories with targeted hints
+- **Rate limiting**: Thread-safe token bucket
+- **Rollback capability**: Undo bad commits easily
+
+### Security
 - Run behind Nginx with TLS (LetsEncrypt) and rate limiting.
 - Validate Jira webhooks via a shared secret header.
 - Use a dedicated Jira user for the AI Runner to keep auditability.

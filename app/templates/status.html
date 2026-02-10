@@ -292,6 +292,97 @@
             animation: spin 1s linear infinite;
             margin-right: 10px;
         }
+        
+        /* Metrics Section */
+        .metrics-section {
+            margin-bottom: 30px;
+            padding: 25px;
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 8px;
+        }
+        
+        .metrics-title {
+            font-size: 1.5em;
+            color: #00d4ff;
+            margin-bottom: 20px;
+            font-weight: 600;
+        }
+        
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+        }
+        
+        .metric-card {
+            background: #0f0f0f;
+            padding: 20px;
+            border-radius: 6px;
+            border-left: 3px solid #00d4ff;
+        }
+        
+        .metric-card.success {
+            border-left-color: #00ff88;
+        }
+        
+        .metric-card.cost {
+            border-left-color: #ffaa00;
+        }
+        
+        .metric-card.time {
+            border-left-color: #aa00ff;
+        }
+        
+        .metric-card.error {
+            border-left-color: #ff4444;
+        }
+        
+        .metric-label {
+            color: #888;
+            font-size: 0.85em;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+        
+        .metric-value {
+            color: #fff;
+            font-size: 2em;
+            font-weight: 700;
+        }
+        
+        .metric-subtext {
+            color: #666;
+            font-size: 0.8em;
+            margin-top: 5px;
+        }
+        
+        .error-categories {
+            margin-top: 20px;
+            padding: 15px;
+            background: #0f0f0f;
+            border-radius: 6px;
+        }
+        
+        .error-categories-title {
+            color: #ff4444;
+            font-size: 0.9em;
+            font-weight: 600;
+            margin-bottom: 10px;
+        }
+        
+        .error-tag {
+            display: inline-block;
+            padding: 4px 10px;
+            background: #2a1a1a;
+            border: 1px solid #ff4444;
+            border-radius: 4px;
+            color: #ff4444;
+            font-size: 0.75em;
+            margin-right: 8px;
+            margin-bottom: 8px;
+        }
     </style>
 </head>
 <body>
@@ -305,6 +396,38 @@
             </label>
             <span class="last-updated" id="lastUpdated">Loading...</span>
         </div>
+    </div>
+    
+    <!-- Metrics Section -->
+    <div class="metrics-section" id="metricsSection">
+        <div class="metrics-title">📊 Performance Metrics (Last 24h)</div>
+        <div class="metrics-grid">
+            <div class="metric-card success">
+                <div class="metric-label">Success Rate</div>
+                <div class="metric-value" id="successRate">--</div>
+                <div class="metric-subtext" id="successSubtext">--</div>
+            </div>
+            
+            <div class="metric-card cost">
+                <div class="metric-label">Total Cost</div>
+                <div class="metric-value" id="totalCost">--</div>
+                <div class="metric-subtext">API usage (USD)</div>
+            </div>
+            
+            <div class="metric-card time">
+                <div class="metric-label">Avg Duration</div>
+                <div class="metric-value" id="avgDuration">--</div>
+                <div class="metric-subtext">per issue</div>
+            </div>
+            
+            <div class="metric-card">
+                <div class="metric-label">Total Tokens</div>
+                <div class="metric-value" id="totalTokens">--</div>
+                <div class="metric-subtext" id="tokensSubtext">input + output</div>
+            </div>
+        </div>
+        
+        <div id="errorCategoriesSection"></div>
     </div>
     
     <div id="runsContainer" class="runs-container">
@@ -335,6 +458,58 @@
             if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
             if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
             return `${Math.floor(diff / 86400)}d ago`;
+        }
+        
+        // Fetch and render metrics
+        async function fetchMetrics() {
+            try {
+                const response = await fetch('/api/metrics/summary?hours=24');
+                const data = await response.json();
+                
+                renderMetrics(data);
+            } catch (error) {
+                console.error('Failed to fetch metrics:', error);
+            }
+        }
+        
+        // Render metrics
+        function renderMetrics(data) {
+            if (!data || data.total_runs === 0) {
+                document.getElementById('metricsSection').style.display = 'none';
+                return;
+            }
+            
+            // Success rate
+            document.getElementById('successRate').textContent = `${data.success_rate}%`;
+            document.getElementById('successSubtext').textContent = 
+                `${data.completed} completed, ${data.failed} failed`;
+            
+            // Total cost
+            document.getElementById('totalCost').textContent = `$${data.total_cost_usd}`;
+            
+            // Average duration
+            const avgMin = Math.floor(data.avg_duration_seconds / 60);
+            const avgSec = Math.floor(data.avg_duration_seconds % 60);
+            document.getElementById('avgDuration').textContent = `${avgMin}m ${avgSec}s`;
+            
+            // Total tokens
+            const tokensK = Math.round(data.total_tokens / 1000);
+            document.getElementById('totalTokens').textContent = `${tokensK}K`;
+            document.getElementById('tokensSubtext').textContent = 
+                `${data.total_runs} runs processed`;
+            
+            // Error categories
+            if (data.error_categories && Object.keys(data.error_categories).length > 0) {
+                const errorHtml = `
+                    <div class="error-categories">
+                        <div class="error-categories-title">⚠️ Recent Error Categories</div>
+                        ${Object.entries(data.error_categories).map(([category, count]) => 
+                            `<span class="error-tag">${category}: ${count}</span>`
+                        ).join('')}
+                    </div>
+                `;
+                document.getElementById('errorCategoriesSection').innerHTML = errorHtml;
+            }
         }
         
         // Fetch and render status
@@ -428,7 +603,11 @@
         // Auto-refresh every 5 seconds
         function startAutoRefresh() {
             fetchStatus(); // Initial fetch
-            autoRefreshInterval = setInterval(fetchStatus, 5000);
+            fetchMetrics(); // Initial metrics fetch
+            autoRefreshInterval = setInterval(() => {
+                fetchStatus();
+                fetchMetrics();
+            }, 5000);
         }
         
         // Start when page loads

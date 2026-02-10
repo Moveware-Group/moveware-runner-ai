@@ -51,6 +51,10 @@ def init_db() -> None:
         cx.execute("CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status);")
         cx.execute("CREATE INDEX IF NOT EXISTS idx_runs_issue ON runs(issue_key);")
         cx.execute("CREATE INDEX IF NOT EXISTS idx_plans_issue ON plans(issue_key);")
+    
+    # Initialize queue management schema
+    from .queue_manager import init_queue_schema
+    init_queue_schema()
 
 
 @contextmanager
@@ -66,17 +70,42 @@ def now() -> int:
     return int(time.time())
 
 
-def enqueue_run(issue_key: str, payload: Dict[str, Any]) -> int:
+def enqueue_run(issue_key: str, payload: Dict[str, Any], priority: Optional[int] = None) -> int:
+    """
+    Enqueue a run with optional priority.
+    
+    Args:
+        issue_key: Jira issue key
+        payload: Issue payload
+        priority: Optional priority (1=urgent, 2=high, 3=normal, 4=low). Auto-detected from labels if not provided.
+    """
+    from .queue_manager import Priority, extract_repo_key
+    
     ts = now()
+    
+    # Extract repo key from issue_key
+    repo_key = extract_repo_key(issue_key)
+    
+    # Determine priority from labels if not explicitly provided
+    if priority is None:
+        labels = []
+        if isinstance(payload, dict):
+            issue_data = payload.get("issue", {})
+            fields = issue_data.get("fields", {})
+            labels = fields.get("labels", [])
+        
+        priority_enum = Priority.from_labels(labels)
+        priority = priority_enum.value
+    
     with connect() as cx:
         cur = cx.execute(
-            "INSERT INTO runs(issue_key,status,payload_json,created_at,updated_at) VALUES(?,?,?,?,?)",
-            (issue_key, "queued", json.dumps(payload), ts, ts),
+            "INSERT INTO runs(issue_key,status,payload_json,created_at,updated_at,priority,repo_key) VALUES(?,?,?,?,?,?,?)",
+            (issue_key, "queued", json.dumps(payload), ts, ts, priority, repo_key),
         )
         run_id = int(cur.lastrowid)
         cx.execute(
             "INSERT INTO events(run_id,ts,level,message,meta_json) VALUES(?,?,?,?,?)",
-            (run_id, ts, "info", "Run enqueued", json.dumps({"issue_key": issue_key})),
+            (run_id, ts, "info", "Run enqueued", json.dumps({"issue_key": issue_key, "priority": priority, "repo_key": repo_key})),
         )
         return run_id
 
