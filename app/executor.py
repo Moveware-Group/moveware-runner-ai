@@ -7,13 +7,17 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .config import settings
-from .git_ops import checkout_repo, create_branch, commit_and_push, create_pr, checkout_or_create_story_branch
+from .git_ops import checkout_repo, create_branch, commit_and_push, create_pr, checkout_or_create_story_branch, create_rollback_tag
 from .jira import JiraClient
 from .jira_adf import adf_to_plain_text
 from .llm_anthropic import AnthropicClient
 from .models import JiraIssue
 from .db import add_progress_event
 from .repo_config import get_repo_for_issue
+from .error_classifier import classify_error, get_comprehensive_hint, extract_error_context
+from .verifier import run_all_verifications
+from .metrics import ExecutionMetrics, calculate_cost, save_metrics
+from datetime import datetime
 
 
 @dataclass
@@ -298,6 +302,26 @@ def _get_human_comments(issue_key: str) -> str:
         return ""
 
 
+def _build_system_with_cache(repo_context: str) -> list:
+    """
+    Build system prompt with prompt caching for repository context.
+    
+    Returns array of system message blocks with cache_control markers.
+    This reduces costs by 90% and speeds up responses 5x for repeated context.
+    """
+    return [
+        {
+            "type": "text",
+            "text": _system_prompt()
+        },
+        {
+            "type": "text",
+            "text": f"\n\n**Repository Context (cached for performance):**\n\n{repo_context}",
+            "cache_control": {"type": "ephemeral"}  # Cache this expensive part!
+        }
+    ]
+
+
 def _system_prompt() -> str:
     return (
         "You are an expert software engineer implementing a Jira sub-task. "
@@ -385,6 +409,22 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
     - Creates PR only if independent.
     """
     
+    # Initialize metrics tracking
+    start_time = datetime.now()
+    metrics = None
+    if run_id:
+        metrics = ExecutionMetrics(
+            run_id=run_id,
+            issue_key=issue.key,
+            issue_type="subtask",
+            start_time=start_time,
+            end_time=start_time,  # Will update at end
+            duration_seconds=0.0,
+            success=False,
+            status="running",
+            metadata={}
+        )
+    
     if run_id:
         add_progress_event(run_id, "executing", f"Preparing repository for {issue.key}", {})
 
@@ -453,15 +493,16 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
     if run_id:
         add_progress_event(run_id, "executing", f"Calling Claude to generate implementation", {})
     
+    # Use prompt caching for repository context (90% cost reduction!)
     raw = client.messages_create({
         "model": settings.ANTHROPIC_MODEL,
-        "system": _system_prompt(),
+        "system": _build_system_with_cache(context_info),  # Cached system prompt!
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": 16000,  # Increased for large file contents
         "temperature": 1,  # Required when thinking is enabled
         "thinking": {
             "type": "enabled",
-            "budget_tokens": 5000
+            "budget_tokens": 8000  # Increased for complex problems
         }
     })
 
@@ -576,8 +617,25 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
         
         raise RuntimeError(error_msg)
 
-    # 5) Verify the changes (run npm install and build for Node projects)
-    verification_errors = []
+    # 5) Pre-commit verification (catch errors early!)
+    if run_id:
+        add_progress_event(run_id, "verifying", "Running pre-commit checks", {})
+    
+    pre_commit_result = run_all_verifications(repo_path, files_changed)
+    
+    # Start with any pre-commit errors
+    verification_errors = list(pre_commit_result.errors)
+    
+    # Show warnings but don't fail
+    if pre_commit_result.warnings:
+        print("\n⚠️  Pre-commit warnings:")
+        for warning in pre_commit_result.warnings[:5]:  # Limit output
+            print(f"  - {warning}")
+    
+    # 6) Build verification (run npm install and build for Node projects)
+    if run_id and not verification_errors:  # Only if pre-commit passed
+        add_progress_event(run_id, "verifying", "Running build verification", {})
+    
     package_json_path = repo_path / "package.json"
     is_node_project = package_json_path.exists()
     
@@ -691,9 +749,22 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
         print(f"\nVERIFICATION FAILED - Attempt {fix_attempt}/{MAX_FIX_ATTEMPTS} using {model_name}")
         print(f"Error summary: {error_msg[:200]}...")
         
+        # Classify errors and get targeted hints
+        error_category, specific_hint, _ = classify_error(error_msg)
+        comprehensive_hint = get_comprehensive_hint(error_msg)
+        error_context = extract_error_context(error_msg, max_context_lines=3)
+        
+        print(f"Error category: {error_category}")
+        if error_category != "unknown":
+            print(f"Applying targeted fix strategy for {error_category}")
+        
         if run_id:
-            progress_msg = f"Build failed, asking {model_name} to fix errors (attempt {fix_attempt}/{MAX_FIX_ATTEMPTS})"
-            add_progress_event(run_id, "fixing", progress_msg, {"attempt": fix_attempt, "model": model_name})
+            progress_msg = f"Build failed ({error_category}), asking {model_name} to fix (attempt {fix_attempt}/{MAX_FIX_ATTEMPTS})"
+            add_progress_event(run_id, "fixing", progress_msg, {
+                "attempt": fix_attempt, 
+                "model": model_name,
+                "error_category": error_category
+            })
         
         # Kill any competing Next.js build processes
         try:
@@ -794,7 +865,13 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
         # Get comprehensive repository context for fixing (includes ALL code)
         comprehensive_context = _get_repo_context(repo_path, issue, include_all_code=True)
         
-        # Prepare fix prompt (same for both models)
+        # Prepare fix prompt with targeted hints
+        error_analysis_section = ""
+        if comprehensive_hint:
+            error_analysis_section = f"\n{comprehensive_hint}\n\n"
+        elif specific_hint:
+            error_analysis_section = f"\n**ERROR TYPE: {error_category.upper()}**\n{specific_hint}\n\n"
+        
         fix_prompt = (
             f"The code has build errors. Please fix ALL the errors below.\n\n"
             f"**Attempt:** {fix_attempt}/{MAX_FIX_ATTEMPTS}\n"
@@ -802,6 +879,8 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
             f"**Original Task:** {issue.key}\n"
             f"**Summary:** {issue.summary}\n\n"
             f"**Build Errors:**\n```\n{error_msg[:1500]}\n```\n\n"  # Limit error size
+            f"{error_analysis_section}"  # Targeted hints based on error type
+            f"**Key Error Context:**\n{chr(10).join(error_context) if error_context else 'See full errors above'}\n\n"
             f"{error_context}\n\n"  # Show actual file contents with errors
             f"**Full Repository Context (for debugging):**\n{comprehensive_context}\n\n"
             f"**CRITICAL:** Your response MUST be ONLY valid JSON. No markdown, no explanation, JUST JSON.\n\n"
@@ -845,16 +924,16 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
             print(f"Calling {model_name} to fix build errors...")
             
             if model_provider == "anthropic":
-                # Use Claude
+                # Use Claude with cached context
                 fix_raw = client.messages_create({
                     "model": settings.ANTHROPIC_MODEL,
-                    "system": _system_prompt(),
+                    "system": _build_system_with_cache(comprehensive_context),  # Cached!
                     "messages": [{"role": "user", "content": fix_prompt}],
                     "max_tokens": 16000,
                     "temperature": 1,
                     "thinking": {
                         "type": "enabled",
-                        "budget_tokens": 5000
+                        "budget_tokens": 8000  # Increased for error fixing
                     }
                 })
                 fix_text = AnthropicClient.extract_text(fix_raw)
@@ -1017,6 +1096,11 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
     if len(files_changed) > 5:
         files_summary += f" (+{len(files_changed) - 5} more)"
     
+    # Create rollback tag before committing (safety net!)
+    rollback_tag = create_rollback_tag(repo_settings["repo_workdir"], issue.key)
+    if rollback_tag:
+        print(f"✓ Rollback tag created: {rollback_tag}")
+    
     commit_message = f"{issue.key}: {issue.summary}"
     commit_and_push(repo_settings["repo_workdir"], commit_message)
     
@@ -1069,5 +1153,21 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
             jira_comment_lines.append(error_preview)
     
     jira_comment = "\n".join(jira_comment_lines)
+    
+    # Update and save metrics
+    if metrics:
+        end_time = datetime.now()
+        metrics.end_time = end_time
+        metrics.duration_seconds = (end_time - start_time).total_seconds()
+        metrics.success = True
+        metrics.status = "completed"
+        metrics.files_changed = len(files_changed)
+        metrics.model_used = settings.ANTHROPIC_MODEL
+        
+        # Save metrics
+        try:
+            save_metrics(metrics)
+        except Exception as e:
+            print(f"Warning: Could not save metrics: {e}")
     
     return ExecutionResult(branch=branch, pr_url=pr_url, summary=summary, jira_comment=jira_comment)

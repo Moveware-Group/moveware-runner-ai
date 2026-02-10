@@ -206,3 +206,100 @@ def create_pr(workdir: str, title: str, body: str, base: str, token: Optional[st
     # Get current branch
     current_branch = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=workdir)
     return create_or_update_pr(workdir, title, body, base, current_branch, _token)
+
+
+def create_rollback_tag(workdir: str, issue_key: str) -> Optional[str]:
+    """
+    Create a rollback tag before making changes.
+    
+    This allows easy rollback if the commit causes issues.
+    
+    Args:
+        workdir: Repository working directory
+        issue_key: Jira issue key (e.g., "OD-123")
+    
+    Returns:
+        Tag name if created, None if failed
+    """
+    try:
+        # Get current commit SHA
+        current_sha = run(["git", "rev-parse", "HEAD"], cwd=workdir)
+        
+        # Create tag name
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        tag_name = f"rollback/{issue_key.lower()}/{timestamp}"
+        
+        # Create annotated tag
+        run([
+            "git", "tag", "-a", tag_name, current_sha,
+            "-m", f"Rollback point before {issue_key}"
+        ], cwd=workdir)
+        
+        print(f"✓ Created rollback tag: {tag_name}")
+        return tag_name
+        
+    except Exception as e:
+        print(f"Warning: Could not create rollback tag: {e}")
+        return None
+
+
+def rollback_to_tag(workdir: str, tag_name: str, force: bool = False) -> None:
+    """
+    Rollback to a specific tag.
+    
+    Args:
+        workdir: Repository working directory
+        tag_name: Name of the tag to rollback to
+        force: If True, hard reset (lose uncommitted changes)
+    
+    Raises:
+        RuntimeError: If rollback fails
+    """
+    try:
+        if force:
+            # Hard reset to tag (lose all changes)
+            run(["git", "reset", "--hard", tag_name], cwd=workdir)
+            print(f"✓ Hard reset to {tag_name}")
+        else:
+            # Soft reset (keep changes as uncommitted)
+            run(["git", "reset", "--soft", tag_name], cwd=workdir)
+            print(f"✓ Soft reset to {tag_name} (changes preserved)")
+            
+    except Exception as e:
+        raise RuntimeError(f"Failed to rollback to {tag_name}: {e}")
+
+
+def list_rollback_tags(workdir: str, issue_key: Optional[str] = None) -> list[str]:
+    """
+    List available rollback tags.
+    
+    Args:
+        workdir: Repository working directory
+        issue_key: Optional filter by issue key
+    
+    Returns:
+        List of rollback tag names
+    """
+    try:
+        pattern = f"rollback/{issue_key.lower()}/*" if issue_key else "rollback/*"
+        tags = run(["git", "tag", "-l", pattern], cwd=workdir)
+        return [t.strip() for t in tags.split('\n') if t.strip()]
+    except Exception as e:
+        print(f"Warning: Could not list rollback tags: {e}")
+        return []
+
+
+def delete_rollback_tag(workdir: str, tag_name: str) -> None:
+    """
+    Delete a rollback tag (cleanup old tags).
+    
+    Args:
+        workdir: Repository working directory
+        tag_name: Name of the tag to delete
+    """
+    try:
+        run(["git", "tag", "-d", tag_name], cwd=workdir)
+        print(f"✓ Deleted rollback tag: {tag_name}")
+    except Exception as e:
+        print(f"Warning: Could not delete tag {tag_name}: {e}")
