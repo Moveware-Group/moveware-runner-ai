@@ -102,6 +102,97 @@ def _verify_secret(given: str | None) -> None:
         raise HTTPException(401, "Invalid webhook secret")
 
 
+@app.post("/webhook/github-deploy")
+async def webhook_github_deploy(
+    request: Request,
+    x_hub_signature_256: Optional[str] = Header(default=None)
+) -> Dict[str, Any]:
+    """
+    GitHub webhook for auto-deployment.
+    
+    Triggers git pull and service restart when code is pushed to main branch.
+    
+    Setup in GitHub:
+    1. Go to repo Settings > Webhooks > Add webhook
+    2. Payload URL: https://ai-console.moveconnect.com/webhook/github-deploy
+    3. Content type: application/json
+    4. Secret: Set GITHUB_DEPLOY_WEBHOOK_SECRET in .env
+    5. Events: Just the push event
+    """
+    import subprocess
+    import os
+    
+    body_bytes = await request.body()
+    
+    # Verify webhook signature
+    deploy_secret = os.getenv("GITHUB_DEPLOY_WEBHOOK_SECRET", "")
+    if deploy_secret and x_hub_signature_256:
+        expected = "sha256=" + hmac.new(
+            deploy_secret.encode("utf-8"),
+            body_bytes,
+            sha256
+        ).hexdigest()
+        
+        if not hmac.compare_digest(expected, x_hub_signature_256):
+            raise HTTPException(status_code=403, detail="Invalid signature")
+    
+    try:
+        payload = json.loads(body_bytes)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    
+    # Check if it's a push to main/master branch
+    ref = payload.get("ref", "")
+    repository = payload.get("repository", {})
+    repo_name = repository.get("full_name", "")
+    
+    # Only deploy on push to main/master
+    if ref not in ["refs/heads/main", "refs/heads/master"]:
+        return {
+            "status": "ignored",
+            "message": f"Not a push to main/master (ref: {ref})"
+        }
+    
+    # Log the deployment trigger
+    pusher = payload.get("pusher", {}).get("name", "unknown")
+    commits = payload.get("commits", [])
+    commit_count = len(commits)
+    
+    print(f"🚀 Auto-deploy triggered: {repo_name} by {pusher} ({commit_count} commit(s))")
+    
+    # Execute deployment script
+    deploy_script = "/srv/ai/scripts/deploy.sh"
+    
+    if os.path.exists(deploy_script):
+        try:
+            # Run deployment script in background
+            subprocess.Popen(
+                [deploy_script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True
+            )
+            
+            return {
+                "status": "deploying",
+                "message": f"Deployment started for {repo_name}",
+                "ref": ref,
+                "commits": commit_count,
+                "pusher": pusher
+            }
+        except Exception as e:
+            print(f"❌ Deployment failed: {e}")
+            return {
+                "status": "error",
+                "message": f"Deployment script failed: {str(e)}"
+            }
+    else:
+        return {
+            "status": "error",
+            "message": f"Deployment script not found: {deploy_script}"
+        }
+
+
 @app.post("/webhook/jira")
 async def jira_webhook(
     request: Request,
