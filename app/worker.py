@@ -13,12 +13,41 @@ from .jira_adf import adf_to_plain_text
 from .models import JiraIssue, parse_issue
 from .planner import PlanResult, build_plan
 from .router import Action, Router
+from .repo_config import get_repo_for_issue
 
 
 @dataclass
 class Context:
     jira: JiraClient
     router: Router
+
+
+def _get_repo_settings(issue_key: str) -> dict:
+    """
+    Get repository settings for an issue.
+    Falls back to environment variables if multi-repo config not found.
+    
+    Returns dict with: repo_ssh, repo_workdir, base_branch, repo_owner_slug, repo_name
+    """
+    repo = get_repo_for_issue(issue_key)
+    
+    if repo:
+        return {
+            "repo_ssh": repo.repo_ssh,
+            "repo_workdir": repo.repo_workdir,
+            "base_branch": repo.base_branch,
+            "repo_owner_slug": repo.repo_owner_slug,
+            "repo_name": repo.repo_name,
+        }
+    else:
+        # Fallback to environment variables (legacy single-repo mode)
+        return {
+            "repo_ssh": settings.REPO_SSH,
+            "repo_workdir": settings.REPO_WORKDIR,
+            "base_branch": settings.BASE_BRANCH,
+            "repo_owner_slug": settings.REPO_OWNER_SLUG,
+            "repo_name": settings.REPO_NAME,
+        }
 
 
 def _to_issue(payload: Dict[str, Any]) -> Optional[JiraIssue]:
@@ -365,13 +394,16 @@ def _handle_story_approved(ctx: Context, story: JiraIssue) -> None:
     # Create Story branch (but don't create PR yet - need commits first)
     from .git_ops import checkout_repo, create_branch
     
+    # Get repository configuration for this issue (supports multi-repo)
+    repo_settings = _get_repo_settings(story.key)
+    
     story_branch = f"story/{story.key.lower()}"
     
     try:
         # Checkout repo and create Story branch
-        checkout_repo(settings.REPO_WORKDIR, settings.REPO_SSH, settings.BASE_BRANCH)
-        create_branch(settings.REPO_WORKDIR, story_branch)
-        ctx.jira.add_comment(story.key, f"Created Story branch: {story_branch}")
+        checkout_repo(repo_settings["repo_workdir"], repo_settings["repo_ssh"], repo_settings["base_branch"])
+        create_branch(repo_settings["repo_workdir"], story_branch)
+        ctx.jira.add_comment(story.key, f"Created Story branch: {story_branch} in {repo_settings['repo_name']}")
     except Exception as e:
         error_msg = f"Warning: Could not create Story branch: {e}"
         print(f"ERROR in _handle_story_approved: {error_msg}")
@@ -409,6 +441,10 @@ def _handle_execute_subtask(ctx: Context, subtask: JiraIssue, run_id: Optional[i
     if parent and parent.issue_type == "Story" and result.branch.startswith("story/"):
         # Check if PR already exists for this Story
         from .git_ops import create_pr
+        
+        # Get repository configuration for the parent Story
+        repo_settings = _get_repo_settings(parent.key)
+        
         try:
             # Get all subtasks for the Story to build checklist
             all_subtasks = ctx.jira.get_subtasks(subtask.parent_key)
@@ -430,10 +466,10 @@ def _handle_execute_subtask(ctx: Context, subtask: JiraIssue, run_id: Optional[i
             
             # Try to create PR (will succeed only on first subtask)
             pr_url = create_pr(
-                settings.REPO_WORKDIR,
+                repo_settings["repo_workdir"],
                 title=f"{parent.key}: {parent.summary}",
                 body=pr_body,
-                base=settings.BASE_BRANCH,
+                base=repo_settings["base_branch"],
             )
             
             if pr_url and "already exists" not in pr_url.lower():

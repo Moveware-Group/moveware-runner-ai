@@ -48,10 +48,16 @@ This repo is designed so the pilot can be run "like production": least-privilege
 
 ## Repo scope
 
-For the pilot, configuration assumes a single repo:
-- `https://github.com/leigh-moveware/online-docs.git`
+**Single Repository (Current):**
+- Configuration via environment variables (`.env`)
+- Example: `https://github.com/leigh-moveware/online-docs.git`
 
-You can expand to multiple repos later via config.
+**Multiple Repositories (Supported):**
+- Configuration via `config/repos.json`
+- Automatic routing based on Jira project key
+- See [docs/multi-repo-configuration.md](docs/multi-repo-configuration.md) for setup
+
+The system supports both single and multi-repository setups with automatic fallback.
 
 ## Project layout
 

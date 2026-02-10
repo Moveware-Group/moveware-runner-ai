@@ -13,6 +13,7 @@ from .jira_adf import adf_to_plain_text
 from .llm_anthropic import AnthropicClient
 from .models import JiraIssue
 from .db import add_progress_event
+from .repo_config import get_repo_for_issue
 
 
 @dataclass
@@ -21,6 +22,34 @@ class ExecutionResult:
     pr_url: Optional[str]
     summary: str
     jira_comment: str
+
+
+def _get_repo_settings(issue_key: str) -> dict:
+    """
+    Get repository settings for an issue.
+    Falls back to environment variables if multi-repo config not found.
+    
+    Returns dict with: repo_ssh, repo_workdir, base_branch, repo_owner_slug, repo_name
+    """
+    repo = get_repo_for_issue(issue_key)
+    
+    if repo:
+        return {
+            "repo_ssh": repo.repo_ssh,
+            "repo_workdir": repo.repo_workdir,
+            "base_branch": repo.base_branch,
+            "repo_owner_slug": repo.repo_owner_slug,
+            "repo_name": repo.repo_name,
+        }
+    else:
+        # Fallback to environment variables (legacy single-repo mode)
+        return {
+            "repo_ssh": settings.REPO_SSH,
+            "repo_workdir": settings.REPO_WORKDIR,
+            "base_branch": settings.BASE_BRANCH,
+            "repo_owner_slug": settings.REPO_OWNER_SLUG,
+            "repo_name": settings.REPO_NAME,
+        }
 
 
 def _get_repo_context(repo_path: Path, issue: JiraIssue, include_all_code: bool = False) -> str:
@@ -359,17 +388,20 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
     if run_id:
         add_progress_event(run_id, "executing", f"Preparing repository for {issue.key}", {})
 
+    # Get repository configuration for this issue (supports multi-repo)
+    repo_settings = _get_repo_settings(issue.key)
+
     # Check if this subtask should have its own PR
     is_independent = "independent-pr" in (issue.labels or [])
 
     # 1) Checkout/update repo
-    checkout_repo(settings.REPO_WORKDIR, settings.REPO_SSH, settings.BASE_BRANCH)
+    checkout_repo(repo_settings["repo_workdir"], repo_settings["repo_ssh"], repo_settings["base_branch"])
 
     # 2) Determine branch
     if is_independent:
         # Independent subtask: create its own branch
         branch = f"ai/{issue.key.lower()}"
-        create_branch(settings.REPO_WORKDIR, branch)
+        create_branch(repo_settings["repo_workdir"], branch)
     else:
         # Part of Story: use Story branch (story/STORY-KEY)
         if not issue.parent_key:
@@ -378,10 +410,10 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
         story_branch = f"story/{issue.parent_key.lower()}"
         # Check if Story branch exists, create if not
         try:
-            checkout_or_create_story_branch(settings.REPO_WORKDIR, story_branch, settings.BASE_BRANCH)
+            checkout_or_create_story_branch(repo_settings["repo_workdir"], story_branch, repo_settings["base_branch"])
         except Exception:
             # If Story branch doesn't exist, create it
-            create_branch(settings.REPO_WORKDIR, story_branch)
+            create_branch(repo_settings["repo_workdir"], story_branch)
         branch = story_branch
     
     if run_id:
@@ -391,7 +423,7 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
     client = AnthropicClient(api_key=settings.ANTHROPIC_API_KEY, base_url=settings.ANTHROPIC_BASE_URL)
     
     # Get repository context (includes file contents)
-    repo_path = Path(settings.REPO_WORKDIR)
+    repo_path = Path(repo_settings["repo_workdir"])
     context_info = _get_repo_context(repo_path, issue)
     
     # Get human comments for additional context/clarifications
@@ -986,7 +1018,7 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
         files_summary += f" (+{len(files_changed) - 5} more)"
     
     commit_message = f"{issue.key}: {issue.summary}"
-    commit_and_push(settings.REPO_WORKDIR, commit_message)
+    commit_and_push(repo_settings["repo_workdir"], commit_message)
     
     # 6) Create PR only if independent
     pr_url = None
@@ -1000,10 +1032,10 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
 {chr(10).join(['- ' + fc for fc in files_changed])}
 """
             pr_url = create_pr(
-                settings.REPO_WORKDIR,
+                repo_settings["repo_workdir"],
                 title=f"{issue.key}: {issue.summary}",
                 body=pr_body,
-                base=settings.BASE_BRANCH,
+                base=repo_settings["base_branch"],
             )
         except Exception as e:
             # Don't fail the whole run if PR creation errors
