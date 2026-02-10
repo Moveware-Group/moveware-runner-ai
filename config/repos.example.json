@@ -1,0 +1,32 @@
+{
+  "projects": [
+    {
+      "jira_project_key": "OD",
+      "jira_project_name": "Online Docs",
+      "repo_ssh": "git@github.com:leigh-moveware/online-docs.git",
+      "repo_workdir": "/srv/ai/repos/online-docs",
+      "base_branch": "main",
+      "repo_owner_slug": "leigh-moveware",
+      "repo_name": "online-docs"
+    },
+    {
+      "jira_project_key": "MW",
+      "jira_project_name": "Moveware Core",
+      "repo_ssh": "git@github.com:leigh-moveware/moveware-core.git",
+      "repo_workdir": "/srv/ai/repos/moveware-core",
+      "base_branch": "develop",
+      "repo_owner_slug": "leigh-moveware",
+      "repo_name": "moveware-core"
+    },
+    {
+      "jira_project_key": "API",
+      "jira_project_name": "API Services",
+      "repo_ssh": "git@github.com:leigh-moveware/api-services.git",
+      "repo_workdir": "/srv/ai/repos/api-services",
+      "base_branch": "main",
+      "repo_owner_slug": "leigh-moveware",
+      "repo_name": "api-services"
+    }
+  ],
+  "default_project_key": "OD"
+}
