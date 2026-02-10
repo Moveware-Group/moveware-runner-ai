@@ -3,6 +3,20 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Tuple
 
+# Import GitHub App auth (optional, falls back to PAT)
+try:
+    from .github_app import get_github_token
+    _GITHUB_APP_AVAILABLE = True
+except ImportError:
+    _GITHUB_APP_AVAILABLE = False
+    
+    def get_github_token() -> str:
+        """Fallback: use GH_TOKEN environment variable."""
+        token = os.getenv('GH_TOKEN', '')
+        if not token:
+            raise ValueError("GH_TOKEN not set")
+        return token
+
 
 def run(cmd, cwd: Optional[str] = None, env: Optional[dict] = None) -> str:
     merged = os.environ.copy()
@@ -120,7 +134,11 @@ def commit_and_push_if_needed(workdir: str, commit_message: str, token: str) -> 
         raise
 
 
-def find_existing_pr_url(workdir: str, head: str, token: str) -> Optional[str]:
+def find_existing_pr_url(workdir: str, head: str, token: Optional[str] = None) -> Optional[str]:
+    """Find existing PR by head branch."""
+    if not token:
+        token = get_github_token()
+    
     try:
         out = run(["gh", "pr", "view", "--head", head, "--json", "url", "-q", ".url"], cwd=workdir, env={"GH_TOKEN": token})
         return out.strip() or None
@@ -128,7 +146,11 @@ def find_existing_pr_url(workdir: str, head: str, token: str) -> Optional[str]:
         return None
 
 
-def create_or_update_pr(workdir: str, title: str, body: str, base: str, head: str, token: str) -> str:
+def create_or_update_pr(workdir: str, title: str, body: str, base: str, head: str, token: Optional[str] = None) -> str:
+    """Create or update a pull request."""
+    if not token:
+        token = get_github_token()
+    
     existing = find_existing_pr_url(workdir, head=head, token=token)
     if existing:
         # Optionally update title/body (safe even if unchanged)
@@ -191,21 +213,21 @@ def commit_and_push(workdir: str, commit_message: str, token: Optional[str] = No
     Args:
         commit_message: Full commit message (e.g., "OD-5: add form validation")
     """
-    from .config import settings
-    _token = token or settings.GH_TOKEN
+    if not token:
+        token = get_github_token()
     
-    committed, msg = commit_and_push_if_needed(workdir, commit_message, _token)
+    committed, msg = commit_and_push_if_needed(workdir, commit_message, token)
     return msg
 
 
 def create_pr(workdir: str, title: str, body: str, base: str, token: Optional[str] = None) -> str:
     """Create a PR using current branch as head. Wrapper for create_or_update_pr."""
-    from .config import settings
-    _token = token or settings.GH_TOKEN
+    if not token:
+        token = get_github_token()
     
     # Get current branch
     current_branch = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=workdir)
-    return create_or_update_pr(workdir, title, body, base, current_branch, _token)
+    return create_or_update_pr(workdir, title, body, base, current_branch, token)
 
 
 def create_rollback_tag(workdir: str, issue_key: str) -> Optional[str]:
