@@ -70,14 +70,15 @@ def now() -> int:
     return int(time.time())
 
 
-def enqueue_run(issue_key: str, payload: Dict[str, Any], priority: Optional[int] = None) -> int:
+DEDUP_RECENT_COMPLETED_SECONDS = 90  # Skip new run if same issue completed recently
+
+
+def enqueue_run(issue_key: str, payload: Dict[str, Any], priority: Optional[int] = None, force_new: bool = False) -> int:
     """
     Enqueue a run with optional priority.
     
-    Args:
-        issue_key: Jira issue key
-        payload: Issue payload
-        priority: Optional priority (1=urgent, 2=high, 3=normal, 4=low). Auto-detected from labels if not provided.
+    Deduplication (unless force_new): avoids duplicate runs for the same issue
+    when webhooks fire repeatedly (e.g. multiple Jira automation rules).
     """
     from .queue_manager import Priority, extract_repo_key
     
@@ -98,6 +99,29 @@ def enqueue_run(issue_key: str, payload: Dict[str, Any], priority: Optional[int]
         priority = priority_enum.value
     
     with connect() as cx:
+        if not force_new:
+            # Dedup 1: Already have queued/claimed/running run for this issue - update payload, return existing
+            row = cx.execute(
+                "SELECT id FROM runs WHERE issue_key = ? AND status IN ('queued', 'claimed', 'running') LIMIT 1",
+                (issue_key,),
+            ).fetchone()
+            if row:
+                existing_id = row[0]
+                cx.execute(
+                    "UPDATE runs SET payload_json = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(payload), ts, existing_id),
+                )
+                return existing_id
+            
+            # Dedup 2: Recently completed run for this issue (suppresses rapid duplicate webhooks)
+            cutoff = ts - DEDUP_RECENT_COMPLETED_SECONDS
+            row = cx.execute(
+                "SELECT id FROM runs WHERE issue_key = ? AND status IN ('completed', 'failed') AND updated_at > ? ORDER BY id DESC LIMIT 1",
+                (issue_key, cutoff),
+            ).fetchone()
+            if row:
+                return row[0]  # Skip creating duplicate; return existing run id
+        
         cur = cx.execute(
             "INSERT INTO runs(issue_key,status,payload_json,created_at,updated_at,priority,repo_key) VALUES(?,?,?,?,?,?,?)",
             (issue_key, "queued", json.dumps(payload), ts, ts, priority, repo_key),

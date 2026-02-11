@@ -297,7 +297,7 @@ async def trigger_run_api(
         issue_key = (body.get("issue_key") or "").strip().upper()
         if not issue_key:
             return {"ok": False, "error": "issue_key required"}
-        run_id = enqueue_run(issue_key=issue_key, payload={"issue_key": issue_key, "trigger": "manual"})
+        run_id = enqueue_run(issue_key=issue_key, payload={"issue_key": issue_key, "trigger": "manual"}, force_new=True)
         add_event(run_id, "info", "Manually triggered", {"source": "api_trigger"})
         return {"ok": True, "run_id": run_id, "issue_key": issue_key}
     except Exception as e:
