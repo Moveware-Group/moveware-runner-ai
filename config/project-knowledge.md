@@ -7,21 +7,22 @@ Edit this file with facts specific to your environment.
 ## Infrastructure
 
 - **Existing setup**: We already have infrastructure set up. Do not ask which cloud provider to use or whether accounts/infrastructure exist.
-- **Cloud / hosting**: (Specify provider if relevant: AWS, Azure, GCP, on-prem, etc.)
-- **Deployment**: (e.g. GitHub Actions, systemd, Docker, Vercel.)
-- **Server environment**: (e.g. Ubuntu 24.04, nginx, systemd services.)
+- **Cloud / hosting**: We run our own server for development and use an Azure server for production
+- **Deployment**: We manually git pull at the moment but may add GitHub Actions in the future
+- **Server environment**: Ubuntu 24.04, nginx, systemd services, nodejs v21
 
 ## Architecture Conventions
 
-- **Monorepo vs multi-repo**: (Your setup.)
-- **Branching**: (e.g. main/develop, feature branches, PR workflow.)
-- **Tech stack**: (Next.js, Flutter, Python, etc. per project—or list defaults.)
+- **Monorepo vs multi-repo**: multi-repo
+- **Branching**: main/develop, feature branches, PR workflow
+- **Tech stack**: Next.js, Flutter
 
 ## Things the AI Should Assume (Do Not Ask)
 
 - Infrastructure exists and is provisioned.
 - Deployment pipelines are in place.
 - Cloud/infrastructure provider decisions are already made.
+- Branding can be extracted from /srv/ai/app/docs/DESIGN-TEMPLATE.md
 
 ## Resolved Q&A (from past Epics – do not re-ask)
 
