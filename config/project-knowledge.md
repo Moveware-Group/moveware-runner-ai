@@ -23,6 +23,9 @@ Edit this file with facts specific to your environment.
 - Deployment pipelines are in place.
 - Cloud/infrastructure provider decisions are already made.
 - Branding can be extracted from /srv/ai/app/docs/DESIGN-TEMPLATE.md
+- Moveware Rest API uses header based auth requiring mw-company-id, mw-username and mw-password
+- Moveware API does not have any rate limiting
+- Moveware API is documented at https://rest.swagger.moveconnect.com/index.html#/
 
 ## Resolved Q&A (from past Epics – do not re-ask)
 
