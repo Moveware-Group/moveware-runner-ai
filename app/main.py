@@ -13,7 +13,7 @@ from fastapi.templating import Jinja2Templates
 from app.config import settings
 from app.db import init_db, enqueue_run, add_event, connect
 from app.metrics import get_summary_stats
-from app.queue_manager import get_queue_stats
+from app.queue_manager import get_queue_stats, reset_stale_runs
 
 app = FastAPI(title="Moveware AI Orchestrator")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -255,6 +255,22 @@ async def queue_stats_api() -> Dict[str, Any]:
         return stats
     except Exception as e:
         return {"error": str(e)}
+
+
+@app.post("/api/queue/reset-stale")
+async def reset_stale_runs_api(
+    x_admin_secret: Optional[str] = Header(default=None)
+) -> Dict[str, Any]:
+    """
+    Reset runs stuck in claimed/running (stale locks > 10 min).
+    Use when worker crashed and runs are blocking the queue.
+    """
+    _require_admin(x_admin_secret)
+    try:
+        n = reset_stale_runs()
+        return {"ok": True, "reset_count": n}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 def _require_admin(x_admin_secret: Optional[str] = Header(default=None)) -> None:

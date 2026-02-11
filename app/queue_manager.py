@@ -117,9 +117,15 @@ def set_run_priority(run_id: int, priority: Priority, repo_key: Optional[str] = 
         print(f"Warning: Could not set run priority: {e}")
 
 
+STALE_LOCK_SECONDS = 600  # 10 min - treat older claimed/running as orphaned
+
+
 def get_active_repos(worker_id: Optional[str] = None) -> set[str]:
     """
     Get list of repositories currently being processed.
+    
+    Only considers runs with recent locked_at (within STALE_LOCK_SECONDS).
+    Stale/orphaned runs (worker crashed) do not block the queue.
     
     Args:
         worker_id: Optional filter by worker ID
@@ -132,8 +138,9 @@ def get_active_repos(worker_id: Optional[str] = None) -> set[str]:
     try:
         with connect() as conn:
             cursor = conn.cursor()
+            stale_cutoff = int(time.time()) - STALE_LOCK_SECONDS
             
-            # Get repos with running/claimed runs
+            # Get repos with recently active claimed/running runs (ignore stale orphans)
             if worker_id:
                 cursor.execute("""
                     SELECT DISTINCT repo_key 
@@ -141,14 +148,16 @@ def get_active_repos(worker_id: Optional[str] = None) -> set[str]:
                     WHERE status IN ('claimed', 'running') 
                     AND locked_by = ?
                     AND repo_key IS NOT NULL
-                """, (worker_id,))
+                    AND locked_at > ?
+                """, (worker_id, stale_cutoff))
             else:
                 cursor.execute("""
                     SELECT DISTINCT repo_key 
                     FROM runs 
                     WHERE status IN ('claimed', 'running')
                     AND repo_key IS NOT NULL
-                """)
+                    AND locked_at > ?
+                """, (stale_cutoff,))
             
             return {row[0] for row in cursor.fetchall()}
             
@@ -204,12 +213,14 @@ def claim_next_run_smart(
             if max_concurrent_per_repo > 0 and active_repos:
                 # Exclude repos that are already at max capacity
                 repo_counts = {}
+                stale_cutoff = current_ts - STALE_LOCK_SECONDS
                 for repo in active_repos:
                     cursor.execute("""
                         SELECT COUNT(*) FROM runs 
                         WHERE repo_key = ? 
                         AND status IN ('claimed', 'running')
-                    """, (repo,))
+                        AND locked_at > ?
+                    """, (repo, stale_cutoff))
                     count = cursor.fetchone()[0]
                     if count >= max_concurrent_per_repo:
                         repo_counts[repo] = count
@@ -269,6 +280,34 @@ def claim_next_run_smart(
         return None
 
 
+def reset_stale_runs() -> int:
+    """
+    Reset runs stuck in 'claimed' or 'running' with locks older than STALE_LOCK_SECONDS.
+    Makes them available for workers to claim again.
+    
+    Returns:
+        Number of runs reset to 'queued'
+    """
+    from .db import connect
+    
+    try:
+        with connect() as conn:
+            cursor = conn.cursor()
+            stale_cutoff = int(time.time()) - STALE_LOCK_SECONDS
+            cursor.execute("""
+                UPDATE runs 
+                SET status = 'queued', locked_by = NULL, locked_at = NULL 
+                WHERE status IN ('claimed', 'running')
+                AND (locked_at IS NULL OR locked_at < ?)
+            """, (stale_cutoff,))
+            n = cursor.rowcount
+            conn.commit()
+            return n
+    except Exception as e:
+        print(f"Error resetting stale runs: {e}")
+        return 0
+
+
 def get_queue_stats() -> Dict[str, Any]:
     """
     Get queue statistics.
@@ -294,7 +333,10 @@ def get_queue_stats() -> Dict[str, Any]:
                 GROUP BY priority
                 ORDER BY priority
             """)
-            by_priority = {Priority(row[0]).name: row[1] for row in cursor.fetchall()}
+            by_priority = {
+                Priority(row[0] or 3).name: row[1]
+                for row in cursor.fetchall()
+            }
             
             # By repo
             cursor.execute("""
@@ -320,12 +362,22 @@ def get_queue_stats() -> Dict[str, Any]:
             """)
             running_by_repo = {row[0]: row[1] for row in cursor.fetchall()}
             
+            # Stale runs (claimed/running with old lock - block the queue)
+            stale_cutoff = int(time.time()) - STALE_LOCK_SECONDS
+            cursor.execute("""
+                SELECT COUNT(*) FROM runs 
+                WHERE status IN ('claimed', 'running')
+                AND (locked_at IS NULL OR locked_at < ?)
+            """, (stale_cutoff,))
+            stale_count = cursor.fetchone()[0]
+            
             return {
                 "total_queued": total_queued,
                 "by_priority": by_priority,
                 "by_repo": by_repo,
                 "currently_running": currently_running,
-                "running_by_repo": running_by_repo
+                "running_by_repo": running_by_repo,
+                "stale_runs": stale_count
             }
             
     except Exception as e:

@@ -166,6 +166,7 @@ For each Story:
 | Sub-tasks not created | Move Story to **Selected for Development**, assign to AI Runner. |
 | AI doesn't execute sub-task | Move sub-task to **In Progress**, assign to AI Runner. |
 | Story in Selected for Dev but nothing happens | **1. Assign before transitioning:** The Story must be assigned to AI Runner *when* it enters Selected for Development. Assign it to AI Runner first, then move to Selected for Dev. **2. Status/assignee must match config:** Worker checks `JIRA_STATUS_SELECTED_FOR_DEV` (exact match) and `JIRA_AI_ACCOUNT_ID`. Check worker logs for `[NOOP]` – they now show why no action was taken. **3. Manual trigger:** `curl -X POST https://your-runner/webhook/jira -H "Content-Type: application/json" -H "X-Moveware-Webhook-Secret: YOUR_SECRET" -d '{"issue_key":"TB-2"}'` |
+| **Worker not picking up runs** | Webhooks return 200 OK but worker never claims runs. **1. Check queue:** `GET /api/queue/stats` shows `total_queued`, `stale_runs`. **2. Stale runs:** Runs stuck in `claimed`/`running` (from crashes) can block the repo. Reset them: `POST /api/queue/reset-stale` with header `X-Admin-Secret: <ADMIN_SECRET>`. **3. DB path:** Ensure orchestrator and worker use the same `DB_PATH` (same `EnvironmentFile` in systemd). |
 
 ---
 
