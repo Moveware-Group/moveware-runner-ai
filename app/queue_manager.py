@@ -117,7 +117,7 @@ def set_run_priority(run_id: int, priority: Priority, repo_key: Optional[str] = 
         print(f"Warning: Could not set run priority: {e}")
 
 
-STALE_LOCK_SECONDS = 600  # 10 min - treat older claimed/running as orphaned
+STALE_LOCK_SECONDS = 180  # 3 min - orphaned runs (e.g. after worker restart) unblock sooner
 
 
 def get_active_repos(worker_id: Optional[str] = None) -> set[str]:
