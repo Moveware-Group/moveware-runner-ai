@@ -339,8 +339,16 @@ def _handle_revise_plan(ctx: Context, issue: JiraIssue, run_id: Optional[int] = 
         ctx.jira.assign_issue(issue.key, settings.JIRA_HUMAN_ACCOUNT_ID)
         return
     
-    # Generate revised plan with feedback
-    plan_res: PlanResult = build_plan(issue, revision_feedback=feedback, run_id=run_id)
+    # Load previous plan so the AI knows which questions were already asked and answered
+    previous_plan = get_plan(issue.key)
+    
+    # Generate revised plan with feedback and previous questions (so it doesn't re-ask)
+    plan_res: PlanResult = build_plan(
+        issue,
+        revision_feedback=feedback,
+        previous_plan=previous_plan,
+        run_id=run_id,
+    )
     
     # Save revised plan to database
     save_plan(issue.key, plan_res.plan_data)

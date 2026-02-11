@@ -85,29 +85,52 @@ def _system_prompt_review() -> str:
     )
 
 
-def _user_prompt(issue: JiraIssue, revision_feedback: str = "") -> str:
+def _user_prompt(
+    issue: JiraIssue,
+    revision_feedback: str = "",
+    previous_plan: Optional[Dict[str, Any]] = None,
+) -> str:
     base = (
         f"Jira issue key: {issue.key}\n"
         f"Summary: {issue.summary}\n\n"
         "Description:\n"
         f"{issue.description}\n"
     )
-    
+
     if revision_feedback:
         base += (
             "\n\n---\n\n"
-            "PREVIOUS CONVERSATION HISTORY:\n"
-            "All human feedback and questions from the entire Epic discussion:\n\n"
+            "PREVIOUS CONVERSATION HISTORY (HUMAN ANSWERS):\n"
+            "All human comments from the Epic. These contain answers to questions.\n\n"
             f"{revision_feedback}\n\n"
             "---\n\n"
+        )
+
+        # Include previous plan's questions so the AI knows what was already asked
+        prev_questions = (previous_plan or {}).get("questions") or []
+        if prev_questions:
+            base += (
+                "QUESTIONS ALREADY ASKED AND ANSWERED (DO NOT RE-ASK):\n"
+                "The following questions were in the previous plan. The human has answered them "
+                "in the conversation above. You MUST NOT include any of these (or semantically equivalent "
+                "rephrasing) in your new plan's 'questions' array:\n\n"
+            )
+            for i, q in enumerate(prev_questions, 1):
+                base += f"  {i}. {q}\n"
+            base += (
+                "\nOnly add genuinely NEW questions that were never asked before and are critical. "
+                "If everything is clarified, use \"questions\": [].\n\n"
+            )
+
+        base += (
             "IMPORTANT: Review ALL the conversation above before responding.\n"
-            "- Do NOT repeat questions that have already been answered\n"
-            "- Reference previous answers when relevant\n"
+            "- Do NOT repeat or rephrase questions that have already been answered\n"
+            "- Incorporate all human answers into your assumptions and plan\n"
             "- Only ask NEW questions if critical information is still missing\n"
-            "- Acknowledge what has already been clarified\n\n"
+            "- Leave \"questions\" empty when answers have been provided\n\n"
             "Please revise the plan incorporating all the feedback and answers provided."
         )
-    
+
     return base
 
 
@@ -134,7 +157,12 @@ PLAN_SCHEMA_HINT = {
 }
 
 
-def generate_plan(issue: JiraIssue, revision_feedback: str = "", run_id: Optional[int] = None) -> Dict[str, Any]:
+def generate_plan(
+    issue: JiraIssue,
+    revision_feedback: str = "",
+    previous_plan: Optional[Dict[str, Any]] = None,
+    run_id: Optional[int] = None,
+) -> Dict[str, Any]:
     """
     Generate implementation plan using multi-model approach:
     1. Claude (extended thinking) creates initial plan
@@ -156,7 +184,7 @@ def generate_plan(issue: JiraIssue, revision_feedback: str = "", run_id: Optiona
         + json.dumps(PLAN_SCHEMA_HINT, indent=2)
     )
     
-    user_prompt = _user_prompt(issue, revision_feedback) + schema_prompt
+    user_prompt = _user_prompt(issue, revision_feedback, previous_plan) + schema_prompt
     
     print("Step 1: Generating plan with Claude extended thinking...")
     response = claude_client.messages_create({
@@ -360,9 +388,14 @@ def format_plan_as_jira_comment(plan: Dict[str, Any], is_revision: bool = False)
     return "\n".join(lines)
 
 
-def build_plan(issue: JiraIssue, revision_feedback: str = "", run_id: Optional[int] = None) -> PlanResult:
+def build_plan(
+    issue: JiraIssue,
+    revision_feedback: str = "",
+    previous_plan: Optional[Dict[str, Any]] = None,
+    run_id: Optional[int] = None,
+) -> PlanResult:
     """Generate a plan for the given issue and format it for Jira."""
-    plan_data = generate_plan(issue, revision_feedback, run_id)
+    plan_data = generate_plan(issue, revision_feedback, previous_plan, run_id)
     is_revision = bool(revision_feedback)
     comment = format_plan_as_jira_comment(plan_data, is_revision=is_revision)
     return PlanResult(comment=comment, plan_data=plan_data)
