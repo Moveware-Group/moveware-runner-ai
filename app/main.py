@@ -264,6 +264,30 @@ def _require_admin(x_admin_secret: Optional[str] = Header(default=None)) -> None
         raise HTTPException(403, "Admin authentication required")
 
 
+@app.post("/api/trigger")
+async def trigger_run_api(
+    request: Request,
+    x_admin_secret: Optional[str] = Header(default=None)
+) -> Dict[str, Any]:
+    """
+    Manually enqueue a run for an issue (bypasses Jira webhook).
+    Use when Story is already in Selected for Development but webhook didn't fire.
+
+    Body: {"issue_key": "TB-2"}
+    """
+    _require_admin(x_admin_secret)
+    try:
+        body = await request.json()
+        issue_key = (body.get("issue_key") or "").strip().upper()
+        if not issue_key:
+            return {"ok": False, "error": "issue_key required"}
+        run_id = enqueue_run(issue_key=issue_key, payload={"issue_key": issue_key, "trigger": "manual"})
+        add_event(run_id, "info", "Manually triggered", {"source": "api_trigger"})
+        return {"ok": True, "run_id": run_id, "issue_key": issue_key}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 @app.get("/repos", response_class=HTMLResponse)
 async def repos_page(request: Request):
     """Add Repository - setup new repos with GitHub, folder, and config."""
