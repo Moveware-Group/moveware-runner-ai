@@ -213,6 +213,7 @@ async def jira_webhook(
 
     run_id = enqueue_run(issue_key=issue_key, payload=payload)
     add_event(run_id, "info", "Webhook received", {"source": "jira_webhook"})
+    print(f"[webhook] {issue_key} -> run_id={run_id}")
     return JSONResponse({"ok": True, "run_id": run_id})
 
 
