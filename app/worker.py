@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from .config import settings, PARENT_PLAN_COMMENT_PREFIX
-from .db import claim_next_run, init_db, update_run, add_event, save_plan, get_plan, add_progress_event
+from .db import claim_next_run, init_db, update_run, add_event, save_plan, get_plan, add_progress_event, enqueue_run
 from .executor import ExecutionResult, execute_subtask
 from .jira import JiraClient
 from .jira_adf import adf_to_plain_text
@@ -420,11 +420,15 @@ def _handle_story_approved(ctx: Context, story: JiraIssue) -> None:
         print(f"ERROR in _handle_story_approved: {error_msg}")
         ctx.jira.add_comment(story.key, error_msg)
 
-    # Start first subtask
+    # Start first subtask: transition to In Progress, assign to AI, and enqueue a run
+    # (Jira "Issue assigned" only fires on assignee change, so we enqueue to ensure work starts)
     next_key = _pick_next_subtask_to_start(ctx, story.key)
     if next_key:
         ctx.jira.transition_to_status(next_key, settings.JIRA_STATUS_IN_PROGRESS)
+        ctx.jira.assign_issue(next_key, settings.JIRA_AI_ACCOUNT_ID)
         ctx.jira.add_comment(story.key, f"AI starting work on {next_key}.")
+        # Enqueue run so worker picks up the subtask (avoids relying on Jira webhook for status change)
+        enqueue_run(issue_key=next_key, payload={"issue_key": next_key})
     else:
         ctx.jira.add_comment(story.key, "Warning: No subtasks found to start.")
 
