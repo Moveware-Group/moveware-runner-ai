@@ -559,6 +559,19 @@ def process_run(ctx: Context, run_id: int, issue_key: str, payload: Dict[str, An
     action: Action = ctx.router.decide(issue)
     add_event(run_id, "info", f"Router decided action: {action.name}", {"reason": action.reason})
 
+    if action.name == "NOOP":
+        diag = {
+            "issue_type": issue.issue_type,
+            "status": issue.status,
+            "expected_status_for_story": settings.JIRA_STATUS_SELECTED_FOR_DEV,
+            "assignee_match": issue.assignee_account_id == settings.JIRA_AI_ACCOUNT_ID,
+            "assignee_id": str(issue.assignee_account_id)[:8] + "..." if issue.assignee_account_id else None,
+            "expected_ai_id": str(settings.JIRA_AI_ACCOUNT_ID)[:8] + "..." if settings.JIRA_AI_ACCOUNT_ID else None,
+        }
+        add_event(run_id, "info", "No action taken - router conditions not met", diag)
+        print(f"[NOOP] {issue_key}: type={issue.issue_type} status={issue.status!r} (expected {settings.JIRA_STATUS_SELECTED_FOR_DEV!r}) "
+              f"assignee_match={diag['assignee_match']}")
+
     if action.name == "PLAN_EPIC":
         add_progress_event(run_id, "planning", "Generating Epic plan", {})
         _handle_plan_parent(ctx, issue, run_id)  # Reuse existing Epic planning

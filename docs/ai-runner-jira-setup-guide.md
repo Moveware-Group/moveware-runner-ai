@@ -165,7 +165,7 @@ For each Story:
 | Stories not created | Move Epic to **Selected for Development** (or **In Progress**), assign to AI Runner. Trigger webhook (e.g. reassign or edit Epic). |
 | Sub-tasks not created | Move Story to **Selected for Development**, assign to AI Runner. |
 | AI doesn't execute sub-task | Move sub-task to **In Progress**, assign to AI Runner. |
-| Story in Selected for Dev but nothing happens | Jira rules fire on **transition**. If the Story was already there, no webhook fires. **Option A:** Move Story to Backlog, then back to Selected for Development (create a fresh transition). **Option B:** Manually trigger: `curl -X POST https://your-runner/webhook/jira -H "Content-Type: application/json" -H "X-Moveware-Webhook-Secret: YOUR_JIRA_WEBHOOK_SECRET" -d '{"issue_key":"TB-2"}'` |
+| Story in Selected for Dev but nothing happens | **1. Assign before transitioning:** The Story must be assigned to AI Runner *when* it enters Selected for Development. Assign it to AI Runner first, then move to Selected for Dev. **2. Status/assignee must match config:** Worker checks `JIRA_STATUS_SELECTED_FOR_DEV` (exact match) and `JIRA_AI_ACCOUNT_ID`. Check worker logs for `[NOOP]` – they now show why no action was taken. **3. Manual trigger:** `curl -X POST https://your-runner/webhook/jira -H "Content-Type: application/json" -H "X-Moveware-Webhook-Secret: YOUR_SECRET" -d '{"issue_key":"TB-2"}'` |
 
 ---
 
