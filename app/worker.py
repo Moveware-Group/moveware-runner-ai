@@ -18,6 +18,52 @@ from .repo_config import get_repo_for_issue
 from .logger import ContextLogger, get_logger
 
 
+def verify_code_integrity() -> None:
+    """
+    Verify critical files are valid Python before starting worker.
+    
+    This prevents the worker from starting if core files are corrupted,
+    which can happen due to deployment errors or manual editing mistakes.
+    
+    Raises:
+        RuntimeError: If any critical file has syntax errors
+    """
+    from pathlib import Path
+    
+    # Critical files that must be valid Python
+    critical_files = [
+        'app/git_ops.py',
+        'app/executor.py', 
+        'app/worker.py',
+        'app/main.py',
+        'app/db.py',
+        'app/jira.py'
+    ]
+    
+    project_root = Path(__file__).parent.parent
+    
+    for file_path in critical_files:
+        full_path = project_root / file_path
+        
+        if not full_path.exists():
+            raise RuntimeError(f"Code integrity check failed: {file_path} does not exist")
+        
+        try:
+            with open(full_path, 'r', encoding='utf-8') as f:
+                code = f.read()
+                compile(code, str(full_path), 'exec')
+        except SyntaxError as e:
+            raise RuntimeError(
+                f"Code integrity check failed: {file_path} has syntax error at line {e.lineno}: {e.msg}\n"
+                f"This usually means the file was corrupted during deployment.\n"
+                f"Fix: Run 'git checkout HEAD -- {file_path}' to restore from git."
+            )
+        except Exception as e:
+            raise RuntimeError(f"Code integrity check failed: {file_path} could not be read: {e}")
+    
+    print(f"✓ Code integrity check passed ({len(critical_files)} files verified)")
+
+
 @dataclass
 class Context:
     jira: JiraClient
@@ -607,6 +653,9 @@ def worker_loop(poll_interval_seconds: float = 2.0, worker_id: str = "worker-1",
         worker_id: Worker identifier
         use_smart_queue: If True, use priority queue. If None, reads from USE_SMART_QUEUE env var (default: True)
     """
+    # Verify code integrity before starting (prevents startup with corrupted files)
+    verify_code_integrity()
+    
     init_db()
     ctx = Context(jira=JiraClient(), router=Router())
     
