@@ -95,6 +95,8 @@ def calculate_cost(
         "claude-sonnet-4": {"input": 3.0, "output": 15.0, "cached": 0.30},
         "openai": {"input": 2.5, "output": 10.0, "cached": 2.5},
         "gpt-4": {"input": 2.5, "output": 10.0, "cached": 2.5},
+        "gpt-5": {"input": 2.5, "output": 10.0, "cached": 2.5},
+        "gpt": {"input": 2.5, "output": 10.0, "cached": 2.5},
     }
     
     # Default to Claude pricing

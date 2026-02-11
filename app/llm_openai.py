@@ -103,27 +103,29 @@ class OpenAIClient:
         return "\n".join(out).strip()
 
     def responses_text(self, model: str, system: str, user: str, max_tokens: int = 4000, temperature: float = 0.2) -> str:
-        """Convenience method to create a response and extract text.
-        
-        Supports both standard Chat Completions API and Responses API.
-        """
-        # Try Responses API format first (based on base_url/responses endpoint)
+        """Convenience method to create a response and extract text."""
+        text, _ = self.responses_text_with_usage(model, system, user, max_tokens, temperature)
+        return text
+
+    def responses_text_with_usage(
+        self, model: str, system: str, user: str,
+        max_tokens: int = 4000, temperature: float = 0.2
+    ) -> tuple[str, dict]:
+        """Create response and return (text, usage_dict with input_tokens, output_tokens)."""
+        usage = {"input_tokens": 0, "output_tokens": 0}
+        # Try Responses API format first
         if "/responses" in self.base_url or "responses" in self.base_url.lower():
-            # Responses API uses 'input' parameter with combined prompt
-            # Only send parameters the Responses API actually supports
             combined_input = f"{system}\n\n{user}"
-            payload = {
-                "model": model,
-                "input": combined_input,
-            }
-            
+            payload = {"model": model, "input": combined_input}
             try:
                 resp = self.responses_create(payload)
-                return self.extract_text(resp)
-            except Exception as e:
-                # If Responses API fails, fall through to try Chat Completions
+                text = self.extract_text(resp)
+                u = resp.get("usage") or {}
+                usage["input_tokens"] = u.get("input_tokens") or u.get("prompt_tokens") or 0
+                usage["output_tokens"] = u.get("output_tokens") or u.get("completion_tokens") or 0
+                return text, usage
+            except Exception:
                 pass
-        
         # Try standard Chat Completions API
         payload = {
             "model": model,
@@ -134,20 +136,21 @@ class OpenAIClient:
             "max_tokens": max_tokens,
             "temperature": temperature
         }
-        
         try:
             resp = self.chat_completions_create(payload)
-            # Standard OpenAI response format
             if "choices" in resp and len(resp["choices"]) > 0:
-                return resp["choices"][0]["message"]["content"].strip()
+                text = resp["choices"][0]["message"]["content"].strip()
+                u = resp.get("usage") or {}
+                usage["input_tokens"] = u.get("prompt_tokens", 0)
+                usage["output_tokens"] = u.get("completion_tokens", 0)
+                return text, usage
         except Exception:
             pass
-        
-        # Final fallback: try responses endpoint with 'input' parameter (minimal params)
+        # Final fallback
         combined_input = f"{system}\n\n{user}"
-        payload = {
-            "model": model,
-            "input": combined_input,
-        }
-        resp = self.responses_create(payload)
-        return self.extract_text(resp)
+        resp = self.responses_create({"model": model, "input": combined_input})
+        text = self.extract_text(resp)
+        u = resp.get("usage") or {}
+        usage["input_tokens"] = u.get("input_tokens") or u.get("prompt_tokens") or 0
+        usage["output_tokens"] = u.get("output_tokens") or u.get("completion_tokens") or 0
+        return text, usage

@@ -6,11 +6,14 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from datetime import datetime
+
 from .config import settings, PARENT_PLAN_COMMENT_PREFIX
 from .llm_openai import OpenAIClient
 from .llm_anthropic import AnthropicClient
 from .models import JiraIssue
 from .db import add_progress_event
+from .metrics import ExecutionMetrics, calculate_cost, save_metrics
 
 
 def _load_project_knowledge() -> str:
@@ -157,6 +160,15 @@ PLAN_SCHEMA_HINT = {
 }
 
 
+def _extract_claude_usage(resp: Dict[str, Any]) -> tuple[int, int, int]:
+    """Extract (input_tokens, output_tokens, thinking_tokens) from Anthropic response."""
+    usage = resp.get("usage") or {}
+    inp = int(usage.get("input_tokens") or 0)
+    out = int(usage.get("output_tokens") or 0)
+    thinking = int(usage.get("thinking_tokens") or 0)
+    return inp, out, thinking
+
+
 def generate_plan(
     issue: JiraIssue,
     revision_feedback: str = "",
@@ -169,11 +181,14 @@ def generate_plan(
     2. ChatGPT reviews and suggests improvements
     3. Claude incorporates feedback if needed
     """
-    
+    start_time = datetime.now()
+    claude_in, claude_out, claude_thinking = 0, 0, 0
+    openai_in, openai_out = 0, 0
+
     # Step 1: Claude generates initial plan with extended thinking
     if run_id:
         add_progress_event(run_id, "planning", "Using Claude extended thinking to analyze Epic", {})
-    
+
     claude_client = AnthropicClient(settings.ANTHROPIC_API_KEY, base_url=settings.ANTHROPIC_BASE_URL)
     
     schema_prompt = (
@@ -198,7 +213,11 @@ def generate_plan(
             "budget_tokens": 10000  # Extra thinking for planning!
         }
     })
-    
+    inp, out, thinking = _extract_claude_usage(response)
+    claude_in += inp
+    claude_out += out
+    claude_thinking += thinking
+
     initial_plan_text = claude_client.extract_text(response)
     
     # Parse initial plan
@@ -228,14 +247,16 @@ def generate_plan(
         "}"
     )
     
-    review_text = openai_client.responses_text(
+    review_text, review_usage = openai_client.responses_text_with_usage(
         model=settings.OPENAI_MODEL,
         system=_system_prompt_review(),
         user=review_prompt,
         max_tokens=4000,
         temperature=0.3
     )
-    
+    openai_in += int(review_usage.get("input_tokens") or 0)
+    openai_out += int(review_usage.get("output_tokens") or 0)
+
     # Parse review
     review = _parse_plan_json(review_text)
     
@@ -274,7 +295,11 @@ def generate_plan(
                 "budget_tokens": 8000
             }
         })
-        
+        inp, out, thinking = _extract_claude_usage(refined_response)
+        claude_in += inp
+        claude_out += out
+        claude_thinking += thinking
+
         refined_plan_text = claude_client.extract_text(refined_response)
         final_plan = _parse_plan_json(refined_plan_text)
         
@@ -293,9 +318,39 @@ def generate_plan(
     # Validate final plan
     if run_id:
         add_progress_event(run_id, "planning", "Validating final plan structure", {})
-    
+
     final_plan = _validate_and_fix_plan(final_plan)
-    
+
+    # Save planning metrics so dashboard shows stats (Claude + OpenAI calls)
+    total_in = claude_in + openai_in
+    total_out = claude_out + openai_out + claude_thinking
+    if run_id and (total_in or total_out):
+        end_time = datetime.now()
+        claude_cost = calculate_cost(
+            settings.ANTHROPIC_MODEL, claude_in, claude_out + claude_thinking, 0
+        )
+        openai_cost = calculate_cost(settings.OPENAI_MODEL, openai_in, openai_out, 0)
+        plan_metrics = ExecutionMetrics(
+            run_id=run_id,
+            issue_key=issue.key,
+            issue_type="epic",
+            start_time=start_time,
+            end_time=end_time,
+            duration_seconds=(end_time - start_time).total_seconds(),
+            success=True,
+            status="completed",
+            model_used=f"{settings.ANTHROPIC_MODEL}+{settings.OPENAI_MODEL}",
+            total_input_tokens=total_in,
+            total_output_tokens=total_out,
+            thinking_tokens=claude_thinking,
+            estimated_cost=claude_cost + openai_cost,
+            metadata={"phase": "planning"},
+        )
+        try:
+            save_metrics(plan_metrics)
+        except Exception as e:
+            print(f"Warning: Could not save planning metrics: {e}")
+
     return final_plan
 
 
