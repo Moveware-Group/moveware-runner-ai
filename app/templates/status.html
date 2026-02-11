@@ -475,29 +475,43 @@
         
         // Render metrics
         function renderMetrics(data) {
-            if (!data || data.total_runs === 0) {
-                document.getElementById('metricsSection').style.display = 'none';
+            const totalRuns = (data && data.total_runs) ?? 0;
+            const completed = (data && data.completed) ?? 0;
+            const failed = (data && data.failed) ?? 0;
+            const successRate = (data && data.success_rate) ?? 0;
+            const totalCostUsd = (data && data.total_cost_usd) ?? 0;
+            const avgDurationSec = (data && data.avg_duration_seconds) ?? 0;
+            const totalTokens = (data && data.total_tokens) ?? 0;
+            
+            if (totalRuns === 0) {
+                document.getElementById('successRate').textContent = '--';
+                document.getElementById('successSubtext').textContent = 'No runs in period';
+                document.getElementById('totalCost').textContent = '$0';
+                document.getElementById('avgDuration').textContent = '--';
+                document.getElementById('totalTokens').textContent = '0';
+                document.getElementById('tokensSubtext').textContent = 'input + output';
+                document.getElementById('errorCategoriesSection').innerHTML = '';
                 return;
             }
             
             // Success rate
-            document.getElementById('successRate').textContent = `${data.success_rate}%`;
+            document.getElementById('successRate').textContent = `${successRate}%`;
             document.getElementById('successSubtext').textContent = 
-                `${data.completed} completed, ${data.failed} failed`;
+                `${completed} completed, ${failed} failed`;
             
             // Total cost
-            document.getElementById('totalCost').textContent = `$${data.total_cost_usd}`;
+            document.getElementById('totalCost').textContent = `$${totalCostUsd}`;
             
             // Average duration
-            const avgMin = Math.floor(data.avg_duration_seconds / 60);
-            const avgSec = Math.floor(data.avg_duration_seconds % 60);
+            const avgMin = Math.floor(avgDurationSec / 60);
+            const avgSec = Math.floor(avgDurationSec % 60);
             document.getElementById('avgDuration').textContent = `${avgMin}m ${avgSec}s`;
             
             // Total tokens
-            const tokensK = Math.round(data.total_tokens / 1000);
+            const tokensK = Math.round(totalTokens / 1000);
             document.getElementById('totalTokens').textContent = `${tokensK}K`;
             document.getElementById('tokensSubtext').textContent = 
-                `${data.total_runs} runs processed`;
+                `${totalRuns} runs processed`;
             
             // Error categories
             if (data.error_categories && Object.keys(data.error_categories).length > 0) {

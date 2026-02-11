@@ -253,4 +253,15 @@ def get_summary_stats(hours: int = 24) -> Dict[str, Any]:
     
     except Exception as e:
         print(f"Warning: Could not calculate summary stats: {e}")
-        return {}
+        return {
+            "period_hours": hours,
+            "total_runs": 0,
+            "completed": 0,
+            "failed": 0,
+            "success_rate": 0,
+            "total_cost_usd": 0,
+            "avg_duration_seconds": 0,
+            "total_tokens": 0,
+            "error_categories": {},
+            "avg_self_heal_attempts": 0,
+        }
