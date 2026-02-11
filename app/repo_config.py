@@ -7,7 +7,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 
 @dataclass
@@ -20,6 +20,7 @@ class RepoConfig:
     base_branch: str
     repo_owner_slug: str
     repo_name: str
+    skills: List[str]  # Optional list of skill names (e.g. ["nextjs-fullstack-dev", "flutter-dev"])
 
 
 class RepoConfigManager:
@@ -65,6 +66,7 @@ class RepoConfigManager:
                 base_branch=project["base_branch"],
                 repo_owner_slug=project["repo_owner_slug"],
                 repo_name=project["repo_name"],
+                skills=project.get("skills") or ["nextjs-fullstack-dev"],
             )
             self.configs[config.jira_project_key] = config
         
@@ -87,6 +89,7 @@ class RepoConfigManager:
             base_branch=settings.BASE_BRANCH,
             repo_owner_slug=settings.REPO_OWNER_SLUG,
             repo_name=settings.REPO_NAME,
+            skills=["nextjs-fullstack-dev"],
         )
         
         self.configs[project_key] = config

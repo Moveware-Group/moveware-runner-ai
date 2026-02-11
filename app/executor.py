@@ -44,6 +44,7 @@ def _get_repo_settings(issue_key: str) -> dict:
             "base_branch": repo.base_branch,
             "repo_owner_slug": repo.repo_owner_slug,
             "repo_name": repo.repo_name,
+            "skills": getattr(repo, "skills", ["nextjs-fullstack-dev"]),
         }
     else:
         # Fallback to environment variables (legacy single-repo mode)
@@ -53,6 +54,7 @@ def _get_repo_settings(issue_key: str) -> dict:
             "base_branch": settings.BASE_BRANCH,
             "repo_owner_slug": settings.REPO_OWNER_SLUG,
             "repo_name": settings.REPO_NAME,
+            "skills": ["nextjs-fullstack-dev"],
         }
 
 
@@ -302,13 +304,20 @@ def _get_human_comments(issue_key: str) -> str:
         return ""
 
 
-def _build_system_with_cache(repo_context: str) -> list:
+def _build_system_with_cache(repo_context: str, skills_content: str = "") -> list:
     """
     Build system prompt with prompt caching for repository context.
+    
+    Includes optional project-specific skills (e.g., Next.js vs Flutter conventions).
     
     Returns array of system message blocks with cache_control markers.
     This reduces costs by 90% and speeds up responses 5x for repeated context.
     """
+    cached_parts = []
+    if skills_content:
+        cached_parts.append(skills_content)
+    cached_parts.append(f"\n\n**Repository Context (cached for performance):**\n\n{repo_context}")
+    
     return [
         {
             "type": "text",
@@ -316,7 +325,7 @@ def _build_system_with_cache(repo_context: str) -> list:
         },
         {
             "type": "text",
-            "text": f"\n\n**Repository Context (cached for performance):**\n\n{repo_context}",
+            "text": "\n\n".join(cached_parts),
             "cache_control": {"type": "ephemeral"}  # Cache this expensive part!
         }
     ]
@@ -466,6 +475,10 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
     repo_path = Path(repo_settings["repo_workdir"])
     context_info = _get_repo_context(repo_path, issue)
     
+    # Load project-specific skills (e.g., Next.js vs Flutter)
+    from app.skill_loader import load_skills
+    skills_content = load_skills(repo_settings.get("skills", ["nextjs-fullstack-dev"]))
+    
     # Get human comments for additional context/clarifications
     human_comments = _get_human_comments(issue.key)
     
@@ -496,7 +509,7 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
     # Use prompt caching for repository context (90% cost reduction!)
     raw = client.messages_create({
         "model": settings.ANTHROPIC_MODEL,
-        "system": _build_system_with_cache(context_info),  # Cached system prompt!
+        "system": _build_system_with_cache(context_info, skills_content),  # Cached!
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": 16000,  # Increased for large file contents
         "temperature": 1,  # Required when thinking is enabled
@@ -924,10 +937,10 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
             print(f"Calling {model_name} to fix build errors...")
             
             if model_provider == "anthropic":
-                # Use Claude with cached context
+                # Use Claude with cached context (skills_content in scope from above)
                 fix_raw = client.messages_create({
                     "model": settings.ANTHROPIC_MODEL,
-                    "system": _build_system_with_cache(comprehensive_context),  # Cached!
+                    "system": _build_system_with_cache(comprehensive_context, skills_content),  # Cached!
                     "messages": [{"role": "user", "content": fix_prompt}],
                     "max_tokens": 16000,
                     "temperature": 1,

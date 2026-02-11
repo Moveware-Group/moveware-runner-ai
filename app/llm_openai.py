@@ -13,11 +13,12 @@ T = TypeVar('T')
 
 def retry_with_backoff(
     func: Callable[[], T],
-    max_retries: int = 3,
-    initial_delay: float = 1.0,
-    backoff_factor: float = 2.0
+    max_retries: int = 5,
+    initial_delay: float = 2.0,
+    backoff_factor: float = 2.5,
+    max_delay: float = 120.0
 ) -> T:
-    """Retry function with exponential backoff for rate limits."""
+    """Retry function with exponential backoff for rate limits and transient errors."""
     delay = initial_delay
     last_exception = None
     
@@ -31,14 +32,20 @@ def retry_with_backoff(
             should_retry = (
                 "rate" in error_msg or 
                 "429" in error_msg or 
+                "502" in error_msg or
                 "503" in error_msg or
-                "timeout" in error_msg
+                "504" in error_msg or
+                "timeout" in error_msg or
+                "timed out" in error_msg or
+                "connection" in error_msg or
+                "overloaded" in error_msg
             )
             
             if should_retry and attempt < max_retries - 1:
-                print(f"Rate limited (attempt {attempt + 1}/{max_retries}), retrying in {delay}s...")
+                print(f"Transient error (attempt {attempt + 1}/{max_retries}): {str(e)[:150]}...")
+                print(f"Retrying in {delay:.0f}s...")
                 time.sleep(delay)
-                delay *= backoff_factor
+                delay = min(delay * backoff_factor, max_delay)
                 continue
             
             raise
