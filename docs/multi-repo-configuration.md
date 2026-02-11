@@ -26,7 +26,8 @@ Create `config/repos.json` based on the example:
       "repo_workdir": "/srv/ai/repos/online-docs",
       "base_branch": "main",
       "repo_owner_slug": "leigh-moveware",
-      "repo_name": "online-docs"
+      "repo_name": "online-docs",
+      "skills": ["nextjs-fullstack-dev"]
     },
     {
       "jira_project_key": "MW",
@@ -35,7 +36,18 @@ Create `config/repos.json` based on the example:
       "repo_workdir": "/srv/ai/repos/moveware-core",
       "base_branch": "develop",
       "repo_owner_slug": "leigh-moveware",
-      "repo_name": "moveware-core"
+      "repo_name": "moveware-core",
+      "skills": ["nextjs-fullstack-dev"]
+    },
+    {
+      "jira_project_key": "TB",
+      "jira_project_name": "Moveware Go",
+      "repo_ssh": "git@github.com:leigh-moveware/moveware-go.git",
+      "repo_workdir": "/srv/ai/repos/moveware-go",
+      "base_branch": "main",
+      "repo_owner_slug": "leigh-moveware",
+      "repo_name": "moveware-go",
+      "skills": ["flutter-dev"]
     }
   ],
   "default_project_key": "OD"
@@ -144,9 +156,29 @@ sudo systemctl restart moveware-ai-orchestrator
 sudo systemctl restart moveware-ai-worker
 ```
 
-## Adding a New Repository
+## Add Repository Page (AI Console)
 
-To add a new Jira board/repository:
+The **Add Repository** page (`/repos`) lets you create a new repo without manually editing `repos.json`:
+
+1. **Access**: From the Status Dashboard, click **Add Repository** (or go to `/repos`)
+2. **Fill the form**: Jira project key/name, repo name, owner, description, skills (multi-select), base branch
+3. **Optional**: Uncheck "Create on GitHub" if the repo already exists
+4. **Submit**: Creates the GitHub repo (if selected), the folder under `/srv/ai/repos`, and appends the project to `config/repos.json`
+
+**Requirements**:
+- `gh` CLI installed and authenticated (or valid `GH_TOKEN` / GitHub App)
+- Server process has write access to `/srv/ai/repos` and `config/repos.json`
+
+**Admin protection** (optional): Set `ADMIN_SECRET` in your environment. If set, you must enter it in the "Admin Key" field when submitting. This restricts who can add repositories.
+
+```bash
+# In .env or /etc/moveware-ai.env
+ADMIN_SECRET=your-secret-here
+```
+
+## Adding a New Repository (Manual)
+
+To add a new Jira board/repository manually:
 
 ### 1. Update `config/repos.json`
 

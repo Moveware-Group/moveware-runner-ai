@@ -1,5 +1,6 @@
 import hmac
 import json
+import os
 import time
 from hashlib import sha256
 from typing import Any, Dict, Optional, List
@@ -254,6 +255,108 @@ async def queue_stats_api() -> Dict[str, Any]:
         return stats
     except Exception as e:
         return {"error": str(e)}
+
+
+def _require_admin(x_admin_secret: Optional[str] = Header(default=None)) -> None:
+    """Optional: require ADMIN_SECRET header for admin endpoints."""
+    admin_secret = os.getenv("ADMIN_SECRET")
+    if admin_secret and (not x_admin_secret or not hmac.compare_digest(x_admin_secret, admin_secret)):
+        raise HTTPException(403, "Admin authentication required")
+
+
+@app.get("/repos", response_class=HTMLResponse)
+async def repos_page(request: Request):
+    """Add Repository - setup new repos with GitHub, folder, and config."""
+    return templates.TemplateResponse("repos.html", {"request": request})
+
+
+@app.get("/api/repos/skills")
+async def list_skills_api() -> Dict[str, Any]:
+    """List available skills for repository setup."""
+    try:
+        from app.repo_setup import list_available_skills
+        skills = list_available_skills()
+        return {"skills": skills}
+    except Exception as e:
+        return {"error": str(e), "skills": []}
+
+
+@app.get("/api/repos/config")
+async def get_repos_config_api(x_admin_secret: Optional[str] = Header(default=None)) -> Dict[str, Any]:
+    """Get current repos.json configuration (read-only)."""
+    _require_admin(x_admin_secret)
+    try:
+        from app.repo_setup import get_repos_config_path
+        config_path = get_repos_config_path()
+        if not config_path.exists():
+            return {"projects": [], "default_project_key": None, "config_path": str(config_path)}
+        with open(config_path) as f:
+            data = json.load(f)
+        data["config_path"] = str(config_path)
+        return data
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/repos/add")
+async def add_repo_api(
+    request: Request,
+    x_admin_secret: Optional[str] = Header(default=None)
+) -> Dict[str, Any]:
+    """
+    Add a new repository: create on GitHub, create folder, update repos.json.
+    
+    Body: {
+      "jira_project_key": "TB",
+      "jira_project_name": "Moveware Go",
+      "repo_name": "moveware-go",
+      "repo_owner": "org",
+      "description": "Flutter mobile app",
+      "skills": ["flutter-dev"],
+      "base_branch": "main",
+      "create_on_github": true,
+      "private": true
+    }
+    """
+    _require_admin(x_admin_secret)
+    try:
+        body = await request.json()
+        jira_project_key = (body.get("jira_project_key") or "").strip().upper()
+        jira_project_name = (body.get("jira_project_name") or "").strip()
+        repo_name = (body.get("repo_name") or "").strip().lower().replace(" ", "-")
+        repo_owner = (body.get("repo_owner") or os.getenv("REPO_OWNER_SLUG") or "").strip()
+        description = (body.get("description") or "").strip()
+        skills = body.get("skills") or ["nextjs-fullstack-dev"]
+        base_branch = (body.get("base_branch") or "main").strip()
+        create_on_github = body.get("create_on_github", True)
+        private = body.get("private", True)
+
+        if not jira_project_key:
+            raise HTTPException(400, "jira_project_key is required")
+        if not jira_project_name:
+            raise HTTPException(400, "jira_project_name is required")
+        if not repo_name:
+            raise HTTPException(400, "repo_name is required")
+        if not repo_owner and create_on_github:
+            raise HTTPException(400, "repo_owner is required (or set REPO_OWNER_SLUG)")
+
+        from app.repo_setup import setup_new_repository
+        result = setup_new_repository(
+            jira_project_key=jira_project_key,
+            jira_project_name=jira_project_name,
+            repo_name=repo_name,
+            repo_owner=repo_owner,
+            description=description,
+            skills=skills,
+            base_branch=base_branch,
+            create_on_github=create_on_github,
+            private=private
+        )
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 @app.get("/api/runs/{run_id}")

@@ -86,6 +86,12 @@ sudo systemctl restart moveware-ai-worker
 
 No code changes needed!
 
+## Project Knowledge (Planning Context)
+
+The file `project-knowledge.md` in this directory is used by the AI Runner when creating Epic plans. It contains facts about your infrastructure, cloud provider, deployment setup, and conventions. By providing this context, the AI will not ask basic questions it should already know (e.g. "Which cloud provider?").
+
+Edit `project-knowledge.md` with your environment details.
+
 ## Documentation
 
 See [docs/multi-repo-configuration.md](../docs/multi-repo-configuration.md) for complete setup guide.

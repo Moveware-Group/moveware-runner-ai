@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Add Repository - AI Runner</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0a0a0a;
+            color: #e0e0e0;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #333;
+        }
+        h1 { color: #00d4ff; font-size: 2em; font-weight: 600; }
+        .nav a {
+            color: #00d4ff;
+            text-decoration: none;
+            margin-left: 20px;
+        }
+        .nav a:hover { text-decoration: underline; }
+        .card {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 25px;
+            max-width: 600px;
+            margin-bottom: 20px;
+        }
+        .card h2 {
+            color: #00d4ff;
+            font-size: 1.2em;
+            margin-bottom: 20px;
+        }
+        .form-group {
+            margin-bottom: 16px;
+        }
+        .form-group label {
+            display: block;
+            color: #888;
+            font-size: 0.9em;
+            margin-bottom: 6px;
+        }
+        .form-group input, .form-group select {
+            width: 100%;
+            padding: 10px 12px;
+            background: #0f0f0f;
+            border: 1px solid #333;
+            border-radius: 6px;
+            color: #fff;
+            font-size: 1em;
+        }
+        .form-group input:focus, .form-group select:focus {
+            outline: none;
+            border-color: #00d4ff;
+        }
+        .form-group select[multiple] {
+            height: 120px;
+        }
+        .form-group .hint {
+            color: #666;
+            font-size: 0.8em;
+            margin-top: 4px;
+        }
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .checkbox-group input {
+            width: auto;
+        }
+        .btn {
+            padding: 12px 24px;
+            background: #00d4ff;
+            color: #000;
+            border: none;
+            border-radius: 6px;
+            font-size: 1em;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        .btn:hover { background: #00a8cc; }
+        .btn:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+        .result {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 6px;
+            display: none;
+        }
+        .result.success {
+            background: #0a2a1a;
+            border: 1px solid #00ff88;
+            color: #00ff88;
+        }
+        .result.error {
+            background: #2a1a1a;
+            border: 1px solid #ff4444;
+            color: #ff4444;
+        }
+        .result pre {
+            margin-top: 10px;
+            font-size: 0.85em;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Add Repository</h1>
+        <nav class="nav">
+            <a href="/status">Dashboard</a>
+        </nav>
+    </div>
+
+    <div class="card">
+        <h2>Setup New Repository</h2>
+        <p style="color: #888; margin-bottom: 20px; font-size: 0.95em;">
+            Creates the GitHub repo, local folder, and adds to repos.json. Requires gh CLI and GitHub App/PAT.
+        </p>
+
+        <form id="addRepoForm">
+            <div class="form-group">
+                <label>Jira Project Key *</label>
+                <input type="text" id="jira_project_key" placeholder="e.g. TB, OD, VS" required maxlength="10">
+                <div class="hint">Short code used in Jira (e.g. TB-1, OD-123)</div>
+            </div>
+
+            <div class="form-group">
+                <label>Jira Project Name *</label>
+                <input type="text" id="jira_project_name" placeholder="e.g. Moveware Go" required>
+                <div class="hint">Human-readable project name</div>
+            </div>
+
+            <div class="form-group">
+                <label>Repository Name *</label>
+                <input type="text" id="repo_name" placeholder="e.g. moveware-go" required>
+                <div class="hint">GitHub repo name (lowercase, hyphens). Will create owner/repo_name</div>
+            </div>
+
+            <div class="form-group">
+                <label>Repository Owner</label>
+                <input type="text" id="repo_owner" placeholder="e.g. leigh-moveware">
+                <div class="hint">GitHub org or user. Defaults to REPO_OWNER_SLUG if empty</div>
+            </div>
+
+            <div class="form-group">
+                <label>Description</label>
+                <input type="text" id="description" placeholder="Brief description for GitHub">
+            </div>
+
+            <div class="form-group">
+                <label>Skills *</label>
+                <select id="skills" multiple>
+                    <!-- Populated by JS -->
+                </select>
+                <div class="hint">Hold Ctrl/Cmd to select multiple. AI will follow these conventions.</div>
+            </div>
+
+            <div class="form-group">
+                <label>Base Branch</label>
+                <input type="text" id="base_branch" value="main" placeholder="main">
+            </div>
+
+            <div class="form-group checkbox-group">
+                <input type="checkbox" id="create_on_github" checked>
+                <label for="create_on_github" style="margin-bottom:0">Create repository on GitHub</label>
+            </div>
+
+            <div class="form-group checkbox-group">
+                <input type="checkbox" id="private" checked>
+                <label for="private" style="margin-bottom:0">Private repository</label>
+            </div>
+
+            <div class="form-group">
+                <label>Admin Key <span style="color:#666">(optional)</span></label>
+                <input type="password" id="admin_key" placeholder="Required only if ADMIN_SECRET is set in server env">
+            </div>
+
+            <button type="submit" class="btn" id="submitBtn">Add Repository</button>
+        </form>
+
+        <div id="result" class="result"></div>
+    </div>
+
+    <script>
+        const form = document.getElementById('addRepoForm');
+        const resultEl = document.getElementById('result');
+        const submitBtn = document.getElementById('submitBtn');
+        const skillsSelect = document.getElementById('skills');
+
+        // Load skills
+        fetch('/api/repos/skills')
+            .then(r => r.json())
+            .then(data => {
+                if (data.skills && data.skills.length > 0) {
+                    data.skills.forEach(s => {
+                        const opt = document.createElement('option');
+                        opt.value = s.id;
+                        opt.textContent = `${s.id} - ${s.description.substring(0, 50)}...`;
+                        skillsSelect.appendChild(opt);
+                    });
+                    // Pre-select nextjs as default
+                    Array.from(skillsSelect.options).forEach(o => {
+                        if (o.value === 'nextjs-fullstack-dev') o.selected = true;
+                    });
+                }
+            })
+            .catch(e => console.error('Failed to load skills:', e));
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            submitBtn.disabled = true;
+            resultEl.style.display = 'none';
+            resultEl.className = 'result';
+
+            const skills = Array.from(skillsSelect.selectedOptions).map(o => o.value);
+            if (skills.length === 0) skills.push('nextjs-fullstack-dev');
+
+            const body = {
+                jira_project_key: document.getElementById('jira_project_key').value.trim().toUpperCase(),
+                jira_project_name: document.getElementById('jira_project_name').value.trim(),
+                repo_name: document.getElementById('repo_name').value.trim().toLowerCase().replace(/\s/g, '-'),
+                repo_owner: document.getElementById('repo_owner').value.trim(),
+                description: document.getElementById('description').value.trim(),
+                skills,
+                base_branch: document.getElementById('base_branch').value.trim() || 'main',
+                create_on_github: document.getElementById('create_on_github').checked,
+                private: document.getElementById('private').checked
+            };
+
+            const headers = {
+                'Content-Type': 'application/json'
+            };
+            const adminKey = document.getElementById('admin_key').value;
+            if (adminKey) {
+                headers['X-Admin-Secret'] = adminKey;
+            }
+
+            try {
+                const res = await fetch('/api/repos/add', {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify(body)
+                });
+                const data = await res.json();
+
+                resultEl.style.display = 'block';
+                if (data.ok) {
+                    resultEl.className = 'result success';
+                    resultEl.innerHTML = '<strong>Success!</strong> Repository added.<br><pre>' +
+                        JSON.stringify(data.steps, null, 2) + '</pre>';
+                    form.reset();
+                } else {
+                    resultEl.className = 'result error';
+                    resultEl.innerHTML = '<strong>Error:</strong> ' + (data.error || 'Unknown') +
+                        (data.steps ? '<pre>' + JSON.stringify(data.steps, null, 2) + '</pre>' : '');
+                }
+            } catch (err) {
+                resultEl.style.display = 'block';
+                resultEl.className = 'result error';
+                resultEl.innerHTML = '<strong>Error:</strong> ' + err.message;
+            } finally {
+                submitBtn.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>

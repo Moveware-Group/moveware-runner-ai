@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -11,6 +13,27 @@ from .models import JiraIssue
 from .db import add_progress_event
 
 
+def _load_project_knowledge() -> str:
+    """Load project knowledge file for planner context. Returns empty string if not found."""
+    path = os.getenv("PROJECT_KNOWLEDGE_PATH")
+    if path:
+        p = Path(path)
+    else:
+        p = Path(__file__).resolve().parent.parent / "config" / "project-knowledge.md"
+    if not p.exists():
+        return ""
+    try:
+        content = p.read_text(encoding="utf-8").strip()
+        if not content:
+            return ""
+        return (
+            "\n\n**Project Knowledge (use this context; do not ask questions already answered here):**\n\n"
+            f"{content}"
+        )
+    except Exception:
+        return ""
+
+
 @dataclass
 class PlanResult:
     """Result of plan generation."""
@@ -19,7 +42,7 @@ class PlanResult:
 
 
 def _system_prompt_claude() -> str:
-    return (
+    base = (
         "You are an expert software architect and technical planner with deep experience in system design. "
         "Your task is to create a comprehensive, well-thought-out implementation plan.\n\n"
         "Break down the Epic into user-facing Stories. Each Story should be a cohesive feature slice "
@@ -35,6 +58,15 @@ def _system_prompt_claude() -> str:
         "Only mark a sub-task as 'independent: true' if it's infrastructure/build config that should have its own PR. "
         "The output MUST be valid JSON matching the schema exactly."
     )
+    knowledge = _load_project_knowledge()
+    if knowledge:
+        base += (
+            "\n\n**CRITICAL: Project context below.** Use this information. "
+            "Do NOT ask questions about infrastructure, cloud provider, deployment, or conventions "
+            "that are already stated here. Assume these facts when planning."
+        )
+        base += knowledge
+    return base
 
 
 def _system_prompt_review() -> str:
