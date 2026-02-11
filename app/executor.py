@@ -1028,7 +1028,16 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
                 
                 verification_errors = []  # Reset errors
                 
-                if is_nextjs:
+                # Detect Next.js (is_nextjs may not have been set if initial verification skipped)
+                _is_nextjs = False
+                if package_json_path.exists():
+                    try:
+                        _pkg = package_json_path.read_text(encoding="utf-8")
+                        _is_nextjs = '"next"' in _pkg or "'next'" in _pkg
+                    except Exception:
+                        pass
+                
+                if _is_nextjs:
                     # Clean locks before retry
                     try:
                         next_dir = repo_path / ".next"
