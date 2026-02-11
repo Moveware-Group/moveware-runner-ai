@@ -41,9 +41,10 @@ def https_repo_url(repo: str, token: str) -> str:
     - git@github.com:owner/repo[.git]
     - owner/repo
     """
+    repo = (repo or "").strip()
     # Normalize SSH format (git@github.com:owner/repo.git) to owner/repo
     if repo.startswith("git@github.com:"):
-        repo = repo[len("git@github.com:"):].rstrip("/")
+        repo = repo[len("git@github.com:"):].rstrip("/").rstrip()
         if repo.endswith(".git"):
             repo = repo[:-4]
     # Full HTTPS URL
@@ -89,6 +90,12 @@ def checkout_repo(workdir: str, repo: str, base_branch: str, token: Optional[str
     
     ensure_dir(workdir)
     repo_url = https_repo_url(repo, _token)
+    # Log clone target (owner/repo only, no token) for debugging
+    if "@github.com/" in repo_url:
+        display = repo_url.split("@github.com/")[-1].replace(".git", "")
+    else:
+        display = repo.replace("git@github.com:", "").replace(".git", "").strip() or "?"
+    print(f"[git_ops] Cloning github.com/{display}")
     if not (Path(workdir) / ".git").exists():
         run(["git", "clone", repo_url, "."], cwd=workdir)
     
