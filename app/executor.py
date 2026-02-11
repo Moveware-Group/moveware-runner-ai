@@ -573,21 +573,6 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
             action_word = "Created" if action == "create" else "Updated"
             files_changed.append(f"{action_word} {file_op['path']}")
     
-    for file_op in files:
-        file_path = repo_path / file_op["path"]
-        action = file_op.get("action", "update")
-        
-        if action == "delete":
-            if file_path.exists():
-                file_path.unlink()
-                files_changed.append(f"Deleted {file_op['path']}")
-        elif action in ("create", "update"):
-            content = file_op.get("content", "")
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-            file_path.write_text(content, encoding="utf-8")
-            action_word = "Created" if action == "create" else "Updated"
-            files_changed.append(f"{action_word} {file_op['path']}")
-    
     notes = payload.get("summary", "") or payload.get("implementation_plan", "")
     
     if not files_changed:
@@ -634,7 +619,9 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
     if run_id:
         add_progress_event(run_id, "verifying", "Running pre-commit checks", {})
     
-    pre_commit_result = run_all_verifications(repo_path, files_changed)
+    # Pass actual file paths to verifier (not "Created path" format - ESLint/tsc need real paths)
+    file_paths_for_verify = [f["path"] for f in files if f.get("action", "update") != "delete"]
+    pre_commit_result = run_all_verifications(repo_path, file_paths_for_verify)
     
     # Start with any pre-commit errors
     verification_errors = list(pre_commit_result.errors)
