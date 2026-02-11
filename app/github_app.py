@@ -6,7 +6,7 @@ Handles authentication and token management for GitHub App installations.
 import os
 import time
 from typing import Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import jwt
 import requests
 from dataclasses import dataclass
@@ -28,7 +28,8 @@ class InstallationToken:
     
     def is_expired(self) -> bool:
         """Check if token is expired (with 5 min buffer)."""
-        return datetime.now() >= self.expires_at - timedelta(minutes=5)
+        now_utc = datetime.now(timezone.utc)
+        return now_utc >= self.expires_at - timedelta(minutes=5)
 
 
 class GitHubAppAuth:
