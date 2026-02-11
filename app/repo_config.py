@@ -54,8 +54,14 @@ class RepoConfigManager:
     
     def _load_from_file(self, config_path: str) -> None:
         """Load repository configurations from JSON file."""
-        with open(config_path, 'r') as f:
-            data = json.load(f)
+        try:
+            with open(config_path, 'r') as f:
+                data = json.load(f)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(
+                f"Invalid JSON in {config_path} at line {e.lineno}, column {e.colno}: {e.msg}. "
+                f"Run: python3 -m json.tool {config_path}  # to validate and see the error."
+            ) from e
         
         for project in data.get("projects", []):
             config = RepoConfig(

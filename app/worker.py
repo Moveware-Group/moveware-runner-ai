@@ -362,7 +362,8 @@ def _handle_revise_plan(ctx: Context, issue: JiraIssue, run_id: Optional[int] = 
 
 def _handle_epic_approved(ctx: Context, epic: JiraIssue) -> None:
     """Handle Epic approval - creates Stories from plan."""
-    if epic.status != settings.JIRA_STATUS_SELECTED_FOR_DEV:
+    # Accept both Selected for Dev and In Progress (user may have moved directly to In Progress)
+    if epic.status not in (settings.JIRA_STATUS_SELECTED_FOR_DEV, settings.JIRA_STATUS_IN_PROGRESS):
         return
     if epic.assignee_account_id != settings.JIRA_AI_ACCOUNT_ID:
         return

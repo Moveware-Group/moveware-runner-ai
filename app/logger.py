@@ -190,11 +190,12 @@ class ContextLogger:
         if context:
             extra["context"] = context
         
-        # Add any additional kwargs
+        # Reserve exc_info for std logging - LogRecord rejects it in extra
+        exc_info = kwargs.pop("exc_info", False)
         extra.update(kwargs)
         
         log_func = getattr(self.logger, level.lower())
-        log_func(message, extra=extra)
+        log_func(message, extra=extra, exc_info=exc_info)
     
     def debug(self, message: str, **kwargs):
         """Log debug message."""
