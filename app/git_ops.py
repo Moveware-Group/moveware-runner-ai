@@ -35,12 +35,25 @@ def ensure_dir(path: str) -> None:
 
 
 def https_repo_url(repo: str, token: str) -> str:
-    # repo can be full URL or owner/name
-    if repo.startswith("https://"):
+    """
+    Build HTTPS clone URL. Handles:
+    - https://github.com/owner/repo[.git]
+    - git@github.com:owner/repo[.git]
+    - owner/repo
+    """
+    # Normalize SSH format (git@github.com:owner/repo.git) to owner/repo
+    if repo.startswith("git@github.com:"):
+        repo = repo[len("git@github.com:"):].rstrip("/")
+        if repo.endswith(".git"):
+            repo = repo[:-4]
+    # Full HTTPS URL
+    elif repo.startswith("https://"):
         if token:
-            # https://x-access-token:<token>@github.com/owner/repo.git
             return repo.replace("https://github.com/", f"https://x-access-token:{token}@github.com/")
         return repo
+    # Ensure owner/repo (no leading path, no double .git)
+    if repo.endswith(".git"):
+        repo = repo[:-4]
     if token:
         return f"https://x-access-token:{token}@github.com/{repo}.git"
     return f"https://github.com/{repo}.git"
