@@ -625,12 +625,18 @@ def worker_loop(poll_interval_seconds: float = 2.0, worker_id: str = "worker-1",
         claim_func = claim_next_run
         logger.info(f"Worker {worker_id} started with BASIC QUEUE (FIFO), polling every {poll_interval_seconds}s")
 
+    poll_skips = 0
     while True:
         result = claim_func(worker_id)
         if not result:
+            poll_skips += 1
+            # Log every ~60s so we know worker is alive when queue appears stuck
+            if poll_skips % max(1, int(60 / poll_interval_seconds)) == 0:
+                logger.info(f"Polling (no run to claim yet, {poll_skips} skips)")
             time.sleep(poll_interval_seconds)
             continue
 
+        poll_skips = 0
         run_id, issue_key, payload = result
         
         # Create context logger for this run
