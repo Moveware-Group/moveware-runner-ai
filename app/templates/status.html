@@ -390,6 +390,15 @@
         <h1>AI Runner Status Dashboard</h1>
         <div class="controls">
             <a href="/repos" style="color:#00d4ff;text-decoration:none;margin-right:20px">Add Repository</a>
+            <span class="detail-label">Time Range:</span>
+            <select id="timeFilter" style="background:#1a1a1a;color:#e0e0e0;border:1px solid #555;padding:5px 10px;border-radius:4px;margin-right:20px;cursor:pointer">
+                <option value="1">Last Hour</option>
+                <option value="6">Last 6 Hours</option>
+                <option value="12">Last 12 Hours</option>
+                <option value="24" selected>Last 24 Hours</option>
+                <option value="168">Last Week</option>
+                <option value="all">All Time</option>
+            </select>
             <span class="detail-label">Show Details:</span>
             <label class="toggle-switch">
                 <input type="checkbox" id="detailToggle">
@@ -440,6 +449,7 @@
     
     <script>
         let detailMode = 'summary';
+        let timeFilter = 24; // default to 24 hours
         let autoRefreshInterval = null;
         
         // Format timestamp to readable time
@@ -464,7 +474,8 @@
         // Fetch and render metrics
         async function fetchMetrics() {
             try {
-                const response = await fetch('/api/metrics/summary?hours=24');
+                const hours = timeFilter === 'all' ? 999999 : timeFilter;
+                const response = await fetch(`/api/metrics/summary?hours=${hours}`);
                 const data = await response.json();
                 
                 renderMetrics(data);
@@ -482,6 +493,17 @@
             const totalCostUsd = (data && data.total_cost_usd) ?? 0;
             const avgDurationSec = (data && data.avg_duration_seconds) ?? 0;
             const totalTokens = (data && data.total_tokens) ?? 0;
+            
+            // Update metrics title based on time filter
+            let timeLabel = 'Last 24h';
+            if (timeFilter === 1) timeLabel = 'Last Hour';
+            else if (timeFilter === 6) timeLabel = 'Last 6h';
+            else if (timeFilter === 12) timeLabel = 'Last 12h';
+            else if (timeFilter === 24) timeLabel = 'Last 24h';
+            else if (timeFilter === 168) timeLabel = 'Last Week';
+            else if (timeFilter === 'all') timeLabel = 'All Time';
+            
+            document.querySelector('.metrics-title').textContent = `📊 Performance Metrics (${timeLabel})`;
             
             if (totalRuns === 0) {
                 document.getElementById('successRate').textContent = '--';
@@ -530,7 +552,8 @@
         // Fetch and render status
         async function fetchStatus() {
             try {
-                const response = await fetch(`/api/status?detail=${detailMode}`);
+                const hours = timeFilter === 'all' ? 'all' : timeFilter;
+                const response = await fetch(`/api/status?detail=${detailMode}&hours=${hours}`);
                 const data = await response.json();
                 
                 renderRuns(data.runs);
@@ -613,6 +636,14 @@
         document.getElementById('detailToggle').addEventListener('change', (e) => {
             detailMode = e.target.checked ? 'detailed' : 'summary';
             fetchStatus();
+        });
+        
+        // Time filter change
+        document.getElementById('timeFilter').addEventListener('change', (e) => {
+            const value = e.target.value;
+            timeFilter = value === 'all' ? 'all' : parseInt(value);
+            fetchStatus();
+            fetchMetrics();
         });
         
         // Auto-refresh every 5 seconds

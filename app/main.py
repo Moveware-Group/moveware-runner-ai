@@ -544,34 +544,52 @@ async def retry_run(run_id: int) -> Dict[str, Any]:
 
 
 @app.get("/api/status")
-async def status_api(detail: str = "summary") -> Dict[str, Any]:
+async def status_api(detail: str = "summary", hours: str = "24") -> Dict[str, Any]:
     """
     Get current AI Runner status with progress information.
     
     Args:
         detail: 'summary' for high-level view, 'detailed' for all progress events
+        hours: Number of hours to look back, or 'all' for all runs
     """
     try:
         with connect() as conn:
             cursor = conn.cursor()
             
-            # Get recent runs (last hour)
-            one_hour_ago = int(__import__('time').time()) - 3600
-            
-            cursor.execute("""
-                SELECT 
-                    id,
-                    issue_key,
-                    status,
-                    locked_by,
-                    locked_at,
-                    created_at,
-                    updated_at
-                FROM runs
-                WHERE created_at > ?
-                ORDER BY id DESC
-                LIMIT 50
-            """, (one_hour_ago,))
+            # Calculate time cutoff
+            if hours == "all":
+                # Get all runs, but limit to reasonable number
+                cursor.execute("""
+                    SELECT 
+                        id,
+                        issue_key,
+                        status,
+                        locked_by,
+                        locked_at,
+                        created_at,
+                        updated_at
+                    FROM runs
+                    ORDER BY id DESC
+                    LIMIT 200
+                """)
+            else:
+                hours_int = int(hours)
+                cutoff_time = int(__import__('time').time()) - (hours_int * 3600)
+                
+                cursor.execute("""
+                    SELECT 
+                        id,
+                        issue_key,
+                        status,
+                        locked_by,
+                        locked_at,
+                        created_at,
+                        updated_at
+                    FROM runs
+                    WHERE created_at > ?
+                    ORDER BY id DESC
+                    LIMIT 200
+                """, (cutoff_time,))
             
             runs = cursor.fetchall()
             

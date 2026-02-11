@@ -434,6 +434,37 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
             metadata={}
         )
     
+    # Wrap execution in try-except to ensure metrics are always saved
+    try:
+        return _execute_subtask_impl(issue, run_id, metrics, start_time)
+    except Exception as e:
+        # Save metrics even on failure
+        if metrics:
+            end_time = datetime.now()
+            metrics.end_time = end_time
+            metrics.duration_seconds = (end_time - start_time).total_seconds()
+            metrics.success = False
+            metrics.status = "failed"
+            metrics.error_message = str(e)
+            
+            # Try to extract error category
+            from .error_classifier import classify_error
+            error_category, _, _ = classify_error(str(e))
+            metrics.error_category = error_category
+            
+            # Save metrics before re-raising
+            try:
+                save_metrics(metrics)
+            except Exception as save_error:
+                print(f"Warning: Could not save error metrics: {save_error}")
+        
+        # Re-raise the original error
+        raise
+
+
+def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Optional[ExecutionMetrics], start_time: datetime) -> ExecutionResult:
+    """Internal implementation of execute_subtask with metrics tracking."""
+    
     if run_id:
         add_progress_event(run_id, "executing", f"Preparing repository for {issue.key}", {})
 
@@ -518,6 +549,22 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
             "budget_tokens": 8000  # Increased for complex problems
         }
     })
+
+    # Extract token usage from response
+    if metrics and raw.get("usage"):
+        usage = raw["usage"]
+        metrics.total_input_tokens = usage.get("input_tokens", 0)
+        metrics.total_output_tokens = usage.get("output_tokens", 0)
+        metrics.cached_tokens = usage.get("cache_read_input_tokens", 0)
+        # Calculate cost
+        metrics.estimated_cost = calculate_cost(
+            settings.ANTHROPIC_MODEL,
+            metrics.total_input_tokens,
+            metrics.total_output_tokens,
+            metrics.cached_tokens
+        )
+        print(f"Token usage: {metrics.total_input_tokens} input, {metrics.total_output_tokens} output, {metrics.cached_tokens} cached")
+        print(f"Estimated cost: ${metrics.estimated_cost:.4f}")
 
     # Extract assistant text and parse JSON
     text = AnthropicClient.extract_text(raw)
@@ -936,6 +983,22 @@ def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> Execution
                         "budget_tokens": 8000  # Increased for error fixing
                     }
                 })
+                
+                # Track token usage for fix attempts
+                if metrics and fix_raw.get("usage"):
+                    usage = fix_raw["usage"]
+                    metrics.total_input_tokens += usage.get("input_tokens", 0)
+                    metrics.total_output_tokens += usage.get("output_tokens", 0)
+                    metrics.cached_tokens += usage.get("cache_read_input_tokens", 0)
+                    metrics.self_heal_attempts += 1
+                    # Recalculate cost
+                    metrics.estimated_cost = calculate_cost(
+                        settings.ANTHROPIC_MODEL,
+                        metrics.total_input_tokens,
+                        metrics.total_output_tokens,
+                        metrics.cached_tokens
+                    )
+                
                 fix_text = AnthropicClient.extract_text(fix_raw)
             else:
                 # Use OpenAI as fallback (using same client as planner)
