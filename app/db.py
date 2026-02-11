@@ -70,7 +70,9 @@ def now() -> int:
     return int(time.time())
 
 
-DEDUP_RECENT_COMPLETED_SECONDS = 90  # Skip new run if same issue completed recently
+# Dedup 2 disabled: blocking new runs after "recent" completion was too aggressive - prevented
+# processing when issue moved to Selected for Development right after a NOOP. Rely on Dedup 1 only.
+DEDUP_RECENT_COMPLETED_SECONDS = 0  # 0 = disabled
 
 
 def enqueue_run(issue_key: str, payload: Dict[str, Any], priority: Optional[int] = None, force_new: bool = False) -> int:
@@ -113,14 +115,15 @@ def enqueue_run(issue_key: str, payload: Dict[str, Any], priority: Optional[int]
                 )
                 return existing_id
             
-            # Dedup 2: Recently completed run for this issue (suppresses rapid duplicate webhooks)
-            cutoff = ts - DEDUP_RECENT_COMPLETED_SECONDS
-            row = cx.execute(
-                "SELECT id FROM runs WHERE issue_key = ? AND status IN ('completed', 'failed') AND updated_at > ? ORDER BY id DESC LIMIT 1",
-                (issue_key, cutoff),
-            ).fetchone()
-            if row:
-                return row[0]  # Skip creating duplicate; return existing run id
+            # Dedup 2: Recently completed (disabled when DEDUP_RECENT_COMPLETED_SECONDS=0)
+            if DEDUP_RECENT_COMPLETED_SECONDS > 0:
+                cutoff = ts - DEDUP_RECENT_COMPLETED_SECONDS
+                row = cx.execute(
+                    "SELECT id FROM runs WHERE issue_key = ? AND status IN ('completed', 'failed') AND updated_at > ? ORDER BY id DESC LIMIT 1",
+                    (issue_key, cutoff),
+                ).fetchone()
+                if row:
+                    return row[0]  # Skip creating duplicate; return existing run id
         
         cur = cx.execute(
             "INSERT INTO runs(issue_key,status,payload_json,created_at,updated_at,priority,repo_key) VALUES(?,?,?,?,?,?,?)",
