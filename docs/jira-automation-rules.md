@@ -104,6 +104,30 @@ When a sub-task is assigned to AI Runner, trigger execution.
 
 ---
 
+## Rule 2b: Story Approved for Development (Story kickoff)
+
+### Purpose
+When a Story is moved to Selected for Development, trigger creation of sub-tasks and Story branch.
+
+### Rule type
+- **Rule trigger:** Issue transitioned
+
+### Trigger conditions
+- To: `Selected for Development`
+- Issue type IS: `Story`
+
+### Actions (order matters!)
+1) **Assign issue** to `AI Runner` (required – router ignores if not assigned)
+2) **Send web request**
+- URL: `https://your-orchestrator/webhook/jira`
+- Method: `POST`
+- Headers: `X-Moveware-Webhook-Secret`, `Content-Type: application/json`
+- Body: `{"issue_key": "{{issue.key}}", "event_type": "story_approved", "status": "{{issue.status.name}}"}`
+
+> **Why assign first?** The router only processes issues assigned to AI Runner. If the webhook fires before assignment, the worker will NOOP.
+
+---
+
 ## Rule 3: Plan approval transition (Plan Review → In Progress)
 
 ### Purpose

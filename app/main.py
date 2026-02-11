@@ -248,6 +248,36 @@ async def metrics_summary_api(hours: int = 24) -> Dict[str, Any]:
         }
 
 
+@app.get("/api/debug/recent-runs")
+async def debug_recent_runs(issue_key: Optional[str] = None, limit: int = 10) -> Dict[str, Any]:
+    """
+    Diagnostic: recent runs, optionally filtered by issue_key.
+    Use to verify if webhooks are creating runs when you move issues in Jira.
+    """
+    try:
+        with connect() as conn:
+            cursor = conn.cursor()
+            if issue_key:
+                cursor.execute("""
+                    SELECT id, issue_key, status, created_at, updated_at, locked_by
+                    FROM runs WHERE issue_key = ?
+                    ORDER BY id DESC LIMIT ?
+                """, (issue_key.upper(), limit))
+            else:
+                cursor.execute("""
+                    SELECT id, issue_key, status, created_at, updated_at, locked_by
+                    FROM runs ORDER BY id DESC LIMIT ?
+                """, (limit,))
+            rows = cursor.fetchall()
+            runs = [
+                {"id": r[0], "issue_key": r[1], "status": r[2], "created_at": r[3], "updated_at": r[4], "locked_by": r[5]}
+                for r in rows
+            ]
+            return {"runs": runs, "queue": get_queue_stats()}
+    except Exception as e:
+        return {"error": str(e), "runs": []}
+
+
 @app.get("/api/queue/stats")
 async def queue_stats_api() -> Dict[str, Any]:
     """Get current queue statistics with priorities and repo breakdown."""
@@ -263,7 +293,7 @@ async def reset_stale_runs_api(
     x_admin_secret: Optional[str] = Header(default=None)
 ) -> Dict[str, Any]:
     """
-    Reset runs stuck in claimed/running (stale locks > 10 min).
+    Reset runs stuck in claimed/running (stale locks).
     Use when worker crashed and runs are blocking the queue.
     """
     _require_admin(x_admin_secret)
