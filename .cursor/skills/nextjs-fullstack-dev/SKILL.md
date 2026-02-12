@@ -152,6 +152,18 @@ export async function GET(
 }
 ```
 
+## Prisma & TypeScript
+
+When using Prisma with TypeScript:
+- **Types only**: `import type { User, Session } from '@prisma/client'` - for type annotations.
+- **Runtime use**: When using `Prisma.PrismaClientKnownRequestError` (e.g. in `error instanceof` checks), Prisma must be a **value import**:
+  ```typescript
+  import { Prisma } from '@prisma/client'  // Not import type!
+  if (error instanceof Prisma.PrismaClientKnownRequestError) { ... }
+  ```
+- **Mixed import**: `import { type User, Prisma } from '@prisma/client'` - inline `type` for types, Prisma as value.
+- Only import types that exist in `prisma/schema.prisma` - run `npx prisma generate` after schema changes.
+
 ## Authentication Patterns
 
 ### Middleware for Protected Routes

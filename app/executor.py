@@ -382,7 +382,7 @@ def _system_prompt() -> str:
         "  * TypeScript errors (wrong types, missing properties)\n"
         "  * Using Node.js modules (fs, path) in client components\n"
         "  * Prettier/formatting: use trailing commas in objects/arrays, proper line breaks\n"
-        "  * Prisma: only import types (Session, User, etc.) that exist in prisma/schema.prisma\n"
+        "  * Prisma: only import types that exist in schema; use `import { Prisma }` not `import type { Prisma }` when using Prisma.PrismaClientKnownRequestError at runtime\n"
         "- TEST YOUR MENTAL MODEL: Before finishing, mentally trace each import/export\n"
         "- Double-check that every exported function/variable is actually defined\n"
         "- Verify Tailwind classes match the design system or use standard Tailwind\n\n"
@@ -963,6 +963,50 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                     print(f"Prettier failed: {result.stderr}")
             except Exception as e:
                 print(f"Prettier auto-fix failed: {e}")
+    
+    # Auto-fix: Prisma imported with "import type" but used as value (e.g. Prisma.PrismaClientKnownRequestError)
+    if "cannot be used as a value because it was imported using 'import type'" in error_text and "Prisma" in error_text and is_node_project:
+        prisma_import_files = list(set(re.findall(r'src/[^\s:]+\.(?:ts|tsx)', error_text)))
+        prisma_fix_applied = False
+        for rel_path in prisma_import_files:
+            fp = repo_path / rel_path
+            if not fp.exists():
+                continue
+            try:
+                content = fp.read_text(encoding="utf-8")
+                # Match: import type { X, Prisma, Y } from '@prisma/client'
+                def _fix_prisma_import(m):
+                    imports = [s.strip() for s in m.group(1).split(",")]
+                    if "Prisma" not in imports:
+                        return m.group(0)
+                    new_imports = [f"type {x}" if x != "Prisma" else "Prisma" for x in imports]
+                    return f"import {{ {', '.join(new_imports)} }} from {m.group(2)}"
+                new_content, n = re.subn(
+                    r"import type\s*\{\s*([^}]+)\}\s*from\s*(['\"]@prisma/client['\"])",
+                    _fix_prisma_import,
+                    content,
+                    count=0
+                )
+                if n > 0:
+                    fp.write_text(new_content, encoding="utf-8")
+                    print(f"Fixed Prisma import in {rel_path}")
+                    prisma_fix_applied = True
+            except Exception as e:
+                print(f"Prisma import fix failed for {rel_path}: {e}")
+        if prisma_fix_applied:
+            result = subprocess.run(
+                ["npm", "run", "build"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=180
+            )
+            if result.returncode == 0:
+                print("✅ Build succeeded after Prisma import fix!")
+                verification_errors = []
+            else:
+                verification_errors = [f"Build still failing after Prisma import fix:\n{(result.stderr or result.stdout)[:2000]}"]
+            error_text = "\n".join(verification_errors)
     
     while verification_errors and fix_attempt < MAX_FIX_ATTEMPTS:
         fix_attempt += 1

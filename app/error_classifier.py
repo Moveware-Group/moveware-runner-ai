@@ -151,6 +151,19 @@ ERROR_PATTERNS = {
             "- If the model IS in schema.prisma: run `npx prisma generate`"
         )
     },
+    "import_type_prisma": {
+        "patterns": [
+            r"cannot be used as a value because it was imported using ['\"]import type['\"]",
+            r"'Prisma' cannot be used as a value"
+        ],
+        "fix_hint": (
+            "**PRISMA IMPORT TYPE ERROR:**\n"
+            "- When using Prisma at runtime (e.g. `error instanceof Prisma.PrismaClientKnownRequestError`), "
+            "Prisma must be a value import, not type-only.\n"
+            "- Change: `import type { Prisma }` to `import { Prisma }`\n"
+            "- Or use inline type: `import { type Session, Prisma } from '@prisma/client'` - Prisma without 'type'"
+        )
+    },
 }
 
 
