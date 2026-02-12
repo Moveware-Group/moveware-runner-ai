@@ -425,24 +425,30 @@ def _handle_epic_approved(ctx: Context, epic: JiraIssue) -> None:
 
 def _handle_story_approved(ctx: Context, story: JiraIssue) -> None:
     """Handle Story approval - creates sub-tasks and Story PR."""
-    if story.status != settings.JIRA_STATUS_SELECTED_FOR_DEV:
+    # Accept both Selected for Dev and In Progress (user may have moved directly to In Progress)
+    if story.status not in (settings.JIRA_STATUS_SELECTED_FOR_DEV, settings.JIRA_STATUS_IN_PROGRESS):
         return
     if story.assignee_account_id != settings.JIRA_AI_ACCOUNT_ID:
         return
 
-    # Check for existing active subtasks
+    # Check for existing subtasks (including Done and Blocked)
     all_subtasks = ctx.jira.get_subtasks(story.key)
-    active_subtasks = [
-        st for st in all_subtasks
-        if ((st.get("fields") or {}).get("status") or {}).get("name") not in [settings.JIRA_STATUS_BLOCKED, settings.JIRA_STATUS_DONE]
-    ]
     
-    if not active_subtasks:
-        # Create sub-tasks from Story breakdown
+    if not all_subtasks or len(all_subtasks) == 0:
+        # No subtasks exist yet - create them from Story breakdown
         _create_subtasks_from_story(ctx, story)
         
         # Refresh subtasks after creation
         all_subtasks = ctx.jira.get_subtasks(story.key)
+    else:
+        # Subtasks already exist - just check if we need to start/continue work
+        print(f"Story {story.key} already has {len(all_subtasks)} sub-task(s), checking progress")
+    
+    # Find active (not Done, not Blocked) subtasks
+    active_subtasks = [
+        st for st in all_subtasks
+        if ((st.get("fields") or {}).get("status") or {}).get("name") not in [settings.JIRA_STATUS_BLOCKED, settings.JIRA_STATUS_DONE]
+    ]
 
     # Transition Story to In Progress first
     ctx.jira.transition_to_status(story.key, settings.JIRA_STATUS_IN_PROGRESS)

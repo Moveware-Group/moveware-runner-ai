@@ -63,9 +63,10 @@ def _decide_internal(issue: JiraIssue) -> Optional[RouteDecision]:
         if issue.status == settings.JIRA_STATUS_SELECTED_FOR_DEV and issue.assignee_account_id == settings.JIRA_AI_ACCOUNT_ID:
             return RouteDecision(action="STORY_APPROVED", issue_key=issue.key, reason="Story approved, create sub-tasks and PR")
 
-        # When all sub-tasks are Done, mark Story PR as ready
+        # Fallback: Story moved directly to In Progress (user skipped Selected for Dev)
+        # Treat same as STORY_APPROVED - the handler will check if sub-tasks exist
         if issue.status == settings.JIRA_STATUS_IN_PROGRESS and issue.assignee_account_id == settings.JIRA_AI_ACCOUNT_ID:
-            return RouteDecision(action="CHECK_STORY_COMPLETION", issue_key=issue.key, reason="Check if all Story sub-tasks are complete")
+            return RouteDecision(action="STORY_APPROVED", issue_key=issue.key, reason="Story in In Progress (create sub-tasks if needed, else check completion)")
 
         return None
 
