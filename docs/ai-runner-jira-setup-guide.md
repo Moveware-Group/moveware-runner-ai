@@ -165,6 +165,7 @@ The existing Jira rule (sub-task assigned to AI Runner) will fire. The AI Runner
 | Epic | In Progress | AI Runner | Create Stories (fallback if not yet created) |
 | Story | Selected for Development | AI Runner | Create sub-tasks, branch, draft PR |
 | Sub-task | In Progress | AI Runner | Implement, commit, push to Story branch |
+| Sub-task | Blocked | AI Runner | Retry with human answers (move to In Progress, execute) |
 
 ---
 
