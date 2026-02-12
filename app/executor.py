@@ -1103,15 +1103,24 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                     api_key=settings.OPENAI_API_KEY,
                     base_url=settings.OPENAI_BASE_URL
                 )
-                
-                # Use responses_text() which properly parses the response
-                fix_text = openai_client.responses_text(
+                fix_text, fix_usage = openai_client.responses_text_with_usage(
                     model=settings.OPENAI_MODEL,
                     system=_system_prompt(),
                     user=fix_prompt,
                     max_tokens=16000,
                     temperature=1.0
                 )
+                # Track OpenAI token usage and add to total cost
+                if metrics and fix_usage:
+                    openai_in = fix_usage.get("input_tokens", 0) or fix_usage.get("prompt_tokens", 0)
+                    openai_out = fix_usage.get("output_tokens", 0) or fix_usage.get("completion_tokens", 0)
+                    metrics.total_input_tokens += openai_in
+                    metrics.total_output_tokens += openai_out
+                    metrics.self_heal_attempts += 1
+                    openai_cost = calculate_cost(settings.OPENAI_MODEL, openai_in, openai_out, 0)
+                    metrics.estimated_cost += openai_cost
+                    print(f"OpenAI token usage: {openai_in} input, {openai_out} output")
+                    print(f"OpenAI cost: ${openai_cost:.4f} (total: ${metrics.estimated_cost:.4f})")
             
             # Parse fix response - be more aggressive about finding JSON
             fix_json_text = fix_text.strip()
