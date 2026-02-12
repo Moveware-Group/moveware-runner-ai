@@ -791,6 +791,34 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                 if result.returncode != 0:
                     verification_errors.append(f"npm install failed:\n{result.stderr[:800]}")
                     print(f"npm install failed: {result.stderr}")
+                else:
+                    # Address security vulnerabilities after install (non-breaking fixes only)
+                    if run_id:
+                        add_progress_event(run_id, "verifying", "Checking and fixing security vulnerabilities (npm audit fix)", {})
+                    try:
+                        print("Running npm audit fix to address security vulnerabilities...")
+                        audit_result = subprocess.run(
+                            ["npm", "audit", "fix"],
+                            cwd=repo_path,
+                            capture_output=True,
+                            text=True,
+                            timeout=60
+                        )
+                        if audit_result.returncode == 0:
+                            if audit_result.stdout and "fixed" in audit_result.stdout.lower():
+                                print(f"✓ Security vulnerabilities fixed:\n{audit_result.stdout[:500]}")
+                            else:
+                                print("✓ No fixable vulnerabilities or already up to date")
+                        else:
+                            # audit fix exits 1 when vulns remain (e.g. require --force/breaking changes)
+                            audit_out = (audit_result.stdout or "") + (audit_result.stderr or "")
+                            if audit_out.strip():
+                                print(f"npm audit fix: {audit_out[:600]}")
+                            # Don't block build - we've applied safe fixes; remaining vulns need manual review
+                    except subprocess.TimeoutExpired:
+                        print("Warning: npm audit fix timed out")
+                    except Exception as e:
+                        print(f"Warning: npm audit fix failed: {e}")
             except subprocess.TimeoutExpired:
                 verification_errors.append("npm install timed out after 60 seconds")
                 print("npm install timed out")
