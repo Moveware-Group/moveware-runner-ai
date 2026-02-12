@@ -871,7 +871,6 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         
         # Extract file paths from error messages and build comprehensive context
         error_files = set()
-        import re
         import subprocess
         
         # Find file paths in error messages (e.g., ./online-docs/lib/services/brandingService.ts)
