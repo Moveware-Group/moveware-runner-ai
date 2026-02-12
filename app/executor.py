@@ -911,9 +911,9 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                     verification_errors = [f"Build still failing after prisma generate:\n{error_output[:2000]}"]
             else:
                 print(f"prisma generate failed: {result.stderr}")
-        error_text = "\n".join(verification_errors)
         except Exception as e:
             print(f"prisma generate failed: {e}")
+        error_text = "\n".join(verification_errors)
     
     # Auto-fix Prettier formatting errors (don't burn LLM attempts on formatting)
     if "prettier/prettier" in error_text and is_node_project:
