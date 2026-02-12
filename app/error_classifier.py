@@ -176,6 +176,38 @@ ERROR_PATTERNS = {
             "- Common required vars: DATABASE_URL, ENCRYPTION_KEY, JWT_SECRET, MOVEWARE_API_URL, NEXTAUTH_SECRET."
         )
     },
+    "env_type_missing": {
+        "patterns": [
+            r"Property ['\"](\w+)['\"] does not exist on type.*?env",
+            r"does not exist on type.*?NODE_ENV.*?DATABASE_URL",
+            r"Property ['\"]([A-Z_]+)['\"] does not exist on type"
+        ],
+        "fix_hint": (
+            "**ENVIRONMENT VARIABLE TYPE MISSING:**\n"
+            "The TypeScript type definition for your env object is incomplete.\n\n"
+            "**MANDATORY STEPS:**\n"
+            "1. **READ the env schema file** (typically src/env.ts, src/lib/env.ts, or similar)\n"
+            "2. **FIND the type definition** - Look for interface/type with NODE_ENV, DATABASE_URL, etc.\n"
+            "3. **ADD the missing property** to the type definition\n"
+            "4. **ENSURE it matches the error** - If error says 'JWT_SECRET', add JWT_SECRET: string\n\n"
+            "**EXAMPLE FIX:**\n"
+            "❌ Error: Property 'JWT_SECRET' does not exist on type '{ DATABASE_URL: string }'\n"
+            "✅ Read env.ts → Find interface\n"
+            "✅ Add: JWT_SECRET: string\n\n"
+            "**Common pattern in Next.js:**\n"
+            "```typescript\n"
+            "const env = {\n"
+            "  NODE_ENV: process.env.NODE_ENV,\n"
+            "  DATABASE_URL: process.env.DATABASE_URL!,\n"
+            "  JWT_SECRET: process.env.JWT_SECRET!,  // ← Add this\n"
+            "};\n"
+            "```\n\n"
+            "**DO NOT:**\n"
+            "- Remove the usage of env.JWT_SECRET (it's needed!)\n"
+            "- Use 'any' type (defeats type safety)\n"
+            "- Add to wrong file (find the actual env schema)"
+        )
+    },
     "import_type_prisma": {
         "patterns": [
             r"cannot be used as a value because it was imported using ['\"]import type['\"]",

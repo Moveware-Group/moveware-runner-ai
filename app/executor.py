@@ -1176,6 +1176,71 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                 verification_errors = [f"Build still failing after Prisma import fix:\n{(result.stderr or result.stdout)[:2000]}"]
             error_text = "\n".join(verification_errors)
     
+    # Auto-fix: Missing env var type definition (e.g. "Property 'JWT_SECRET' does not exist on type")
+    _env_type_missing = re.search(r"Property ['\"]([A-Z_]+)['\"] does not exist on type.*?(?:NODE_ENV|DATABASE_URL|env)", error_text)
+    if _env_type_missing and is_node_project:
+        missing_env_var = _env_type_missing.group(1)
+        print(f"Detected missing env type: {missing_env_var}")
+        
+        # Find env schema file
+        env_file_candidates = [
+            "src/env.ts",
+            "src/env.mjs", 
+            "src/lib/env.ts",
+            "src/lib/env.mjs",
+            "lib/env.ts",
+        ]
+        
+        env_file_path = None
+        for candidate in env_file_candidates:
+            if (repo_path / candidate).exists():
+                env_file_path = repo_path / candidate
+                break
+        
+        if env_file_path:
+            try:
+                content = env_file_path.read_text(encoding="utf-8")
+                
+                # Pattern 1: Object literal with properties
+                # const env = { NODE_ENV: ..., DATABASE_URL: ... }
+                if "const env = {" in content or "const env: " in content:
+                    # Find the closing brace of the env object
+                    # Add the missing property before the closing brace
+                    pattern = r"(const env\s*(?::\s*\{[^}]*\})?\s*=\s*\{[^}]*?)(\n\s*\})"
+                    
+                    def add_env_property(m):
+                        existing = m.group(1)
+                        closing = m.group(2)
+                        # Add comma if last line doesn't have one
+                        if not existing.rstrip().endswith(','):
+                            existing += ','
+                        new_property = f"\n  {missing_env_var}: process.env.{missing_env_var}!"
+                        return existing + new_property + closing
+                    
+                    new_content, n = re.subn(pattern, add_env_property, content, count=1)
+                    
+                    if n > 0:
+                        env_file_path.write_text(new_content, encoding="utf-8")
+                        print(f"✅ Added {missing_env_var} to {env_file_path.relative_to(repo_path)}")
+                        
+                        # Re-run build
+                        result = subprocess.run(
+                            ["npm", "run", "build"],
+                            cwd=repo_path,
+                            capture_output=True,
+                            text=True,
+                            timeout=180,
+                            env=_get_nextjs_build_env(),
+                        )
+                        if result.returncode == 0:
+                            print("✅ Build succeeded after adding env var type!")
+                            verification_errors = []
+                        else:
+                            verification_errors = [f"Build still failing after adding {missing_env_var}:\n{(result.stderr or result.stdout)[:2000]}"]
+                        error_text = "\n".join(verification_errors)
+            except Exception as e:
+                print(f"Failed to auto-fix env type: {e}")
+    
     while verification_errors and fix_attempt < MAX_FIX_ATTEMPTS:
         fix_attempt += 1
         error_msg = "\n\n".join(verification_errors)
@@ -1269,6 +1334,24 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             elif "@prisma/client" in error_msg:
                 error_files.add("prisma/schema.prisma")
                 print("Including prisma/schema.prisma in context (@prisma/client error detected)")
+        
+        # For env type errors, include env schema files so AI can add missing properties
+        if error_category == "env_type_missing":
+            # Common env schema file locations
+            env_file_candidates = [
+                "src/env.ts",
+                "src/env.mjs",
+                "src/lib/env.ts",
+                "src/lib/env.mjs",
+                "lib/env.ts",
+                "env.ts",
+                "src/config/env.ts",
+            ]
+            for env_file in env_file_candidates:
+                if (repo_path / env_file).exists():
+                    error_files.add(env_file)
+                    print(f"Including {env_file} in context for env_type_missing error")
+                    break  # Only include first match
         
         # Also extract imports mentioned in errors (e.g., "import from '../data/storage'")
         import_pattern = r"from ['\"]([^'\"]+)['\"]"

@@ -6,15 +6,16 @@
 
 ### 1. Enhanced Error Classification System (`app/error_classifier.py`)
 
-#### Added 6 New Error Patterns:
+#### Added 7 New Error Patterns:
 1. **eslint_config** - ESLint configuration errors and missing config packages
 2. **module_exports_mismatch** - Specific handling for export name mismatches
 3. **build_timeout** - Network errors and build timeouts
 4. **next_config** - Next.js configuration errors
 5. **duplicate_declaration** - Duplicate variable/function declarations
 6. **async_import** - Async/await usage errors
+7. **env_type_missing** - Missing environment variable type definitions
 
-Total error patterns: **19** (was 13)
+Total error patterns: **20** (was 13)
 
 #### Improved Error Hints:
 - Added comprehensive fallback hint for **unknown errors** with step-by-step debugging guide
@@ -47,6 +48,11 @@ Total error patterns: **19** (was 13)
 1. **ESLint config packages** - Auto-install missing eslint-config-* packages
 2. **Smart dev dependency detection** - Automatically use --save-dev for build tools
    - Packages: eslint, prettier, typescript, postcss, autoprefixer, tailwind
+3. **Environment variable type definitions** - Auto-add missing env var types
+   - Detects "Property 'JWT_SECRET' does not exist on type"
+   - Finds env schema file (src/env.ts, src/lib/env.ts, etc.)
+   - Adds missing property automatically: `JWT_SECRET: process.env.JWT_SECRET!`
+   - Re-runs build to verify fix
 
 #### Existing Auto-Fixes:
 - Missing npm packages
