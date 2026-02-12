@@ -955,8 +955,11 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                 print(f"Auto-installing missing npm package: {missing_pkg}")
                 if run_id:
                     add_progress_event(run_id, "verifying", f"Installing missing package: {missing_pkg}", {})
+                # Determine if it should be a dev dependency
+                is_dev_dep = any(pkg in missing_pkg for pkg in ["eslint", "prettier", "typescript", "postcss", "autoprefixer", "tailwind"])
+                install_flag = "--save-dev" if is_dev_dep else "--save"
                 subprocess.run(
-                    ["npm", "install", missing_pkg, "--no-audit", "--prefer-offline"],
+                    ["npm", "install", install_flag, missing_pkg, "--no-audit", "--prefer-offline"],
                     cwd=repo_path,
                     capture_output=True,
                     text=True,
@@ -981,6 +984,42 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                     )
             except Exception as e:
                 verification_errors.append(f"Failed to auto-install {missing_pkg}: {e}")
+    
+    # Auto-fix missing ESLint config packages (e.g. "eslint-config-next")
+    error_text_initial = "\n".join(verification_errors)
+    _eslint_config = re.search(r"Cannot find module ['\"]eslint-config-([^'\"]+)['\"]", error_text_initial)
+    if _eslint_config and is_node_project and not _cannot_find:  # Don't duplicate if already handled above
+        config_pkg = f"eslint-config-{_eslint_config.group(1).strip()}"
+        try:
+            print(f"Auto-installing missing ESLint config: {config_pkg}")
+            if run_id:
+                add_progress_event(run_id, "verifying", f"Installing ESLint config: {config_pkg}", {})
+            subprocess.run(
+                ["npm", "install", "--save-dev", config_pkg, "--no-audit", "--prefer-offline"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            # Re-run build
+            verification_errors = []
+            result = subprocess.run(
+                ["npm", "run", "build"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=180,
+                env=_get_nextjs_build_env(),
+            )
+            if result.returncode == 0:
+                print(f"✅ Build succeeded after installing {config_pkg}!")
+            else:
+                verification_errors.append(
+                    f"Build still failing after npm install {config_pkg}:\n"
+                    f"{(result.stderr or result.stdout)[:1000]}"
+                )
+        except Exception as e:
+            verification_errors.append(f"Failed to auto-install {config_pkg}: {e}")
     
     # Build error text for downstream checks
     error_text = "\n".join(verification_errors)
@@ -1180,6 +1219,24 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             file_path_str = match.group(0).replace('./', '').replace('online-docs/', '')
             error_files.add(file_path_str)
         
+        # Also extract TypeScript path alias imports (e.g., "@/lib/db/repositories")
+        # These often appear in errors like: Module "@/lib/foo" has no exported member "bar"
+        alias_pattern = r'["\']@/([^\s"\']+?)["\']'
+        for match in re.finditer(alias_pattern, error_msg):
+            alias_path = match.group(1)
+            # Try common extensions for TypeScript path aliases
+            for ext in ['.ts', '.tsx', '/index.ts', '/index.tsx', '.js', '.jsx']:
+                candidate = f"src/{alias_path}{ext}"
+                if (repo_path / candidate).exists():
+                    error_files.add(candidate)
+                    break
+            # Also try without src/ prefix in case @ maps to root
+            for ext in ['.ts', '.tsx', '/index.ts', '/index.tsx']:
+                candidate = f"{alias_path}{ext}"
+                if (repo_path / candidate).exists():
+                    error_files.add(candidate)
+                    break
+        
         # For Prisma schema mismatches, include schema.prisma so AI can match field names
         if error_category == "prisma_schema_mismatch" and (repo_path / "prisma" / "schema.prisma").exists():
             error_files.add("prisma/schema.prisma")
@@ -1271,53 +1328,72 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             )
         
         fix_prompt = (
-            f"The code has build errors. Please fix ALL the errors below.\n\n"
+            f"The code has build errors. You MUST fix ALL errors to make the build pass.\n\n"
             f"**Attempt:** {fix_attempt}/{MAX_FIX_ATTEMPTS}\n"
-            f"**Previous attempts:** {'Claude failed ' + str(fix_attempt-1) + ' time(s)' if fix_attempt > 1 else 'First attempt'}\n\n"
-            f"**Original Task:** {issue.key}\n"
-            f"**Summary:** {issue.summary}\n\n"
-            f"**Build Errors:**\n```\n{error_msg[:1500]}\n```\n\n"  # Limit error size
-            f"{error_analysis_section}"  # Targeted hints based on error type
+            f"**Previous attempts:** {'Failed ' + str(fix_attempt-1) + ' time(s) - learn from mistakes!' if fix_attempt > 1 else 'First attempt'}\n\n"
+            f"**Original Task:** {issue.key} - {issue.summary}\n\n"
+            f"**Build Errors:**\n```\n{error_msg[:1500]}\n```\n\n"
+            f"{error_analysis_section}"
+            f"\n**MANDATORY DEBUGGING PROCESS:**\n"
+            f"1. **READ THE ERROR MESSAGE COMPLETELY** - Every word matters!\n"
+            f"   - What file has the error? (look for file paths)\n"
+            f"   - What line number? (helps locate the problem)\n"
+            f"   - What exactly is the error? (missing export, type mismatch, syntax, etc.)\n\n"
+            f"2. **READ THE ACTUAL FILE CONTENTS** (provided in context below)\n"
+            f"   - Don't guess what's in the file - READ IT!\n"
+            f"   - Search for 'export' keyword to see what's actually exported\n"
+            f"   - Check the exact spelling and casing (JavaScript is case-sensitive!)\n\n"
+            f"3. **COMPARE ERROR vs REALITY**\n"
+            f"   - Error says: \"Module has no exported member 'userRepository'\"\n"
+            f"   - File contains: 'export const UserRepository' ← Different casing!\n"
+            f"   - OR File contains: 'const userRepository' ← Missing 'export' keyword!\n"
+            f"   - Fix: Either add export OR fix import to match actual name\n\n"
+            f"4. **APPLY THE FIX**\n"
+            f"   - Missing export? Add 'export' keyword\n"
+            f"   - Wrong name? Fix the import to match actual export name\n"
+            f"   - Missing package? Add to package.json dependencies\n"
+            f"   - Type error? Check interface and add missing properties\n\n"
             f"**Key Error Context:**\n{chr(10).join(error_context) if error_context else 'See full errors above'}\n\n"
-            f"{error_context}\n\n"  # Show actual file contents with errors
-            f"**Full Repository Context (for debugging):**\n{comprehensive_context}\n\n"
-            f"**CRITICAL:** Your response MUST be ONLY valid JSON. No markdown, no explanation, JUST JSON.\n\n"
-            f"Provide the COMPLETE fixed files as JSON with this EXACT format:\n"
+            f"**Full Repository Context:**\n{comprehensive_context}\n\n"
+            f"**RESPONSE FORMAT - CRITICAL:**\n"
+            f"Your response MUST be ONLY valid JSON. No markdown code fences, no explanation, JUST JSON.\n\n"
+            f"Provide COMPLETE fixed files using this EXACT format:\n"
             f"{{\n"
-            f'  "implementation_plan": "Brief explanation of fixes",\n'
+            f'  "implementation_plan": "Step-by-step: what you read, what you found, what you fixed",\n'
             f'  "files": [\n'
             f'    {{\n'
             f'      "path": "relative/path/to/file.ext",\n'
             f'      "action": "update",\n'
-            f'      "content": "COMPLETE file content"\n'
+            f'      "content": "COMPLETE file content (not just the changed part)"\n'
             f'    }}\n'
             f'  ],\n'
-            f'  "summary": "Fixed build errors"\n'
+            f'  "summary": "Fixed [specific errors] by [specific actions]"\n'
             f"}}\n\n"
-            f"**DEBUGGING STRATEGY:**\n"
-            f"1. Look at the error messages - they tell you exactly what's missing\n"
-            f"2. Look at the ACTUAL file contents provided above\n"
-            f"3. Compare what's imported vs what's exported\n"
-            f"4. Fix the mismatch by either:\n"
-            f"   a) Adding missing exports to the source file, OR\n"
-            f"   b) Changing imports to match what exists\n\n"
-            f"**COMMON PATTERNS FOR THIS ERROR:**\n"
-            f"- Error: 'Export readData doesn't exist'\n"
-            f"  → Solution: Check storage.ts - does it export readData? If not, what DOES it export?\n"
-            f"  → If it exports 'getData', change import from 'readData' to 'getData'\n"
-            f"  → If nothing similar exists, add the function to storage.ts\n\n"
-            f"- Error: 'The export X was not found'\n"
-            f"  → Look at the actual file contents above\n"
-            f"  → Find what IS exported (look for 'export' keyword)\n"
-            f"  → Either rename the export to X, or change imports to use actual name\n\n"
-            f"**OTHER COMMON FIXES:**\n"
-            f"- Cannot find module 'autoprefixer' etc: Add the package to package.json devDependencies "
-            f"(e.g. \"autoprefixer\": \"^10.4.0\"), include the updated package.json in your files\n"
-            f"- Use valid Tailwind classes: Only bg-blue-600, text-gray-900, etc. (not bg-background)\n"
-            f"- Remove @apply directives with invalid classes from CSS files\n"
-            f"- Export service instances: `export const serviceName = createService()`\n"
-            f"- Check TypeScript types: Ensure all properties exist\n\n"
-            f"Focus ONLY on fixing the build errors. Provide ALL files that need changes."
+            f"**COMMON ERROR PATTERNS & FIXES:**\n\n"
+            f"❌ Error: \"Module '@/lib/foo' has no exported member 'bar'\"\n"
+            f"✅ Fix Process:\n"
+            f"   1. Read @/lib/foo file contents (it's in the context!)\n"
+            f"   2. Search for 'export' - what DOES it export?\n"
+            f"   3. If it exports 'Bar' (capital B) → Change import to 'Bar'\n"
+            f"   4. If nothing is exported → Add 'export const bar = ...'\n\n"
+            f"❌ Error: \"Cannot find module 'autoprefixer'\"\n"
+            f"✅ Fix: Add to package.json devDependencies: \"autoprefixer\": \"^10.4.0\"\n\n"
+            f"❌ Error: \"Property 'userId' does not exist on type 'User'\"\n"
+            f"✅ Fix Process:\n"
+            f"   1. Read the User interface definition\n"
+            f"   2. Check what properties it HAS (maybe it's 'id' not 'userId'?)\n"
+            f"   3. Either add 'userId' to interface OR change code to use existing property\n\n"
+            f"❌ Error: \"Type string is not assignable to type number\"\n"
+            f"✅ Fix: Convert the type: parseInt(value) or value.toString() depending on direction\n\n"
+            f"❌ Error: \"Unexpected token\"\n"
+            f"✅ Fix: Check for missing brackets, quotes, commas, or semicolons\n\n"
+            f"**DO NOT MAKE THESE MISTAKES:**\n"
+            f"- ❌ Guessing what's in a file without reading it\n"
+            f"- ❌ Assuming export names match (check casing!)\n"
+            f"- ❌ Adding imports without verifying the export exists\n"
+            f"- ❌ Providing partial file content (must be COMPLETE)\n"
+            f"- ❌ Wrapping JSON in markdown code fences\n\n"
+            f"**REMEMBER:** Read → Verify → Fix → Verify again. Focus ONLY on fixing build errors."
         )
         
         try:

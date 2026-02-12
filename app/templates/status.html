@@ -654,11 +654,14 @@
                 return;
             }
             
-            // Check if any runs are stuck
+            // Check if any runs are stuck (claimed/running for >5 min without progress)
+            // Use locked_at (when worker claimed) - not created_at. After reset+reclaim, locked_at
+            // is recent, so we won't show "stuck" for a freshly reclaimed run.
             const now = Date.now() / 1000;
             const stuckRuns = runs.filter(run => {
-                const runningTime = now - run.created_at;
-                return (run.status === 'claimed' || run.status === 'running') && runningTime > 300;
+                if (run.status !== 'claimed' && run.status !== 'running') return false;
+                const claimDuration = run.locked_at ? (now - run.locked_at) : (now - run.created_at);
+                return claimDuration > 300;
             });
             
             // Show/hide "Reset All Stuck" button
@@ -702,8 +705,8 @@
                 
                 // Check if run appears stuck (claimed/running for more than 5 minutes)
                 const now = Date.now() / 1000;
-                const runningTime = now - run.created_at;
-                const isStuck = (run.status === 'claimed' || run.status === 'running') && runningTime > 300;
+                const claimDuration = run.locked_at ? (now - run.locked_at) : (now - run.created_at);
+                const isStuck = (run.status === 'claimed' || run.status === 'running') && claimDuration > 300;
                 const isResetting = resettingRuns.has(run.run_id);
                 
                 // After reset: show blue "Running..." until complete/fail. Otherwise show Reset for failed/claimed/running.

@@ -194,6 +194,94 @@ ERROR_PATTERNS = {
             "- **CRITICAL:** Include schema.prisma in your context and match the exact field names."
         )
     },
+    "eslint_config": {
+        "patterns": [
+            r"eslint-config-[^\s]+",
+            r"ESLint configuration.*?is invalid",
+            r"Error: Failed to load config",
+            r"Cannot find module ['\"]eslint-config-"
+        ],
+        "fix_hint": (
+            "**ESLINT CONFIGURATION ERROR:**\n"
+            "- Missing ESLint configuration package (e.g. eslint-config-next)\n"
+            "- Add the package to package.json devDependencies: `\"eslint-config-next\": \"^14.0.0\"`\n"
+            "- Ensure .eslintrc.json extends the correct config\n"
+            "- Run npm install to install missing dependencies"
+        )
+    },
+    "module_exports_mismatch": {
+        "patterns": [
+            r"Module ['\"]@/[^'\"]+['\"] has no exported member ['\"](\w+)['\"]",
+            r"has no exported member ['\"](\w+)['\"]",
+            r"export ['\"](\w+)['\"] was not found"
+        ],
+        "fix_hint": (
+            "**MODULE EXPORT MISMATCH:**\n"
+            "- The module exists but doesn't export the member you're trying to import\n"
+            "- **CRITICAL STEPS:**\n"
+            "  1. Read the source file to see what it ACTUALLY exports\n"
+            "  2. Check for typos in the import name (case sensitive!)\n"
+            "  3. Either: add the missing export to the source file, OR update import to use existing export name\n"
+            "- Common mistake: importing { userRepository } when file exports { UserRepository } (capital U)"
+        )
+    },
+    "build_timeout": {
+        "patterns": [
+            r"Build timed out",
+            r"ETIMEDOUT",
+            r"socket hang up",
+            r"ECONNRESET"
+        ],
+        "fix_hint": (
+            "**BUILD TIMEOUT/CONNECTION ERROR:**\n"
+            "- Network error or build process taking too long\n"
+            "- Check for infinite loops or blocking operations during build\n"
+            "- Verify external API calls don't run at build time\n"
+            "- Use dynamic imports for heavy dependencies"
+        )
+    },
+    "next_config": {
+        "patterns": [
+            r"Invalid next.config",
+            r"next\.config\.(js|mjs|ts) is invalid",
+            r"Error in next\.config"
+        ],
+        "fix_hint": (
+            "**NEXT.JS CONFIG ERROR:**\n"
+            "- Syntax error in next.config.js/ts\n"
+            "- Ensure config exports proper object: `module.exports = { ... }`\n"
+            "- Check for missing commas, brackets, or quotes\n"
+            "- Validate experimental features are properly formatted"
+        )
+    },
+    "duplicate_declaration": {
+        "patterns": [
+            r"Duplicate identifier ['\"](\w+)['\"]",
+            r"Cannot redeclare block-scoped variable",
+            r"'(\w+)' has already been declared"
+        ],
+        "fix_hint": (
+            "**DUPLICATE DECLARATION:**\n"
+            "- Variable, function, or type declared multiple times\n"
+            "- Check for duplicate exports or imports\n"
+            "- Rename one of the declarations or remove duplicate\n"
+            "- Check if variable is imported AND declared locally"
+        )
+    },
+    "async_import": {
+        "patterns": [
+            r"Top-level await is not available",
+            r"Cannot use keyword 'await' outside an async function",
+            r"'await' expressions are only allowed within async functions"
+        ],
+        "fix_hint": (
+            "**ASYNC/AWAIT ERROR:**\n"
+            "- Using await outside async function\n"
+            "- Wrap code in async function: `async function name() { await ... }`\n"
+            "- For top-level: ensure module is ES module (.mjs) or package.json has \"type\": \"module\"\n"
+            "- In React: use useEffect with async function inside it"
+        )
+    },
 }
 
 
@@ -216,7 +304,25 @@ def classify_error(error_msg: str) -> Tuple[str, str, List[str]]:
                 matches.append(category)
                 return category, config["fix_hint"], matches
     
-    return "unknown", "", matches
+    # Fallback hint for unknown errors
+    fallback_hint = (
+        "**UNKNOWN ERROR TYPE:**\n"
+        "- This error pattern isn't in our classifier yet\n"
+        "- **CRITICAL DEBUGGING STEPS:**\n"
+        "  1. Read the COMPLETE error message carefully - it tells you what's wrong\n"
+        "  2. Identify the file and line number mentioned in the error\n"
+        "  3. Read that file's ACTUAL contents to see the current code\n"
+        "  4. Compare what the error says is wrong vs what's actually in the file\n"
+        "  5. Fix the specific issue mentioned (missing export, type mismatch, syntax error, etc.)\n"
+        "- **COMMON FIXES:**\n"
+        "  * Missing export → Add 'export' keyword: `export const name = ...`\n"
+        "  * Module not found → Add to package.json dependencies and ensure file exists\n"
+        "  * Type error → Check interface matches usage, add missing properties\n"
+        "  * Syntax error → Check brackets, quotes, commas, semicolons\n"
+        "- **READ THE FILES MENTIONED IN THE ERROR** - don't guess what they contain!"
+    )
+    
+    return "unknown", fallback_hint, matches
 
 
 def classify_multiple_errors(error_msg: str) -> Dict[str, int]:
@@ -255,16 +361,57 @@ def get_comprehensive_hint(error_msg: str) -> str:
     categories = classify_multiple_errors(error_msg)
     
     if not categories:
-        return ""
+        # No classified errors - provide generic debugging guidance
+        return (
+            "**ERROR ANALYSIS:**\n"
+            "No specific error patterns detected. Follow these steps:\n"
+            "1. Read the error message completely - it contains critical clues\n"
+            "2. Identify which file(s) have errors (look for file paths)\n"
+            "3. Read those files to understand the current code\n"
+            "4. Apply the fix the error message suggests\n"
+            "5. If the error mentions missing exports/imports, check what's actually exported\n"
+            "6. If it mentions types, check the interface definitions\n"
+            "7. Re-read the files after making changes to ensure consistency"
+        )
     
     hints = []
     hints.append("**ERROR ANALYSIS:**")
-    hints.append(f"Found {len(categories)} type(s) of errors:\n")
+    hints.append(f"Found {len(categories)} type(s) of errors. Fix them in this priority order:\n")
     
+    # Prioritize certain error types
+    priority_order = [
+        "missing_dependency",
+        "eslint_config", 
+        "prisma_model_missing",
+        "import_resolution",
+        "missing_export",
+        "module_exports_mismatch",
+        "type_error",
+        "syntax_error",
+    ]
+    
+    # Sort by priority, then by count
+    sorted_categories = []
+    for priority_cat in priority_order:
+        if priority_cat in categories:
+            sorted_categories.append((priority_cat, categories[priority_cat]))
+    
+    # Add remaining categories
     for category, count in sorted(categories.items(), key=lambda x: x[1], reverse=True):
+        if category not in [c[0] for c in sorted_categories]:
+            sorted_categories.append((category, count))
+    
+    for category, count in sorted_categories:
         if category in ERROR_PATTERNS:
             hints.append(f"\n{count}x {category.upper().replace('_', ' ')}")
             hints.append(ERROR_PATTERNS[category]["fix_hint"])
+    
+    hints.append("\n**FIX STRATEGY:**")
+    hints.append("1. Start with dependency/config errors (install missing packages)")
+    hints.append("2. Fix import/export mismatches (read source files to see actual exports)")
+    hints.append("3. Fix type errors (check interfaces and add missing properties)")
+    hints.append("4. Fix syntax errors last (formatting, missing brackets)")
+    hints.append("\n**CRITICAL:** Read the actual file contents before making changes!")
     
     return "\n".join(hints)
 

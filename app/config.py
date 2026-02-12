@@ -57,7 +57,7 @@ class Settings:
     DEBUG: bool = env("DEBUG", default="false").lower() in ("1", "true", "yes", "y")
 
     # ---- Verification / self-healing ----
-    MAX_FIX_ATTEMPTS: int = int(env("MAX_FIX_ATTEMPTS", default="5"))
+    MAX_FIX_ATTEMPTS: int = int(env("MAX_FIX_ATTEMPTS", default="7"))
 
 
 # Plan comment marker constant
