@@ -138,8 +138,8 @@ def commit_and_push_if_needed(workdir: str, commit_message: str, token: str) -> 
     if not status.strip():
         return False, "No changes detected, skipping commit"
 
-    # Commit
-    run(["git", "commit", "-m", commit_message], cwd=workdir)
+    # Commit (skip pre-commit hooks as they may require dev dependencies)
+    run(["git", "commit", "--no-verify", "-m", commit_message], cwd=workdir)
 
     # Push (origin already contains token in URL)
     try:
