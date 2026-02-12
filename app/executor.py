@@ -777,6 +777,43 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
     MAX_FIX_ATTEMPTS = 3
     fix_attempt = 0
     
+    # Auto-fix missing npm packages (e.g. "Cannot find module 'autoprefixer'") before AI
+    import subprocess
+    _cannot_find = re.search(r"Cannot find module ['\"]([^'\"]+)['\"]", "\n".join(verification_errors))
+    if _cannot_find and is_node_project:
+        missing_pkg = _cannot_find.group(1).strip()
+        # Only try for package names (no path separators, no file extensions)
+        if "/" not in missing_pkg and "\\" not in missing_pkg and not missing_pkg.endswith((".ts", ".tsx", ".js", ".jsx")):
+            try:
+                print(f"Auto-installing missing npm package: {missing_pkg}")
+                if run_id:
+                    add_progress_event(run_id, "verifying", f"Installing missing package: {missing_pkg}", {})
+                subprocess.run(
+                    ["npm", "install", missing_pkg, "--no-audit", "--prefer-offline"],
+                    cwd=repo_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+                # Re-run build
+                verification_errors = []
+                result = subprocess.run(
+                    ["npm", "run", "build"],
+                    cwd=repo_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=180
+                )
+                if result.returncode == 0:
+                    print(f"✅ Build succeeded after installing {missing_pkg}!")
+                else:
+                    verification_errors.append(
+                        f"Build still failing after npm install {missing_pkg}:\n"
+                        f"{(result.stderr or result.stdout)[:1000]}"
+                    )
+            except Exception as e:
+                verification_errors.append(f"Failed to auto-install {missing_pkg}: {e}")
+    
     while verification_errors and fix_attempt < MAX_FIX_ATTEMPTS:
         fix_attempt += 1
         error_msg = "\n\n".join(verification_errors)
@@ -960,6 +997,8 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             f"  → Find what IS exported (look for 'export' keyword)\n"
             f"  → Either rename the export to X, or change imports to use actual name\n\n"
             f"**OTHER COMMON FIXES:**\n"
+            f"- Cannot find module 'autoprefixer' etc: Add the package to package.json devDependencies "
+            f"(e.g. \"autoprefixer\": \"^10.4.0\"), include the updated package.json in your files\n"
             f"- Use valid Tailwind classes: Only bg-blue-600, text-gray-900, etc. (not bg-background)\n"
             f"- Remove @apply directives with invalid classes from CSS files\n"
             f"- Export service instances: `export const serviceName = createService()`\n"

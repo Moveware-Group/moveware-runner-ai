@@ -45,11 +45,11 @@ ERROR_PATTERNS = {
         ],
         "fix_hint": (
             "**IMPORT RESOLUTION ERROR:**\n"
-            "- Verify file exists at import path\n"
-            "- Check file extension (.ts vs .tsx vs .js vs .jsx)\n"
+            "- If the module is an npm package (e.g. autoprefixer, postcss, tailwindcss): add it to package.json "
+            "dependencies or devDependencies, then run npm install\n"
+            "- If it's a local file: verify path exists, check extension (.ts/.tsx/.js/.jsx)\n"
             "- Use relative paths correctly (../ for parent directory)\n"
-            "- Check tsconfig.json paths alias configuration\n"
-            "- Ensure file is not excluded in tsconfig"
+            "- Check tsconfig.json paths alias configuration"
         )
     },
     "type_error": {
