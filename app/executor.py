@@ -836,6 +836,42 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             except Exception as e:
                 verification_errors.append(f"Failed to auto-install {missing_pkg}: {e}")
     
+    # Auto-fix Prettier formatting errors (don't burn LLM attempts on formatting)
+    error_text = "\n".join(verification_errors)
+    if "prettier/prettier" in error_text and is_node_project:
+        # Extract file paths from error (e.g. ./src/lib/db/repositories/tenants.ts)
+        prettier_files = list(set(re.findall(r'\./([^\s]+\.(?:ts|tsx|js|jsx|css|json))', error_text)))
+        if prettier_files:
+            try:
+                print("Running Prettier to auto-fix formatting errors...")
+                if run_id:
+                    add_progress_event(run_id, "verifying", "Running Prettier to fix formatting", {})
+                result = subprocess.run(
+                    ["npx", "prettier", "--write"] + prettier_files,
+                    cwd=repo_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                if result.returncode == 0:
+                    result = subprocess.run(
+                        ["npm", "run", "build"],
+                        cwd=repo_path,
+                        capture_output=True,
+                        text=True,
+                        timeout=180
+                    )
+                    if result.returncode == 0:
+                        print("✅ Build succeeded after Prettier fix!")
+                        verification_errors = []
+                    else:
+                        error_output = result.stderr or result.stdout
+                        verification_errors = [f"Build still failing after Prettier:\n{error_output[:2000]}"]
+                else:
+                    print(f"Prettier failed: {result.stderr}")
+            except Exception as e:
+                print(f"Prettier auto-fix failed: {e}")
+    
     while verification_errors and fix_attempt < MAX_FIX_ATTEMPTS:
         fix_attempt += 1
         error_msg = "\n\n".join(verification_errors)

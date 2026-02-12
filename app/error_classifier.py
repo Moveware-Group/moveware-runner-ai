@@ -124,6 +124,19 @@ ERROR_PATTERNS = {
             "- Ensure all strings are properly quoted"
         )
     },
+    "prettier": {
+        "patterns": [
+            r"prettier/prettier",
+            r"Insert `[^`]+`\s+prettier",
+            r"Replace `[^`]+` with .*prettier"
+        ],
+        "fix_hint": (
+            "**PRETTIER FORMATTING ERROR:**\n"
+            "- Add trailing commas where required (after last object property, array element)\n"
+            "- Fix line breaks: break long parameter lists onto separate lines\n"
+            "- Run `npx prettier --write <file>` to auto-format"
+        )
+    },
 }
 
 
