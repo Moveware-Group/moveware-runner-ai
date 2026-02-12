@@ -93,8 +93,32 @@ When a sub-task is assigned to AI Runner, trigger execution.
 - Parent status is: `In Progress`
 (Prevents execution before plan approval.)
 
-### Note
-This rule also fires when a **Blocked** sub-task (e.g. after AI asked questions) is assigned to AI Runner. The AI Runner will process it, move it to In Progress, and retry with the human's answers in context. No separate automation needed.
+### Actions
+1) **Send web request**
+- URL: `https://moveware-ai-runner.holdingsite.com.au/webhook/jira`
+- Method: `POST`
+- Headers:
+  - `X-Moveware-Webhook-Secret: <YOUR_SECRET>`
+  - `Content-Type: application/json`
+- Body: use the payload in `/docs/webhook-payloads.md#automation-payload-subtask-assigned`
+
+### Alternative: Transition-based rule
+If your Rule 2 uses **Work item transitioned To** (e.g. "Selected for Development, In Progress") instead of "Issue assigned", it will NOT fire when you assign a **Blocked** sub-task to AI Runner – because the status does not change. Add Rule 2c below.
+
+---
+
+## Rule 2c: Blocked sub-task assigned to AI Runner (Unblock retry)
+
+### Purpose
+When a sub-task in Blocked (e.g. after AI asked questions) is assigned to AI Runner, trigger retry. The human has added answers in comments; the AI will use them and retry implementation.
+
+### Rule type
+- **Rule trigger:** Issue assigned
+
+### Trigger conditions
+- Assignee changes to: `AI Runner`
+- Issue type IS: `Sub-task`
+- Status IS: `Blocked`
 
 ### Actions
 1) **Send web request**
