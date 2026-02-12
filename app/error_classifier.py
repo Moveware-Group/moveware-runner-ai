@@ -143,12 +143,24 @@ ERROR_PATTERNS = {
             r"Module ['\"]@prisma/client['\"] has no exported member ['\"](\w+)['\"]"
         ],
         "fix_hint": (
-            "**PRISMA MODEL NOT FOUND:**\n"
-            "- Only import types that exist in prisma/schema.prisma - check the schema!\n"
-            "- If the model (e.g. Session, SSOProvider) is NOT in schema.prisma:\n"
-            "  * Add the model to schema.prisma and run `npx prisma generate`, OR\n"
-            "  * Use a type that exists, or define a local interface\n"
-            "- If the model IS in schema.prisma: run `npx prisma generate`"
+            "**PRISMA MODEL NOT FOUND - CRITICAL:**\n"
+            "The model you're trying to import does NOT exist in the Prisma schema.\n\n"
+            "**MANDATORY STEPS:**\n"
+            "1. **READ prisma/schema.prisma** (it should be in your context)\n"
+            "2. **FIND ALL MODELS** - Look for lines starting with 'model ModelName {'\n"
+            "3. **CHECK THE EXACT NAME** - Prisma is case-sensitive! SsoMapping ≠ SSOMapping\n"
+            "4. **CHOOSE ONE FIX:**\n"
+            "   a) **Use existing model**: Change import to match what's actually in schema\n"
+            "   b) **Add new model**: Add 'model YourModel { ... }' to schema.prisma, include updated schema in files\n"
+            "   c) **Use local interface**: Define 'interface YourType { ... }' in the same file instead\n\n"
+            "**EXAMPLE:**\n"
+            "❌ Error: Module has no exported member 'SsoMapping'\n"
+            "✅ Read schema.prisma → Find 'model SSOMapping' exists (different casing!)\n"
+            "✅ Fix: Change `import type { SsoMapping }` to `import type { SSOMapping }`\n\n"
+            "**DO NOT:**\n"
+            "- Guess model names without reading schema\n"
+            "- Keep trying to import a model that doesn't exist\n"
+            "- Ignore case differences (User ≠ user)"
         )
     },
     "missing_env_vars": {

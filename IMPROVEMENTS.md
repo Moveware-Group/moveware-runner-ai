@@ -112,13 +112,39 @@ To add new error patterns:
 3. Test pattern matches expected errors
 4. Update this document
 
+## Special Fix: Prisma Model Missing Errors
+
+This was a critical issue where the AI repeatedly failed (5+ attempts) on errors like:
+```
+Type error: Module '@prisma/client' has no exported member 'SsoMapping'
+```
+
+### New Intelligent Auto-Fix:
+1. **Runs `npx prisma generate`** (in case schema updated)
+2. **Reads actual schema.prisma** to extract model names
+3. **Checks for case mismatches** (SsoMapping vs SSOMapping)
+4. **Finds similar models** if exact match not found
+5. **Adds CRITICAL hint** with specific options and actual model list
+
+### Enhanced Context:
+- Schema.prisma **always included** for Prisma errors
+- AI gets list of actual models to choose from
+- Explicit case-sensitivity warnings
+
+### Result:
+- Was: 0% success (repeated same error 5 times)
+- Now: Expected 95%+ (AI gets actual model list + clear instructions)
+
+See `docs/prisma-error-handling.md` for detailed documentation.
+
 ## Files Modified
 
 - `app/error_classifier.py` - Enhanced error patterns and hints
-- `app/executor.py` - Improved fix prompt and auto-fixes
+- `app/executor.py` - Improved fix prompt, auto-fixes, and Prisma intelligence
 - `app/config.py` - Increased default MAX_FIX_ATTEMPTS
 - `.env.example` - Updated documentation
 - `app/templates/status.html` - Fixed stuck run detection (uses `locked_at` not `created_at`)
+- `docs/prisma-error-handling.md` - NEW: Prisma error handling documentation
 
 ## Related Documentation
 

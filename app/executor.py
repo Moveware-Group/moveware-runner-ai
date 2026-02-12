@@ -1025,9 +1025,11 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
     error_text = "\n".join(verification_errors)
     
     # Auto-run prisma generate when @prisma/client has no exported member (schema may have been updated)
-    _prisma_member = re.search(r"@prisma/client['\"].*?has no exported member ['\"](\w+)['\"]", error_text)
+    _prisma_member = re.search(r"Module ['\"]@prisma/client['\"] has no exported member ['\"](\w+)['\"]", error_text)
     if _prisma_member and is_node_project and (repo_path / "prisma" / "schema.prisma").exists():
+        missing_model = _prisma_member.group(1)
         try:
+            print(f"Detected missing Prisma model: {missing_model}")
             print("Running prisma generate (schema may have been updated)...")
             if run_id:
                 add_progress_event(run_id, "verifying", "Running prisma generate", {})
@@ -1053,7 +1055,27 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                     error_text = ""
                 else:
                     error_output = result.stderr or result.stdout
-                    verification_errors = [f"Build still failing after prisma generate:\n{error_output[:2000]}"]
+                    # Still failing - analyze the schema and provide specific guidance
+                    schema_path = repo_path / "prisma" / "schema.prisma"
+                    schema_content = schema_path.read_text(encoding="utf-8")
+                    
+                    # Extract actual model names from schema
+                    import re
+                    actual_models = re.findall(r'^model\s+(\w+)\s*\{', schema_content, re.MULTILINE)
+                    
+                    # Check if the missing model exists (case-insensitive)
+                    similar_models = [m for m in actual_models if m.lower() == missing_model.lower()]
+                    if similar_models:
+                        hint = f"\n\n**CRITICAL SCHEMA ISSUE:**\nModel '{missing_model}' not in schema, but '{similar_models[0]}' exists (case mismatch!).\nUse EXACT model name: '{similar_models[0]}'"
+                    else:
+                        # Find similar names (simple string matching)
+                        similar = [m for m in actual_models if missing_model.lower() in m.lower() or m.lower() in missing_model.lower()]
+                        if similar:
+                            hint = f"\n\n**CRITICAL SCHEMA ISSUE:**\nModel '{missing_model}' does NOT exist in prisma/schema.prisma.\nSimilar models found: {', '.join(similar)}\nAvailable models: {', '.join(actual_models)}\n\n**FIX OPTIONS:**\n1. Use one of the existing models above\n2. Add 'model {missing_model}' to prisma/schema.prisma and run prisma generate\n3. Define a local TypeScript interface instead"
+                        else:
+                            hint = f"\n\n**CRITICAL SCHEMA ISSUE:**\nModel '{missing_model}' does NOT exist in prisma/schema.prisma.\nAvailable models in schema: {', '.join(actual_models)}\n\n**FIX OPTIONS:**\n1. Use one of the existing models: {', '.join(actual_models[:5])}\n2. Add 'model {missing_model}' to prisma/schema.prisma and run prisma generate\n3. Define a local TypeScript interface instead of importing from @prisma/client"
+                    
+                    verification_errors = [f"Build still failing after prisma generate:\n{error_output[:1500]}{hint}"]
             else:
                 print(f"prisma generate failed: {result.stderr}")
         except Exception as e:
@@ -1237,9 +1259,17 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                     error_files.add(candidate)
                     break
         
-        # For Prisma schema mismatches, include schema.prisma so AI can match field names
-        if error_category == "prisma_schema_mismatch" and (repo_path / "prisma" / "schema.prisma").exists():
-            error_files.add("prisma/schema.prisma")
+        # For Prisma errors, ALWAYS include schema.prisma so AI can see actual models/fields
+        prisma_schema_path = repo_path / "prisma" / "schema.prisma"
+        if prisma_schema_path.exists():
+            # Include for specific Prisma error types
+            if error_category in ("prisma_schema_mismatch", "prisma_model_missing"):
+                error_files.add("prisma/schema.prisma")
+                print(f"Including prisma/schema.prisma in context for {error_category} error")
+            # Also include if error message mentions @prisma/client at all
+            elif "@prisma/client" in error_msg:
+                error_files.add("prisma/schema.prisma")
+                print("Including prisma/schema.prisma in context (@prisma/client error detected)")
         
         # Also extract imports mentioned in errors (e.g., "import from '../data/storage'")
         import_pattern = r"from ['\"]([^'\"]+)['\"]"
