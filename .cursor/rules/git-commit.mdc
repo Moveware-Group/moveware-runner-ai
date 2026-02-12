@@ -2,4 +2,9 @@
 alwaysApply: true
 ---
 
-Always commit to GitHub and add a commit message summarising what was done
+After making any code changes, you MUST:
+1. Stage the modified files (`git add`)
+2. Commit with a clear message that summarises what was done (`git commit -m "..."`)
+3. Push to origin (`git push origin main`) if the user has push access, or inform them to push via GitHub Desktop
+
+Never leave edits uncommitted. The user expects all changes to be committed to the repository.
