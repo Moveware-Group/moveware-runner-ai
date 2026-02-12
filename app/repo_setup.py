@@ -173,7 +173,8 @@ def add_project_to_config(
     repo_name: str,
     description: str,
     skills: List[str],
-    base_branch: str = "main"
+    base_branch: str = "main",
+    port: int = 3000,
 ) -> Dict[str, Any]:
     """
     Add a new project to repos.json.
@@ -203,7 +204,8 @@ def add_project_to_config(
             "base_branch": base_branch,
             "repo_owner_slug": repo_owner_slug,
             "repo_name": repo_name,
-            "skills": skills if skills else ["nextjs-fullstack-dev"]
+            "skills": skills if skills else ["nextjs-fullstack-dev"],
+            "port": port,
         }
         
         # Check for duplicate
@@ -240,7 +242,8 @@ def setup_new_repository(
     skills: List[str],
     base_branch: str = "main",
     create_on_github: bool = True,
-    private: bool = True
+    private: bool = True,
+    port: int = 3000,
 ) -> Dict[str, Any]:
     """
     Full setup: create GitHub repo, folder, and update config.
@@ -269,7 +272,8 @@ def setup_new_repository(
         repo_name=repo_name,
         description=description,
         skills=skills,
-        base_branch=base_branch
+        base_branch=base_branch,
+        port=port,
     )
     if not steps["config"]["ok"]:
         return {"ok": False, "error": steps["config"].get("error", "Config update failed"), "steps": steps}

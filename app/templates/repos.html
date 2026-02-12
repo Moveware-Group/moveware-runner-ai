@@ -175,6 +175,12 @@
                 <input type="text" id="base_branch" value="main" placeholder="main">
             </div>
 
+            <div class="form-group">
+                <label>Port</label>
+                <input type="number" id="port" value="3001" min="3000" max="65535" placeholder="3001">
+                <div class="hint">For Next.js apps: PM2/deploy port. Use 3000, 3001, 3002, etc. for each repo.</div>
+            </div>
+
             <div class="form-group checkbox-group">
                 <input type="checkbox" id="create_on_github" checked>
                 <label for="create_on_github" style="margin-bottom:0">Create repository on GitHub</label>
@@ -230,6 +236,7 @@
             const skills = Array.from(skillsSelect.selectedOptions).map(o => o.value);
             if (skills.length === 0) skills.push('nextjs-fullstack-dev');
 
+            const portVal = document.getElementById('port').value;
             const body = {
                 jira_project_key: document.getElementById('jira_project_key').value.trim().toUpperCase(),
                 jira_project_name: document.getElementById('jira_project_name').value.trim(),
@@ -238,6 +245,7 @@
                 description: document.getElementById('description').value.trim(),
                 skills,
                 base_branch: document.getElementById('base_branch').value.trim() || 'main',
+                port: portVal ? parseInt(portVal, 10) : 3000,
                 create_on_github: document.getElementById('create_on_github').checked,
                 private: document.getElementById('private').checked
             };

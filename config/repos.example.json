@@ -8,7 +8,8 @@
       "base_branch": "main",
       "repo_owner_slug": "org",
       "repo_name": "online-docs",
-      "skills": ["nextjs-fullstack-dev"]
+      "skills": ["nextjs-fullstack-dev"],
+      "port": 3000
     },
     {
       "jira_project_key": "VS",
@@ -18,7 +19,8 @@
       "base_branch": "main",
       "repo_owner_slug": "org",
       "repo_name": "video-surveys",
-      "skills": ["nextjs-fullstack-dev"]
+      "skills": ["nextjs-fullstack-dev"],
+      "port": 3001
     },
     {
       "jira_project_key": "TB",
@@ -28,7 +30,8 @@
       "base_branch": "main",
       "repo_owner_slug": "org",
       "repo_name": "moveware-go",
-      "skills": ["flutter-dev"]
+      "skills": ["flutter-dev"],
+      "port": 3000
     }
   ],
   "default_project_key": "OD"

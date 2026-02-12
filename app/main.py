@@ -401,6 +401,7 @@ async def add_repo_api(
         base_branch = (body.get("base_branch") or "main").strip()
         create_on_github = body.get("create_on_github", True)
         private = body.get("private", True)
+        port = int(body.get("port", 3000))
 
         if not jira_project_key:
             raise HTTPException(400, "jira_project_key is required")
@@ -421,7 +422,8 @@ async def add_repo_api(
             skills=skills,
             base_branch=base_branch,
             create_on_github=create_on_github,
-            private=private
+            private=private,
+            port=port,
         )
         return result
     except HTTPException:

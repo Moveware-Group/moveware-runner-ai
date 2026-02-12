@@ -46,6 +46,7 @@ def _get_repo_settings(issue_key: str) -> dict:
             "repo_owner_slug": repo.repo_owner_slug,
             "repo_name": repo.repo_name,
             "skills": getattr(repo, "skills", ["nextjs-fullstack-dev"]),
+            "port": getattr(repo, "port", 3000),
         }
     else:
         # Fallback to environment variables (legacy single-repo mode)
@@ -56,6 +57,7 @@ def _get_repo_settings(issue_key: str) -> dict:
             "repo_owner_slug": settings.REPO_OWNER_SLUG,
             "repo_name": settings.REPO_NAME,
             "skills": ["nextjs-fullstack-dev"],
+            "port": 3000,
         }
 
 
@@ -531,6 +533,17 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         prompt += (
             f"**Additional Clarifications from Comments:**\n"
             f"{human_comments}\n\n"
+        )
+    
+    # For Next.js projects: ensure ecosystem.config.js exists with correct port
+    skills_list = repo_settings.get("skills", []) or []
+    if "nextjs-fullstack-dev" in skills_list:
+        port = repo_settings.get("port", 3000)
+        prompt += (
+            f"**DEPLOYMENT (Next.js):** This app runs on port {port}. "
+            f"You MUST include ecosystem.config.js in the project root if it is missing. "
+            f"Use name: '{repo_settings.get('repo_name', 'app')}', PORT: {port}, cwd: __dirname. "
+            f"Create logs/ directory for PM2 output.\n\n"
         )
     
     prompt += (

@@ -308,6 +308,37 @@ if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma
 - Mock fetch calls in Server Component tests
 - Test API routes with supertest or similar
 
+## PM2 Deployment (ecosystem.config.js)
+
+**Always include `ecosystem.config.js`** in the project root for Next.js apps. This enables PM2 deployment (npm start with correct port).
+
+```javascript
+// ecosystem.config.js - Create this file in project root
+module.exports = {
+  apps: [{
+    name: 'your-app-name',  // Use repo name, e.g. 'online-docs'
+    script: 'npm',
+    args: 'start',
+    cwd: __dirname,
+    instances: 1,
+    autorestart: true,
+    watch: false,
+    max_memory_restart: '1G',
+    env: {
+      NODE_ENV: 'production',
+      PORT: 3000  // Use the port from project config (e.g. 3000, 3001, 3002)
+    },
+    error_file: './logs/pm2-error.log',
+    out_file: './logs/pm2-out.log',
+    log_date_format: 'YYYY-MM-DD HH:mm:ss Z'
+  }]
+}
+```
+
+- Create `logs/` directory (or ensure it exists)
+- **Port:** Use the port specified in the deployment context (project config). If no port is specified, use 3000.
+- Add `ecosystem.config.js` when scaffolding a new Next.js app, or when the file is missing.
+
 ## Common Pitfalls
 
 ❌ **Don't:** Import 'use client' components into Server Components unnecessarily

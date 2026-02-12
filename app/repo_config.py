@@ -21,6 +21,7 @@ class RepoConfig:
     repo_owner_slug: str
     repo_name: str
     skills: List[str]  # Optional list of skill names (e.g. ["nextjs-fullstack-dev", "flutter-dev"])
+    port: int = 3000  # Port for Next.js apps (PM2/NGINX). Use 3001, 3002, etc. for additional apps.
 
 
 class RepoConfigManager:
@@ -73,6 +74,7 @@ class RepoConfigManager:
                 repo_owner_slug=project["repo_owner_slug"],
                 repo_name=project["repo_name"],
                 skills=project.get("skills") or ["nextjs-fullstack-dev"],
+                port=int(project.get("port", 3000)),
             )
             self.configs[config.jira_project_key] = config
         
@@ -96,6 +98,7 @@ class RepoConfigManager:
             repo_owner_slug=settings.REPO_OWNER_SLUG,
             repo_name=settings.REPO_NAME,
             skills=["nextjs-fullstack-dev"],
+            port=3000,
         )
         
         self.configs[project_key] = config
