@@ -71,9 +71,12 @@ def _decide_internal(issue: JiraIssue) -> Optional[RouteDecision]:
 
     # Subtask behaviour - subtasks commit to Story branch
     if issue.is_subtask:
-        # Start execution only when a subtask is In Progress and assigned to AI.
+        # Start execution when subtask is In Progress and assigned to AI.
         if issue.status == settings.JIRA_STATUS_IN_PROGRESS and issue.assignee_account_id == settings.JIRA_AI_ACCOUNT_ID:
             return RouteDecision(action="EXECUTE_SUBTASK", issue_key=issue.key, parent_key=issue.parent_key, reason="Subtask in progress assigned to AI")
+        # Also execute when Blocked + assigned to AI (human answered questions, ready to retry).
+        if issue.status == settings.JIRA_STATUS_BLOCKED and issue.assignee_account_id == settings.JIRA_AI_ACCOUNT_ID:
+            return RouteDecision(action="EXECUTE_SUBTASK", issue_key=issue.key, parent_key=issue.parent_key, reason="Subtask unblocked, assigned to AI for retry")
 
         # When a subtask is moved to Done, check if parent Story can be completed.
         if issue.status == settings.JIRA_STATUS_DONE and issue.parent_key:

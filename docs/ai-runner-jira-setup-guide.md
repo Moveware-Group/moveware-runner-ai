@@ -141,10 +141,9 @@ If the requirements or schema are unclear, the AI may post questions instead of 
 1. The AI adds a comment to the sub-task with the blocking questions.
 2. The sub-task is assigned to you and moved to **Blocked**.
 3. Add a comment to the sub-task with your answers.
-4. Move the sub-task back to **In Progress**.
-5. Assign the sub-task to **AI Runner** again.
+4. Assign the sub-task to **AI Runner** again.
 
-The next run will include your answers in the context and the AI can proceed with the implementation.
+The existing Jira rule (sub-task assigned to AI Runner) will fire. The AI Runner will process the sub-task even while it's in Blocked, move it to In Progress, and use your answers in the context.
 
 ### Step 7: Review and Complete
 
@@ -181,7 +180,7 @@ The next run will include your answers in the context and the AI can proceed wit
 | **Worker not picking up runs** | Webhooks return 200 OK but worker never claims runs. **1. Check queue:** `GET /api/queue/stats` shows `total_queued`, `stale_runs`. **2. Stale runs:** Runs stuck in `claimed`/`running` (from crashes) can block the repo. Reset them: `POST /api/queue/reset-stale` with header `X-Admin-Secret: <ADMIN_SECRET>`. **3. DB path:** Ensure orchestrator and worker use the same `DB_PATH` (same `EnvironmentFile` in systemd). |
 | **AI Console shows completed but Jira still In Progress** | Edge case – transitions usually work. **1. Manually move** the issue to In Testing (code is committed). **2. Check worker logs** for `Warning: No transition to '...'` if it recurs. **3. Reset stale** if another run is blocked. |
 | **Run does not fire** | **1. Did webhook create a run?** `curl .../api/debug/recent-runs?issue_key=TB-2` – check if a run was created when you moved the issue. No new run = Jira rule didn't fire or request didn't reach the server. **2. Orchestrator logs:** `journalctl -u moveware-ai-orchestrator -f` – look for `POST /webhook/jira` and `[webhook] TB-2 -> run_id=X` when you transition. **3. Stuck queue:** Run `POST /api/queue/reset-stale` – an orphaned run (e.g. after worker restart) can block. **4. Jira rule:** The rule must **assign to AI Runner first**, then send webhook. See `docs/jira-automation-rules.md` Rule 2b. **5. Manual trigger:** `POST /api/trigger` with `{"issue_key":"TB-2"}` to force a run. |
-| **Implementation blocked by questions** | The AI Runner posts questions when it cannot implement (e.g. schema mismatch). **1. Check the sub-task comment** – the AI adds a comment listing the questions. **2. Add your answers** as a reply comment. **3. Move sub-task to In Progress**, assign to AI Runner. The next run will use your answers. Alternatively, update the Epic/Story description to clarify requirements so future sub-tasks don't hit the same ambiguity. |
+| **Implementation blocked by questions** | The AI Runner posts questions when it cannot implement (e.g. schema mismatch). **1. Check the sub-task comment** – the AI adds a comment listing the questions. **2. Add your answers** as a reply comment. **3. Assign the sub-task to AI Runner** (it can stay in Blocked – no need to move to In Progress first). The next run will use your answers. Alternatively, update the Epic/Story description to clarify requirements so future sub-tasks don't hit the same ambiguity. |
 
 ---
 

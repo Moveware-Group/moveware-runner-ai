@@ -482,12 +482,17 @@ def _handle_story_approved(ctx: Context, story: JiraIssue) -> None:
 def _handle_execute_subtask(ctx: Context, subtask: JiraIssue, run_id: Optional[int] = None) -> None:
     if not subtask.is_subtask:
         return
-    if subtask.status != settings.JIRA_STATUS_IN_PROGRESS:
+    # Allow In Progress (normal) or Blocked (human answered questions, AI retrying)
+    if subtask.status not in (settings.JIRA_STATUS_IN_PROGRESS, settings.JIRA_STATUS_BLOCKED):
         return
     if subtask.assignee_account_id != settings.JIRA_AI_ACCOUNT_ID:
         return
     if not subtask.parent_key:
         return
+
+    # If Blocked, move to In Progress so the workflow is correct
+    if subtask.status == settings.JIRA_STATUS_BLOCKED:
+        ctx.jira.transition_to_status(subtask.key, settings.JIRA_STATUS_IN_PROGRESS)
 
     # Execute
     result: ExecutionResult = execute_subtask(subtask, run_id)

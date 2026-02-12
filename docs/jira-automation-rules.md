@@ -93,6 +93,9 @@ When a sub-task is assigned to AI Runner, trigger execution.
 - Parent status is: `In Progress`
 (Prevents execution before plan approval.)
 
+### Note
+This rule also fires when a **Blocked** sub-task (e.g. after AI asked questions) is assigned to AI Runner. The AI Runner will process it, move it to In Progress, and retry with the human's answers in context. No separate automation needed.
+
 ### Actions
 1) **Send web request**
 - URL: `https://moveware-ai-runner.holdingsite.com.au/webhook/jira`
