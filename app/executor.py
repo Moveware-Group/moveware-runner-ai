@@ -593,9 +593,31 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         raise RuntimeError(f"Failed to parse Claude response as JSON: {e}")
 
     # Check if there are questions instead of implementation
-    if "questions" in payload:
+    if "questions" in payload and payload["questions"]:
         questions = payload["questions"]
         questions_text = "\n".join([f"- {q}" for q in questions])
+        # Post to Jira so the human can answer and re-assign
+        summary = payload.get("summary", "") or payload.get("implementation_plan", "")
+        jira_comment = (
+            "❓ *Implementation blocked – clarification needed*\n\n"
+            "The AI Runner needs answers before it can implement:\n\n"
+            f"{questions_text}\n\n"
+            "----\n"
+            "*To unblock:* Add a comment below with your answers, then re-assign this sub-task to AI Runner."
+        )
+        if summary:
+            jira_comment = f"*Context:* {summary}\n\n" + jira_comment
+        try:
+            jira_client = JiraClient(
+                base_url=settings.JIRA_BASE_URL,
+                email=settings.JIRA_EMAIL,
+                api_token=settings.JIRA_API_TOKEN,
+            )
+            jira_client.add_comment(issue.key, jira_comment)
+            jira_client.assign(issue.key, settings.JIRA_HUMAN_ACCOUNT_ID)
+            jira_client.transition_to_status(issue.key, settings.JIRA_STATUS_BLOCKED)
+        except Exception as e:
+            print(f"Could not post questions to Jira: {e}")
         raise RuntimeError(f"Implementation blocked by questions:\n{questions_text}")
 
     # 4) Apply file changes
@@ -1201,7 +1223,7 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
     if run_id:
         add_progress_event(run_id, "committing", f"Committing changes: {len(files_changed)} files", {"file_count": len(files_changed)})
     
-    # 6) Commit with subtask key in message
+    # 6) Commit and push to GitHub with descriptive message
     files_summary = ", ".join(files_changed[:5])  # Limit to first 5 files
     if len(files_changed) > 5:
         files_summary += f" (+{len(files_changed) - 5} more)"
@@ -1211,8 +1233,17 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
     if rollback_tag:
         print(f"✓ Rollback tag created: {rollback_tag}")
     
-    commit_message = f"{issue.key}: {issue.summary}"
-    commit_and_push(repo_settings["repo_workdir"], commit_message)
+    # Build commit message: title + body with files changed
+    commit_title = f"{issue.key}: {issue.summary}"
+    commit_body = "Files changed:\n" + "\n".join(f"- {fc}" for fc in files_changed)
+    commit_message = f"{commit_title}\n\n{commit_body}"
+    result_msg = commit_and_push(repo_settings["repo_workdir"], commit_message)
+    if "No changes detected" in result_msg:
+        print(f"Note: {result_msg}")
+    else:
+        print(f"✓ Committed and pushed to GitHub: {branch}")
+        if run_id:
+            add_progress_event(run_id, "committing", f"Pushed to GitHub on branch {branch}", {"branch": branch})
     
     # 6) Create PR only if independent
     pr_url = None

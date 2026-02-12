@@ -698,7 +698,7 @@ def worker_loop(poll_interval_seconds: float = 2.0, worker_id: str = "worker-1",
         except Exception as e:
             error_msg = f"ERROR processing run {run_id}: {e}"
             run_logger.error(error_msg, exc_info=True)
-            add_progress_event(run_id, "failed", f"Error: {str(e)[:100]}", {})
+            add_progress_event(run_id, "failed", f"Error: {str(e)[:2000]}", {})
             add_event(run_id, "error", str(e), {})
             update_run(run_id, status="failed", last_error=str(e), locked_by=None, locked_at=None)
 
