@@ -505,20 +505,21 @@ async def get_run_detail(run_id: int) -> Dict[str, Any]:
 
 @app.post("/api/runs/{run_id}/retry")
 async def retry_run(run_id: int) -> Dict[str, Any]:
-    """Retry a failed run."""
+    """Retry a failed run, or reset a stuck run (claimed/running) to queued."""
     try:
         with connect() as conn:
             cursor = conn.cursor()
             
-            # Check if run exists and is failed
             cursor.execute("SELECT status FROM runs WHERE id = ?", (run_id,))
             row = cursor.fetchone()
             
             if not row:
                 return {"error": "Run not found"}
             
-            if row[0] not in ("failed", "completed"):
-                return {"error": f"Cannot retry run with status: {row[0]}"}
+            status = row[0]
+            # Allow: failed, completed (retry), or claimed/running (reset stuck)
+            if status not in ("failed", "completed", "claimed", "running"):
+                return {"error": f"Cannot reset run with status: {status}"}
             
             # Reset run to queued
             ts = int(time.time())
