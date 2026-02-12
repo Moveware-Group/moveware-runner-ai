@@ -1290,17 +1290,20 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         fix_attempt += 1
         error_msg = "\n\n".join(verification_errors)
         
-        # Determine which model to use (escalate to OpenAI on later attempts)
-        if fix_attempt <= max(2, MAX_FIX_ATTEMPTS - 2):
+        # Alternate between Claude and OpenAI for diverse perspectives
+        # Odd attempts (1, 3, 5, 7): Claude (cheaper, faster)
+        # Even attempts (2, 4, 6): OpenAI (fresh perspective, different reasoning)
+        if fix_attempt % 2 == 1:
             model_name = "Claude"
             model_provider = "anthropic"
         else:
             model_name = f"OpenAI ({settings.OPENAI_MODEL})"
             model_provider = "openai"
-            print(f"\n{'='*60}")
-            print(f"ESCALATING TO OPENAI: Claude failed {fix_attempt-1} times")
-            print(f"Getting second opinion from {settings.OPENAI_MODEL}...")
-            print(f"{'='*60}\n")
+            if fix_attempt == 2:
+                print(f"\n{'='*60}")
+                print(f"SWITCHING TO OPENAI: Getting second opinion from {settings.OPENAI_MODEL}")
+                print(f"Alternating models for diverse fix approaches...")
+                print(f"{'='*60}\n")
         
         print(f"\nVERIFICATION FAILED - Attempt {fix_attempt}/{MAX_FIX_ATTEMPTS} using {model_name}")
         print(f"Error summary: {error_msg[:200]}...")
@@ -1821,11 +1824,16 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             api_token=settings.JIRA_API_TOKEN
         )
         
+        # Build attempt summary (alternating models)
+        attempt_summary = []
+        for i in range(1, fix_attempt + 1):
+            model = "Claude (Anthropic)" if i % 2 == 1 else f"OpenAI ({settings.OPENAI_MODEL})"
+            attempt_summary.append(f"- Attempt {i}: {model}")
+        
         jira_comment = (
             "❌ **Build Verification Failed After Multiple Attempts**\n\n"
-            f"Tried {fix_attempt} times to automatically fix the errors:\n"
-            f"- Attempts 1-2: Claude (Anthropic)\n"
-            f"- Attempt 3: OpenAI GPT-4 (escalation)\n\n"
+            f"Tried {fix_attempt} times with alternating AI models for diverse fix approaches:\n"
+            f"{chr(10).join(attempt_summary)}\n\n"
             "**All attempts failed. This issue requires human intervention.**\n\n"
             f"**Final Errors:**\n```\n{error_msg[:2000]}\n```\n\n"
             "---\n"
