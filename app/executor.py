@@ -653,34 +653,51 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
     
     notes = payload.get("summary", "") or payload.get("implementation_plan", "")
     
-    # 4b) Proactive formatting: run Prettier + ESLint --fix on changed files BEFORE verification
-    # Prevents basic formatting/lint errors from ever reaching the build or LLM
+    # 4b) Proactive formatting: use lint-staged if present, else Prettier + ESLint --fix
+    # Uses project tooling when available (Cursor-like)
     code_files = [f["path"] for f in files if f.get("action", "update") != "delete" and f["path"].endswith(('.ts', '.tsx', '.js', '.jsx', '.css'))]
     if code_files and (repo_path / "package.json").exists():
         import subprocess
         if run_id:
-            add_progress_event(run_id, "executing", "Auto-formatting changed files (Prettier + ESLint)", {})
+            add_progress_event(run_id, "executing", "Auto-formatting changed files", {})
         try:
-            print("Running Prettier on changed files...")
-            subprocess.run(
-                ["npx", "prettier", "--write"] + code_files,
-                cwd=repo_path,
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-            # ESLint --fix for auto-fixable rules (e.g. prefer-const, no-unused-vars)
-            eslint_files = [f for f in code_files if f.endswith(('.ts', '.tsx', '.js', '.jsx'))]
-            if eslint_files and any((repo_path / c).exists() for c in [".eslintrc", ".eslintrc.js", ".eslintrc.json", "eslint.config.js"]):
-                print("Running ESLint --fix on changed files...")
-                subprocess.run(
-                    ["npx", "eslint", "--fix", *eslint_files],
+            pkg = json.loads((repo_path / "package.json").read_text(encoding="utf-8"))
+            has_lint_staged = "lint-staged" in (pkg.get("devDependencies") or {}) or "lint-staged" in (pkg.get("dependencies") or {})
+            lint_staged_ok = False
+            if has_lint_staged:
+                print("Running lint-staged (project tooling)...")
+                subprocess.run(["git", "add", "-A"], cwd=repo_path, capture_output=True, text=True, timeout=5)
+                result = subprocess.run(
+                    ["npx", "lint-staged"],
                     cwd=repo_path,
                     capture_output=True,
                     text=True,
-                    timeout=60,
+                    timeout=120,
                     env={**os.environ, "ESLINT_USE_FLAT_CONFIG": "false"}
                 )
+                lint_staged_ok = result.returncode == 0
+                if not lint_staged_ok:
+                    print(f"lint-staged had issues: {result.stderr[:300]}")
+            if not lint_staged_ok:
+                print("Running Prettier on changed files...")
+                subprocess.run(
+                    ["npx", "prettier", "--write"] + code_files,
+                    cwd=repo_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                eslint_files = [f for f in code_files if f.endswith(('.ts', '.tsx', '.js', '.jsx'))]
+                if eslint_files and any((repo_path / c).exists() for c in [".eslintrc", ".eslintrc.js", ".eslintrc.json", "eslint.config.js"]):
+                    print("Running ESLint --fix on changed files...")
+                    subprocess.run(
+                        ["npx", "eslint", "--fix", *eslint_files],
+                        cwd=repo_path,
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                        env={**os.environ, "ESLINT_USE_FLAT_CONFIG": "false"}
+                    )
             print("✓ Auto-formatting complete")
         except Exception as e:
             print(f"Warning: Proactive formatting failed: {e}")
@@ -781,8 +798,32 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                 verification_errors.append(f"Could not run npm install: {e}")
                 print(f"npm install exception: {e}")
             
-            # Step 2: Run build for Next.js/React projects (CRITICAL for catching errors)
-            if not verification_errors:  # Only build if install succeeded
+            # Step 2a: Run tsc --noEmit (fast TypeScript gate before heavy build)
+            if not verification_errors and (repo_path / "tsconfig.json").exists():
+                try:
+                    if run_id:
+                        add_progress_event(run_id, "verifying", "Running TypeScript check (tsc --noEmit)", {})
+                    print("Running tsc --noEmit (TypeScript gate before build)...")
+                    tsc_result = subprocess.run(
+                        ["npx", "tsc", "--noEmit", "--pretty", "false"],
+                        cwd=repo_path,
+                        capture_output=True,
+                        text=True,
+                        timeout=60
+                    )
+                    if tsc_result.returncode != 0:
+                        tsc_output = tsc_result.stdout or tsc_result.stderr
+                        verification_errors.append(f"TypeScript check failed (tsc --noEmit):\n{tsc_output[:3000]}")
+                        print(f"tsc failed:\n{tsc_output[:500]}")
+                    else:
+                        print("✅ TypeScript check passed")
+                except subprocess.TimeoutExpired:
+                    verification_errors.append("TypeScript check timed out (60s)")
+                except Exception as e:
+                    verification_errors.append(f"TypeScript check failed: {e}")
+            
+            # Step 2b: Run build for Next.js/React projects (CRITICAL for catching errors)
+            if not verification_errors:  # Only build if tsc and install succeeded
                 # Check if this is a Next.js project
                 try:
                     package_json_content = package_json_path.read_text(encoding="utf-8")
@@ -837,7 +878,7 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                     print(f"Build exception: {e}")
     
     # If verification failed, try to fix the errors (self-healing) with multi-attempt strategy
-    MAX_FIX_ATTEMPTS = 3
+    MAX_FIX_ATTEMPTS = settings.MAX_FIX_ATTEMPTS
     fix_attempt = 0
     
     # Auto-fix missing npm packages (e.g. "Cannot find module 'autoprefixer'") before AI
@@ -1012,8 +1053,8 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         fix_attempt += 1
         error_msg = "\n\n".join(verification_errors)
         
-        # Determine which model to use
-        if fix_attempt <= 2:
+        # Determine which model to use (escalate to OpenAI on later attempts)
+        if fix_attempt <= max(2, MAX_FIX_ATTEMPTS - 2):
             model_name = "Claude"
             model_provider = "anthropic"
         else:
@@ -1111,15 +1152,16 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                 except Exception:
                     pass
         
-        # Add actual file contents of error files and their dependencies
+        # Add full file contents of error files (up to 15K chars) for better fix context
         for error_file in sorted(error_files):
             file_path = repo_path / error_file
             if file_path.exists():
                 try:
                     content = file_path.read_text(encoding="utf-8")
-                    error_file_contents.append(f"\n**Current {error_file}:**\n```typescript\n{content[:5000]}\n```")
-                    if len(content) > 5000:
-                        error_file_contents.append("... (file truncated)")
+                    max_chars = 15000  # Full context for typical files
+                    error_file_contents.append(f"\n**Current {error_file}:**\n```typescript\n{content[:max_chars]}\n```")
+                    if len(content) > max_chars:
+                        error_file_contents.append(f"... (file truncated, {len(content) - max_chars} chars omitted)")
                 except Exception:
                     pass
         

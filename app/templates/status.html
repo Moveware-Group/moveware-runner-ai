@@ -20,12 +20,16 @@
         }
         
         .header {
+            position: sticky;
+            top: 0;
+            z-index: 100;
             display: flex;
             justify-content: space-between;
             align-items: center;
             margin-bottom: 30px;
-            padding-bottom: 20px;
+            padding: 20px 0;
             border-bottom: 2px solid #333;
+            background: #0a0a0a;
         }
         
         h1 {
@@ -673,10 +677,8 @@
                 }
             });
             
-            // Issue keys that have an active run (queued, claimed, or running) - don't show Reset on failed runs for these
-            const activeIssueKeys = new Set(
-                runs.filter(r => ['queued', 'claimed', 'running'].includes(r.status)).map(r => r.issue_key)
-            );
+            // Normalize issue_key for case-insensitive comparison
+            const norm = (k) => (k || '').toString().toUpperCase().trim();
             
             container.innerHTML = runs.map(run => {
                 const statusClass = `status-${run.status}`;
@@ -706,7 +708,11 @@
                 
                 // After reset: show blue "Running..." until complete/fail. Otherwise show Reset for failed/claimed/running.
                 // Don't show Reset on failed runs when another run for same task is active (queued/claimed/running).
-                const hasActiveRunForSameTask = run.status === 'failed' && activeIssueKeys.has(run.issue_key);
+                const hasActiveRunForSameTask = run.status === 'failed' && runs.some(r =>
+                    r.run_id !== run.run_id &&
+                    norm(r.issue_key) === norm(run.issue_key) &&
+                    ['queued', 'claimed', 'running'].includes(r.status)
+                );
                 let actionButton = '';
                 if (isResetting && run.status !== 'completed' && run.status !== 'failed') {
                     actionButton = `<span class="reset-btn-running">Running...</span>`;

@@ -49,10 +49,9 @@ def verify_typescript_syntax(repo_path: Path, changed_files: List[str]) -> Verif
         )
         
         if result.returncode != 0:
-            # TypeScript found errors - treat as warnings since build verification will catch real issues
+            # TypeScript found errors - treat as warnings (tsc may run before npm install)
             error_output = result.stdout if result.stdout else result.stderr
-            warnings.append(f"TypeScript errors (will be caught in build if serious):\n{error_output[:1000]}")
-            # Don't fail here - let build verification be the final check
+            warnings.append(f"TypeScript errors (will be checked again after npm install):\n{error_output[:1000]}")
             return VerificationResult(passed=True, errors=errors, warnings=warnings)
             
     except subprocess.TimeoutExpired:
