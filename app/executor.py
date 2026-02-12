@@ -776,6 +776,19 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         
         raise RuntimeError(error_msg)
 
+    # 4.5) Proactive checks BEFORE verification (prevent common issues)
+    if run_id:
+        add_progress_event(run_id, "verifying", "Running proactive dependency checks", {})
+    
+    from .proactive_checks import run_proactive_checks, format_proactive_check_results
+    proactive_fixes, proactive_warnings = run_proactive_checks(repo_path)
+    
+    if proactive_fixes or proactive_warnings:
+        check_results = format_proactive_check_results(proactive_fixes, proactive_warnings)
+        print(check_results)
+        if proactive_fixes:
+            print(f"✓ Applied {len(proactive_fixes)} proactive fixes before build")
+    
     # 5) Pre-commit verification (catch errors early!)
     if run_id:
         add_progress_event(run_id, "verifying", "Running pre-commit checks", {})
@@ -944,7 +957,36 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
     MAX_FIX_ATTEMPTS = settings.MAX_FIX_ATTEMPTS
     fix_attempt = 0
     
-    # Auto-fix missing npm packages (e.g. "Cannot find module 'autoprefixer'") before AI
+    # Try all auto-fixes before engaging AI (saves time and cost!)
+    if verification_errors:
+        from .auto_fixes import try_all_auto_fixes
+        error_text_for_autofix = "\n".join(verification_errors)
+        auto_fix_success, auto_fix_desc = try_all_auto_fixes(error_text_for_autofix, repo_path, is_node_project)
+        
+        if auto_fix_success:
+            print(f"✅ Auto-fix applied: {auto_fix_desc}")
+            if run_id:
+                add_progress_event(run_id, "verifying", f"Auto-fix applied: {auto_fix_desc}", {})
+            
+            # Re-run build to see if auto-fix worked
+            if is_node_project:
+                result = subprocess.run(
+                    ["npm", "run", "build"],
+                    cwd=repo_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                    env=_get_nextjs_build_env(),
+                )
+                if result.returncode == 0:
+                    print("✅ Build succeeded after auto-fix!")
+                    verification_errors = []  # Clear errors - build passed!
+                else:
+                    # Still failing, update error message
+                    error_output = result.stderr or result.stdout
+                    verification_errors = [f"Build still failing after auto-fix ({auto_fix_desc}):\n{error_output[:2000]}"]
+    
+    # Auto-fix missing npm packages (e.g. "Cannot find module 'autoprefixer'") before AI (legacy fallback)
     import subprocess
     _cannot_find = re.search(r"Cannot find module ['\"]([^'\"]+)['\"]", "\n".join(verification_errors))
     if _cannot_find and is_node_project:
@@ -1131,6 +1173,9 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             except Exception as e:
                 print(f"Prettier auto-fix failed: {e}")
     
+    # Track previous fix attempts for self-reflection
+    previous_fix_attempts = []
+    
     # Auto-fix: Prisma imported with "import type" but used as value (e.g. Prisma.PrismaClientKnownRequestError)
     if "cannot be used as a value because it was imported using 'import type'" in error_text and "Prisma" in error_text and is_node_project:
         prisma_import_files = list(set(re.findall(r'src/[^\s:]+\.(?:ts|tsx)', error_text)))
@@ -1264,6 +1309,29 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         error_category, specific_hint, _ = classify_error(error_msg)
         comprehensive_hint = get_comprehensive_hint(error_msg)
         error_context = extract_error_context(error_msg, max_context_lines=3)
+        
+        # Get similar successful fixes from pattern learning database
+        from .pattern_learner import get_similar_successful_fixes, format_fix_suggestions
+        similar_patterns = get_similar_successful_fixes(error_msg, limit=3)
+        pattern_guidance = format_fix_suggestions(similar_patterns)
+        
+        if similar_patterns:
+            print(f"Found {len(similar_patterns)} similar past fixes (confidence: {int(similar_patterns[0].confidence*100)}%)")
+        
+        # Self-reflection: analyze what went wrong in previous attempts
+        reflection_guidance = ""
+        if fix_attempt > 1 and previous_fix_attempts:
+            from .self_reflection import analyze_fix_failure, format_reflection_guidance
+            last_attempt = previous_fix_attempts[-1]
+            reflection_analysis = analyze_fix_failure(
+                attempt_num=fix_attempt,
+                previous_error=last_attempt.get("error", ""),
+                new_error=error_msg,
+                fix_applied=last_attempt,
+                previous_attempts=previous_fix_attempts
+            )
+            reflection_guidance = format_reflection_guidance(reflection_analysis)
+            print(f"Self-reflection: {len(reflection_analysis['recommendations'])} recommendations for attempt {fix_attempt}")
         
         if error_category != "unknown":
             print(f"Applying targeted fix strategy for {error_category}")
@@ -1446,6 +1514,8 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             f"**Original Task:** {issue.key} - {issue.summary}\n\n"
             f"**Build Errors:**\n```\n{error_msg[:1500]}\n```\n\n"
             f"{error_analysis_section}"
+            f"{pattern_guidance}"
+            f"{reflection_guidance}"
             f"\n**MANDATORY DEBUGGING PROCESS:**\n"
             f"1. **READ THE ERROR MESSAGE COMPLETELY** - Every word matters!\n"
             f"   - What file has the error? (look for file paths)\n"
@@ -1676,9 +1746,49 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                         error_output = result.stderr if result.stderr else result.stdout
                         verification_errors.append(f"Build still failing after fix attempt {fix_attempt}:\n{error_output[:1000]}")
                         print(f"Build still failing after {model_name} fix:\n{error_output[:500]}")
+                        
+                        # Record failed fix attempt to learn from it
+                        from .pattern_learner import record_fix_attempt, record_failed_fix
+                        from .self_reflection import extract_fix_metadata
+                        fix_strategy = fix_payload.get("summary", "Unknown fix strategy")
+                        if run_id:
+                            record_fix_attempt(
+                                run_id=run_id,
+                                issue_key=issue.key,
+                                attempt_number=fix_attempt,
+                                error_msg=error_msg,
+                                fix_strategy=fix_strategy,
+                                files_changed=fixed_files,
+                                model_used=model_name,
+                                success=False
+                            )
+                        record_failed_fix(error_msg, fix_strategy)
+                        
+                        # Track for self-reflection
+                        attempt_metadata = extract_fix_metadata(fix_payload, fixed_files)
+                        attempt_metadata["error"] = error_msg
+                        previous_fix_attempts.append(attempt_metadata)
                     else:
                         print(f"✅ Build succeeded after {model_name} fixes on attempt {fix_attempt}!")
                         notes += f"\n\n⚠️ *Note: Initial build failed, but {model_name} automatically fixed the errors on attempt {fix_attempt}.*"
+                        
+                        # Record successful fix to pattern learning database
+                        from .pattern_learner import record_fix_attempt, record_successful_fix
+                        fix_strategy = fix_payload.get("summary", "Unknown fix strategy")
+                        if run_id:
+                            record_fix_attempt(
+                                run_id=run_id,
+                                issue_key=issue.key,
+                                attempt_number=fix_attempt,
+                                error_msg=error_msg,
+                                fix_strategy=fix_strategy,
+                                files_changed=fixed_files,
+                                model_used=model_name,
+                                success=True
+                            )
+                        record_successful_fix(error_msg, fix_strategy, fixed_files)
+                        print(f"✅ Recorded successful fix pattern for future use (category: {error_category})")
+                        
                         verification_errors = []  # Clear errors to break the retry loop
                         break  # Exit the retry loop on success
             

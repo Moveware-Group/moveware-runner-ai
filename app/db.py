@@ -55,6 +55,10 @@ def init_db() -> None:
     # Initialize queue management schema
     from .queue_manager import init_queue_schema
     init_queue_schema()
+    
+    # Initialize pattern learning schema
+    from .pattern_learner import init_pattern_learning_schema
+    init_pattern_learning_schema()
 
 
 @contextmanager
