@@ -160,6 +160,10 @@ def _get_repo_context(repo_path: Path, issue: JiraIssue, include_all_code: bool 
             'api': ['app/api/**/*.ts', 'pages/api/**/*.ts'],
             'auth': ['lib/auth.ts', 'middleware.ts', 'app/api/auth/**/*.ts'],
             'database': ['lib/db.ts', 'lib/prisma.ts', 'prisma/schema.prisma'],
+            'repository': ['prisma/schema.prisma', 'lib/db.ts'],
+            'prisma': ['prisma/schema.prisma', 'lib/db.ts'],
+            'session': ['prisma/schema.prisma', 'lib/auth.ts'],
+            'sso': ['prisma/schema.prisma', 'lib/auth.ts'],
         }
         
         for keyword, file_patterns in keyword_files.items():
@@ -378,6 +382,7 @@ def _system_prompt() -> str:
         "  * TypeScript errors (wrong types, missing properties)\n"
         "  * Using Node.js modules (fs, path) in client components\n"
         "  * Prettier/formatting: use trailing commas in objects/arrays, proper line breaks\n"
+        "  * Prisma: only import types (Session, User, etc.) that exist in prisma/schema.prisma\n"
         "- TEST YOUR MENTAL MODEL: Before finishing, mentally trace each import/export\n"
         "- Double-check that every exported function/variable is actually defined\n"
         "- Verify Tailwind classes match the design system or use standard Tailwind\n\n"
@@ -872,8 +877,45 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             except Exception as e:
                 verification_errors.append(f"Failed to auto-install {missing_pkg}: {e}")
     
-    # Auto-fix Prettier formatting errors (don't burn LLM attempts on formatting)
+    # Build error text for downstream checks
     error_text = "\n".join(verification_errors)
+    
+    # Auto-run prisma generate when @prisma/client has no exported member (schema may have been updated)
+    _prisma_member = re.search(r"@prisma/client['\"].*?has no exported member ['\"](\w+)['\"]", error_text)
+    if _prisma_member and is_node_project and (repo_path / "prisma" / "schema.prisma").exists():
+        try:
+            print("Running prisma generate (schema may have been updated)...")
+            if run_id:
+                add_progress_event(run_id, "verifying", "Running prisma generate", {})
+            result = subprocess.run(
+                ["npx", "prisma", "generate"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            if result.returncode == 0:
+                result = subprocess.run(
+                    ["npm", "run", "build"],
+                    cwd=repo_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=180
+                )
+                if result.returncode == 0:
+                    print("✅ Build succeeded after prisma generate!")
+                    verification_errors = []
+                    error_text = ""
+                else:
+                    error_output = result.stderr or result.stdout
+                    verification_errors = [f"Build still failing after prisma generate:\n{error_output[:2000]}"]
+            else:
+                print(f"prisma generate failed: {result.stderr}")
+        error_text = "\n".join(verification_errors)
+        except Exception as e:
+            print(f"prisma generate failed: {e}")
+    
+    # Auto-fix Prettier formatting errors (don't burn LLM attempts on formatting)
     if "prettier/prettier" in error_text and is_node_project:
         # Collect files to format: from error output + our known changed files
         prettier_files = set()
@@ -1225,6 +1267,21 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                         file_path.parent.mkdir(parents=True, exist_ok=True)
                         file_path.write_text(content, encoding="utf-8")
                         fixed_files.append(file_op['path'])
+                
+                # Run Prettier on fixed files - LLM output often introduces formatting errors
+                if fixed_files:
+                    code_fixed = [p for p in fixed_files if p.endswith(('.ts', '.tsx', '.js', '.jsx', '.css'))]
+                    if code_fixed:
+                        try:
+                            subprocess.run(
+                                ["npx", "prettier", "--write"] + code_fixed,
+                                cwd=repo_path,
+                                capture_output=True,
+                                text=True,
+                                timeout=30
+                            )
+                        except Exception as e:
+                            print(f"Prettier on fixed files: {e}")
                 
                 # Re-run verification after fixes
                 print("Re-running build verification after fixes...")

@@ -137,6 +137,20 @@ ERROR_PATTERNS = {
             "- Run `npx prettier --write <file>` to auto-format"
         )
     },
+    "prisma_model_missing": {
+        "patterns": [
+            r"@prisma/client['\"].*?has no exported member",
+            r"Module ['\"]@prisma/client['\"] has no exported member ['\"](\w+)['\"]"
+        ],
+        "fix_hint": (
+            "**PRISMA MODEL NOT FOUND:**\n"
+            "- Only import types that exist in prisma/schema.prisma - check the schema!\n"
+            "- If the model (e.g. Session, SSOProvider) is NOT in schema.prisma:\n"
+            "  * Add the model to schema.prisma and run `npx prisma generate`, OR\n"
+            "  * Use a type that exists, or define a local interface\n"
+            "- If the model IS in schema.prisma: run `npx prisma generate`"
+        )
+    },
 }
 
 
