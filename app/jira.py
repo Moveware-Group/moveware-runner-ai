@@ -72,11 +72,14 @@ class JiraClient:
         This helper matches on the transition's `to.name`.
         """
         target = status_name.strip().lower()
-        for t in self.get_transitions(issue_key):
+        transitions = self.get_transitions(issue_key)
+        for t in transitions:
             to_name = (t.get("to") or {}).get("name", "").strip().lower()
             if to_name == target:
                 self.transition(issue_key, t["id"])
                 return t["id"]
+        available = [((t.get("to") or {}).get("name", "?")) for t in transitions]
+        print(f"Warning: No transition to '{status_name}' for {issue_key}. Available: {available}")
         return None
 
     def assign_issue(self, issue_key: str, account_id: str) -> None:
