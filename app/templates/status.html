@@ -654,11 +654,17 @@
                 return;
             }
             
-            // Check if any runs are stuck (claimed/running for >5 min without progress)
+            // Check if any runs are stuck:
+            // - claimed/running for >5 min without progress
+            // - failed (always considered stuck until reset)
             // Use locked_at (when worker claimed) - not created_at. After reset+reclaim, locked_at
             // is recent, so we won't show "stuck" for a freshly reclaimed run.
             const now = Date.now() / 1000;
             const stuckRuns = runs.filter(run => {
+                // Failed runs are always considered stuck (need manual intervention/reset)
+                if (run.status === 'failed') return true;
+                
+                // Claimed/running runs are stuck if they've been in that state for >5 min
                 if (run.status !== 'claimed' && run.status !== 'running') return false;
                 const claimDuration = run.locked_at ? (now - run.locked_at) : (now - run.created_at);
                 return claimDuration > 300;
@@ -703,10 +709,13 @@
                     `;
                 }
                 
-                // Check if run appears stuck (claimed/running for more than 5 minutes)
+                // Check if run appears stuck
+                // - failed runs are always stuck (need intervention)
+                // - claimed/running for more than 5 minutes without progress
                 const now = Date.now() / 1000;
                 const claimDuration = run.locked_at ? (now - run.locked_at) : (now - run.created_at);
-                const isStuck = (run.status === 'claimed' || run.status === 'running') && claimDuration > 300;
+                const isStuck = run.status === 'failed' || 
+                    ((run.status === 'claimed' || run.status === 'running') && claimDuration > 300);
                 const isResetting = resettingRuns.has(run.run_id);
                 
                 // After reset: show blue "Running..." until complete/fail. Otherwise show Reset for failed/claimed/running.
