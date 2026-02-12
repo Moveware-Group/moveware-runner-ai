@@ -383,12 +383,73 @@
             margin-right: 8px;
             margin-bottom: 8px;
         }
+        
+        .reset-btn {
+            padding: 6px 12px;
+            background: #333;
+            border: 1px solid #555;
+            border-radius: 4px;
+            color: #fff;
+            font-size: 0.85em;
+            cursor: pointer;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+        
+        .reset-btn:hover {
+            background: #444;
+            border-color: #00d4ff;
+            transform: scale(1.05);
+        }
+        
+        .reset-btn-warning {
+            background: #ff4444;
+            border-color: #ff6666;
+            animation: pulse-warning 2s infinite;
+        }
+        
+        .reset-btn-warning:hover {
+            background: #ff6666;
+            border-color: #ff8888;
+        }
+        
+        @keyframes pulse-warning {
+            0%, 100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.7;
+            }
+        }
+        
+        .reset-all-btn {
+            padding: 8px 16px;
+            background: #ff4444;
+            border: 1px solid #ff6666;
+            border-radius: 4px;
+            color: #fff;
+            font-size: 0.9em;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-right: 20px;
+            font-weight: 600;
+            animation: pulse-warning 2s infinite;
+        }
+        
+        .reset-all-btn:hover {
+            background: #ff6666;
+            border-color: #ff8888;
+            transform: scale(1.05);
+        }
     </style>
 </head>
 <body>
     <div class="header">
         <h1>AI Runner Status Dashboard</h1>
         <div class="controls">
+            <button id="resetStuckBtn" class="reset-all-btn" onclick="resetAllStuckRuns()" style="display:none;">
+                ⚠️ Reset All Stuck Runs
+            </button>
             <a href="/repos" style="color:#00d4ff;text-decoration:none;margin-right:20px">Add Repository</a>
             <span class="detail-label">Time Range:</span>
             <select id="timeFilter" style="background:#1a1a1a;color:#e0e0e0;border:1px solid #555;padding:5px 10px;border-radius:4px;margin-right:20px;cursor:pointer">
@@ -573,7 +634,24 @@
             
             if (!runs || runs.length === 0) {
                 container.innerHTML = '<div class="no-data">No recent runs found.</div>';
+                document.getElementById('resetStuckBtn').style.display = 'none';
                 return;
+            }
+            
+            // Check if any runs are stuck
+            const now = Date.now() / 1000;
+            const stuckRuns = runs.filter(run => {
+                const runningTime = now - run.created_at;
+                return (run.status === 'claimed' || run.status === 'running') && runningTime > 300;
+            });
+            
+            // Show/hide "Reset All Stuck" button
+            const resetStuckBtn = document.getElementById('resetStuckBtn');
+            if (stuckRuns.length > 0) {
+                resetStuckBtn.style.display = 'block';
+                resetStuckBtn.textContent = `⚠️ Reset ${stuckRuns.length} Stuck Run${stuckRuns.length > 1 ? 's' : ''}`;
+            } else {
+                resetStuckBtn.style.display = 'none';
             }
             
             container.innerHTML = runs.map(run => {
@@ -596,11 +674,25 @@
                     `;
                 }
                 
+                // Check if run appears stuck (claimed/running for more than 5 minutes)
+                const now = Date.now() / 1000;
+                const runningTime = now - run.created_at;
+                const isStuck = (run.status === 'claimed' || run.status === 'running') && runningTime > 300;
+                
                 return `
                     <div class="run-card">
                         <div class="run-header">
                             <div class="run-title">${run.issue_key}</div>
-                            <div class="status-badge ${statusClass}">${run.status}</div>
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                <div class="status-badge ${statusClass}">${run.status}</div>
+                                ${(run.status === 'failed' || run.status === 'claimed' || run.status === 'running') ? `
+                                    <button class="reset-btn ${isStuck ? 'reset-btn-warning' : ''}" 
+                                            onclick="resetRun(${run.run_id}, '${run.issue_key}')"
+                                            title="${isStuck ? 'Run appears stuck - click to reset' : 'Reset this run'}">
+                                        ${isStuck ? '⚠️ Reset' : '🔄 Reset'}
+                                    </button>
+                                ` : ''}
+                            </div>
                         </div>
                         
                         <div class="run-meta">
@@ -630,6 +722,84 @@
                     </div>
                 `;
             }).join('');
+        }
+        
+        // Reset a stuck run
+        async function resetRun(runId, issueKey) {
+            if (!confirm(`Reset run #${runId} (${issueKey})?\n\nThis will:\n- Reset status to 'queued'\n- Clear worker lock\n- Allow the run to be retried\n\nContinue?`)) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/runs/${runId}/retry`, {
+                    method: 'POST'
+                });
+                
+                const data = await response.json();
+                
+                if (data.ok || response.ok) {
+                    alert(`✅ Run #${runId} (${issueKey}) has been reset and queued for retry.`);
+                    // Refresh the status immediately
+                    fetchStatus();
+                } else {
+                    alert(`❌ Failed to reset run: ${data.error || 'Unknown error'}`);
+                }
+            } catch (error) {
+                console.error('Failed to reset run:', error);
+                alert(`❌ Failed to reset run: ${error.message}`);
+            }
+        }
+        
+        // Reset all stuck runs
+        async function resetAllStuckRuns() {
+            // Get current runs
+            const response = await fetch(`/api/status?detail=summary&hours=${timeFilter === 'all' ? 999999 : timeFilter}`);
+            const data = await response.json();
+            const runs = data.runs || [];
+            
+            // Find stuck runs
+            const now = Date.now() / 1000;
+            const stuckRuns = runs.filter(run => {
+                const runningTime = now - run.created_at;
+                return (run.status === 'claimed' || run.status === 'running') && runningTime > 300;
+            });
+            
+            if (stuckRuns.length === 0) {
+                alert('No stuck runs found.');
+                return;
+            }
+            
+            const runList = stuckRuns.map(r => `- ${r.issue_key} (Run #${r.run_id})`).join('\n');
+            
+            if (!confirm(`Reset ${stuckRuns.length} stuck run(s)?\n\n${runList}\n\nThis will reset all of them to 'queued' status.\n\nContinue?`)) {
+                return;
+            }
+            
+            let successCount = 0;
+            let failCount = 0;
+            
+            for (const run of stuckRuns) {
+                try {
+                    const response = await fetch(`/api/runs/${run.run_id}/retry`, {
+                        method: 'POST'
+                    });
+                    const data = await response.json();
+                    
+                    if (data.ok || response.ok) {
+                        successCount++;
+                    } else {
+                        failCount++;
+                    }
+                } catch (error) {
+                    console.error(`Failed to reset run ${run.run_id}:`, error);
+                    failCount++;
+                }
+            }
+            
+            alert(`Reset complete!\n\n✅ Successfully reset: ${successCount}\n❌ Failed: ${failCount}`);
+            
+            // Refresh the status
+            fetchStatus();
         }
         
         // Toggle detail mode
