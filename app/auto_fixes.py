@@ -33,6 +33,7 @@ def try_all_auto_fixes(
         auto_fix_prisma_generate,
         auto_fix_prisma_import_type,
         auto_fix_env_type_missing,
+        auto_fix_type_conversion,
         auto_fix_missing_typescript_types,
         auto_fix_outdated_lockfile,
         auto_fix_port_in_use,
@@ -296,6 +297,104 @@ def auto_fix_env_type_missing(
             return True, f"Added {missing_var} to env schema"
     except Exception:
         pass
+    
+    return False, ""
+
+
+def auto_fix_type_conversion(
+    error_msg: str,
+    repo_path: Path,
+    is_node_project: bool
+) -> Tuple[bool, str]:
+    """
+    Auto-fix common type conversion errors (number → string, string → number).
+    
+    Examples:
+    - Argument of type 'number' is not assignable to parameter of type 'string'
+    - Type 'string' is not assignable to type 'number'
+    """
+    if not is_node_project:
+        return False, ""
+    
+    # Pattern 1: Type 'X' is not assignable to type 'Y'
+    # Pattern 2: Argument of type 'X' is not assignable to parameter of type 'Y'
+    match = re.search(
+        r"(?:Argument of type|Type) ['\"]?(\w+)['\"]? is not assignable to (?:parameter of type|type) ['\"]?(\w+)['\"]?",
+        error_msg,
+        re.IGNORECASE
+    )
+    if not match:
+        return False, ""
+    
+    from_type = match.group(1).lower()
+    to_type = match.group(2).lower()
+    
+    # Only handle simple type conversions: number ↔ string
+    conversion_map = {
+        ("number", "string"): "String(VALUE)",
+        ("string", "number"): "Number(VALUE)",
+    }
+    
+    conversion = conversion_map.get((from_type, to_type))
+    if not conversion:
+        return False, ""
+    
+    # Extract file path and line number from error
+    file_match = re.search(r'\./([^\s:]+\.(?:ts|tsx|js|jsx)):(\d+):', error_msg)
+    if not file_match:
+        return False, ""
+    
+    file_path_rel = file_match.group(1)
+    line_num = int(file_match.group(2))
+    
+    file_path = repo_path / file_path_rel
+    if not file_path.exists():
+        return False, ""
+    
+    try:
+        lines = file_path.read_text(encoding="utf-8").splitlines(keepends=True)
+        if line_num < 1 or line_num > len(lines):
+            return False, ""
+        
+        # Get the problematic line (1-indexed)
+        error_line = lines[line_num - 1]
+        
+        # Try to identify the variable/expression on this line
+        # Common patterns: env.VAR_NAME, variable, function(arg)
+        # For env vars specifically: env.JWT_EXPIRES_IN, env.PORT, etc.
+        var_patterns = [
+            r'\benv\.([A-Z_]+)\b',  # env.VAR_NAME
+            r'\b([a-z]\w+)\b',      # variableName (last one on line)
+        ]
+        
+        for pattern in var_patterns:
+            matches = list(re.finditer(pattern, error_line))
+            if not matches:
+                continue
+            
+            # Get the last match on the line (likely the problematic one)
+            last_match = matches[-1]
+            var_name = last_match.group(0)
+            
+            # Apply conversion
+            if from_type == "number" and to_type == "string":
+                new_expr = f"String({var_name})"
+            elif from_type == "string" and to_type == "number":
+                new_expr = f"Number({var_name})"
+            else:
+                continue
+            
+            # Replace the variable with the converted expression
+            new_line = error_line[:last_match.start()] + new_expr + error_line[last_match.end():]
+            lines[line_num - 1] = new_line
+            
+            # Write back
+            file_path.write_text("".join(lines), encoding="utf-8")
+            
+            return True, f"Converted {var_name} from {from_type} to {to_type} in {file_path_rel}:{line_num}"
+    
+    except Exception as e:
+        print(f"Type conversion auto-fix failed: {e}")
     
     return False, ""
 

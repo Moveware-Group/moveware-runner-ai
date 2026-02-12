@@ -64,7 +64,12 @@ ERROR_PATTERNS = {
             "- Add missing properties to interfaces\n"
             "- Use proper type assertions if needed (value as Type)\n"
             "- Check for typos in property names\n"
-            "- Ensure all required properties are provided"
+            "- Ensure all required properties are provided\n\n"
+            "**COMMON TYPE CONVERSIONS:**\n"
+            "- number → string: Use String(value) or value.toString() or `${value}`\n"
+            "- string → number: Use Number(value) or parseInt(value) or parseFloat(value)\n"
+            "- undefined/null → required: Add null check or use ?? default operator\n"
+            "- union types: Narrow with typeof or instanceof checks"
         )
     },
     "react_hook_error": {
