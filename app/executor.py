@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -376,6 +377,7 @@ def _system_prompt() -> str:
         "  * Import errors (importing functions that don't exist)\n"
         "  * TypeScript errors (wrong types, missing properties)\n"
         "  * Using Node.js modules (fs, path) in client components\n"
+        "  * Prettier/formatting: use trailing commas in objects/arrays, proper line breaks\n"
         "- TEST YOUR MENTAL MODEL: Before finishing, mentally trace each import/export\n"
         "- Double-check that every exported function/variable is actually defined\n"
         "- Verify Tailwind classes match the design system or use standard Tailwind\n\n"
@@ -531,6 +533,8 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         f"**REMINDER - SCOPE CHECK:**\n"
         f"Before implementing, verify that EVERY file you create is explicitly mentioned in the requirements above.\n"
         f"If you're creating a file that isn't directly requested, STOP and ask a question instead.\n\n"
+        f"**REMINDER - CODE STYLE:**\n"
+        f"Use Prettier-compliant formatting: trailing commas in objects/arrays, proper line breaks for long parameters.\n\n"
         f"Provide your implementation as JSON following the specified format."
     )
     
@@ -643,6 +647,38 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             files_changed.append(f"{action_word} {file_op['path']}")
     
     notes = payload.get("summary", "") or payload.get("implementation_plan", "")
+    
+    # 4b) Proactive formatting: run Prettier + ESLint --fix on changed files BEFORE verification
+    # Prevents basic formatting/lint errors from ever reaching the build or LLM
+    code_files = [f["path"] for f in files if f.get("action", "update") != "delete" and f["path"].endswith(('.ts', '.tsx', '.js', '.jsx', '.css'))]
+    if code_files and (repo_path / "package.json").exists():
+        import subprocess
+        if run_id:
+            add_progress_event(run_id, "executing", "Auto-formatting changed files (Prettier + ESLint)", {})
+        try:
+            print("Running Prettier on changed files...")
+            subprocess.run(
+                ["npx", "prettier", "--write"] + code_files,
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            # ESLint --fix for auto-fixable rules (e.g. prefer-const, no-unused-vars)
+            eslint_files = [f for f in code_files if f.endswith(('.ts', '.tsx', '.js', '.jsx'))]
+            if eslint_files and any((repo_path / c).exists() for c in [".eslintrc", ".eslintrc.js", ".eslintrc.json", "eslint.config.js"]):
+                print("Running ESLint --fix on changed files...")
+                subprocess.run(
+                    ["npx", "eslint", "--fix", *eslint_files],
+                    cwd=repo_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    env={**os.environ, "ESLINT_USE_FLAT_CONFIG": "false"}
+                )
+            print("✓ Auto-formatting complete")
+        except Exception as e:
+            print(f"Warning: Proactive formatting failed: {e}")
     
     if not files_changed:
         # Claude decided no changes were needed - this might be an error
@@ -839,8 +875,22 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
     # Auto-fix Prettier formatting errors (don't burn LLM attempts on formatting)
     error_text = "\n".join(verification_errors)
     if "prettier/prettier" in error_text and is_node_project:
-        # Extract file paths from error (e.g. ./src/lib/db/repositories/tenants.ts)
-        prettier_files = list(set(re.findall(r'\./([^\s]+\.(?:ts|tsx|js|jsx|css|json))', error_text)))
+        # Collect files to format: from error output + our known changed files
+        prettier_files = set()
+        # Match paths in error: ./src/..., /absolute/path/src/..., or src/...
+        for m in re.findall(r'src/[^\s:]+\.(?:ts|tsx|js|jsx|css|json)', error_text):
+            prettier_files.add(m)
+        # Always include our changed code files - we know they're relevant
+        for fc in files_changed:
+            if "Deleted" not in fc and any(fc.endswith(ext) for ext in ('.ts', '.tsx', '.js', '.jsx', '.css')):
+                path = fc.replace("Created ", "").replace("Updated ", "")
+                if path:
+                    prettier_files.add(path)
+        prettier_files = [f for f in prettier_files if (repo_path / f).exists()]
+        if not prettier_files:
+            # Fallback: format entire src directory
+            if (repo_path / "src").exists():
+                prettier_files = ["src"]
         if prettier_files:
             try:
                 print("Running Prettier to auto-fix formatting errors...")
