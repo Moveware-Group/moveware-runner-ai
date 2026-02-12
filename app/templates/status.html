@@ -673,6 +673,11 @@
                 }
             });
             
+            // Issue keys that have an active run (queued, claimed, or running) - don't show Reset on failed runs for these
+            const activeIssueKeys = new Set(
+                runs.filter(r => ['queued', 'claimed', 'running'].includes(r.status)).map(r => r.issue_key)
+            );
+            
             container.innerHTML = runs.map(run => {
                 const statusClass = `status-${run.status}`;
                 const latestProgress = run.progress_events[0];
@@ -700,9 +705,13 @@
                 const isResetting = resettingRuns.has(run.run_id);
                 
                 // After reset: show blue "Running..." until complete/fail. Otherwise show Reset for failed/claimed/running.
+                // Don't show Reset on failed runs when another run for same task is active (queued/claimed/running).
+                const hasActiveRunForSameTask = run.status === 'failed' && activeIssueKeys.has(run.issue_key);
                 let actionButton = '';
                 if (isResetting && run.status !== 'completed' && run.status !== 'failed') {
                     actionButton = `<span class="reset-btn-running">Running...</span>`;
+                } else if (hasActiveRunForSameTask) {
+                    actionButton = '';  // Failed run but another run for this task is active - no Reset
                 } else if (run.status === 'failed' || run.status === 'claimed' || run.status === 'running') {
                     actionButton = `
                         <button class="reset-btn ${isStuck ? 'reset-btn-warning' : ''}" 
