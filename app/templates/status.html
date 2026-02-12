@@ -662,12 +662,32 @@
             const now = Date.now() / 1000;
             const stuckRuns = runs.filter(run => {
                 // Failed runs are always considered stuck (need manual intervention/reset)
-                if (run.status === 'failed') return true;
+                if (run.status === 'failed') {
+                    console.log(`Run ${run.issue_key} (${run.run_id}) is stuck: FAILED`);
+                    return true;
+                }
                 
                 // Claimed/running runs are stuck if they've been in that state for >5 min
                 if (run.status !== 'claimed' && run.status !== 'running') return false;
-                const claimDuration = run.locked_at ? (now - run.locked_at) : (now - run.created_at);
-                return claimDuration > 300;
+                
+                // CRITICAL: If locked_at is missing on a claimed/running run, don't immediately
+                // consider it stuck - give it grace period. This handles the race condition where
+                // a run was just claimed but the next poll happens before locked_at propagates.
+                if (!run.locked_at) {
+                    console.log(`Run ${run.issue_key} (${run.run_id}) is ${run.status} but locked_at is NULL - assuming just claimed, not stuck yet`);
+                    return false;  // Don't consider stuck if locked_at is missing
+                }
+                
+                const claimDuration = now - run.locked_at;
+                const isStuckTime = claimDuration > 300;
+                
+                if (isStuckTime) {
+                    console.log(`Run ${run.issue_key} (${run.run_id}) is stuck: ${run.status} for ${Math.floor(claimDuration/60)}min (locked_at: ${run.locked_at}, now: ${now})`);
+                } else {
+                    console.log(`Run ${run.issue_key} (${run.run_id}) is NOT stuck: ${run.status} for ${Math.floor(claimDuration)}s`);
+                }
+                
+                return isStuckTime;
             });
             
             // Show/hide "Reset All Stuck" button
@@ -713,9 +733,18 @@
                 // - failed runs are always stuck (need intervention)
                 // - claimed/running for more than 5 minutes without progress
                 const now = Date.now() / 1000;
-                const claimDuration = run.locked_at ? (now - run.locked_at) : (now - run.created_at);
-                const isStuck = run.status === 'failed' || 
-                    ((run.status === 'claimed' || run.status === 'running') && claimDuration > 300);
+                let isStuck = false;
+                
+                if (run.status === 'failed') {
+                    isStuck = true;
+                } else if (run.status === 'claimed' || run.status === 'running') {
+                    // Only consider stuck if locked_at exists and is > 5 min ago
+                    // If locked_at is null, assume just claimed (race condition)
+                    if (run.locked_at) {
+                        const claimDuration = now - run.locked_at;
+                        isStuck = claimDuration > 300;
+                    }
+                }
                 const isResetting = resettingRuns.has(run.run_id);
                 
                 // After reset: show blue "Running..." until complete/fail. Otherwise show Reset for failed/claimed/running.

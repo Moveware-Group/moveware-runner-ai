@@ -606,9 +606,9 @@ async def status_api(detail: str = "summary", hours: str = "24") -> Dict[str, An
                     "issue_key": run[1],
                     "status": run_status,
                     "locked_by": run[3],
-                    "locked_at": run[4],
+                    "locked_at": run[4],  # When worker claimed it
                     "created_at": run[5],
-                    "completed_at": run[6] if run_status in ('completed', 'failed') else None,
+                    "completed_at": run[6],  # updated_at (used as completion time for completed/failed)
                     "progress_events": []
                 }
                 
