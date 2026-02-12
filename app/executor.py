@@ -1060,7 +1060,6 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                     schema_content = schema_path.read_text(encoding="utf-8")
                     
                     # Extract actual model names from schema
-                    import re
                     actual_models = re.findall(r'^model\s+(\w+)\s*\{', schema_content, re.MULTILINE)
                     
                     # Check if the missing model exists (case-insensitive)
