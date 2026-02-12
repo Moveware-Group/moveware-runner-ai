@@ -29,6 +29,27 @@ class ExecutionResult:
     jira_comment: str
 
 
+def _get_nextjs_build_env() -> dict:
+    """
+    Build env for Next.js npm run build - injects placeholder values for common
+    required vars (DATABASE_URL, JWT_SECRET, etc.) if not set. Prevents build failures
+    when code validates env at import time but .env is gitignored/missing.
+    """
+    env = dict(os.environ)
+    placeholders = {
+        "DATABASE_URL": "postgresql://localhost:5432/build_verification",
+        "ENCRYPTION_KEY": "build-time-32-char-placeholder!!!!",
+        "JWT_SECRET": "build-time-32-char-placeholder!!!!",
+        "MOVEWARE_API_URL": "https://example.com",
+        "NEXTAUTH_SECRET": "build-time-32-char-placeholder!!!!",
+        "NEXTAUTH_URL": "http://localhost:3000",
+    }
+    for key, val in placeholders.items():
+        if key not in env or not str(env.get(key, "")).strip():
+            env[key] = val
+    return env
+
+
 def _get_repo_settings(issue_key: str) -> dict:
     """
     Get repository settings for an issue.
@@ -891,7 +912,8 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                             cwd=repo_path,
                             capture_output=True,
                             text=True,
-                            timeout=180  # 3 minute timeout for build
+                            timeout=180,  # 3 minute timeout for build
+                            env=_get_nextjs_build_env(),
                         )
                         
                         if result.returncode != 0:
@@ -947,7 +969,8 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                     cwd=repo_path,
                     capture_output=True,
                     text=True,
-                    timeout=180
+                    timeout=180,
+                    env=_get_nextjs_build_env(),
                 )
                 if result.returncode == 0:
                     print(f"✅ Build succeeded after installing {missing_pkg}!")
@@ -982,7 +1005,8 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                     cwd=repo_path,
                     capture_output=True,
                     text=True,
-                    timeout=180
+                    timeout=180,
+                    env=_get_nextjs_build_env(),
                 )
                 if result.returncode == 0:
                     print("✅ Build succeeded after prisma generate!")
@@ -1033,7 +1057,8 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                         cwd=repo_path,
                         capture_output=True,
                         text=True,
-                        timeout=180
+                        timeout=180,
+                        env=_get_nextjs_build_env(),
                     )
                     if result.returncode == 0:
                         print("✅ Build succeeded after Prettier fix!")
@@ -1081,7 +1106,8 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                 cwd=repo_path,
                 capture_output=True,
                 text=True,
-                timeout=180
+                timeout=180,
+                env=_get_nextjs_build_env(),
             )
             if result.returncode == 0:
                 print("✅ Build succeeded after Prisma import fix!")
@@ -1454,7 +1480,8 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                         cwd=repo_path,
                         capture_output=True,
                         text=True,
-                        timeout=180
+                        timeout=180,
+                        env=_get_nextjs_build_env(),
                     )
                     
                     if result.returncode != 0:

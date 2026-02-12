@@ -151,6 +151,19 @@ ERROR_PATTERNS = {
             "- If the model IS in schema.prisma: run `npx prisma generate`"
         )
     },
+    "missing_env_vars": {
+        "patterns": [
+            r"Missing or invalid environment variables",
+            r"Required environment variable .* is not set",
+            r"Please check your \.env file"
+        ],
+        "fix_hint": (
+            "**MISSING ENVIRONMENT VARIABLES:**\n"
+            "- The build validates env vars at import time. Ensure .env exists with required vars.\n"
+            "- Copy .env.example to .env and fill in values (or use placeholders for build verification).\n"
+            "- Common required vars: DATABASE_URL, ENCRYPTION_KEY, JWT_SECRET, MOVEWARE_API_URL, NEXTAUTH_SECRET."
+        )
+    },
     "import_type_prisma": {
         "patterns": [
             r"cannot be used as a value because it was imported using ['\"]import type['\"]",
