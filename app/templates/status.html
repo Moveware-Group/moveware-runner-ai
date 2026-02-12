@@ -413,6 +413,17 @@
             border-color: #ff8888;
         }
         
+        .reset-btn-running {
+            padding: 6px 12px;
+            background: #0066cc;
+            border: 1px solid #00d4ff;
+            border-radius: 4px;
+            color: #fff;
+            font-size: 0.85em;
+            cursor: default;
+            white-space: nowrap;
+        }
+        
         @keyframes pulse-warning {
             0%, 100% {
                 opacity: 1;
@@ -512,6 +523,7 @@
         let detailMode = 'summary';
         let timeFilter = 24; // default to 24 hours
         let autoRefreshInterval = null;
+        const resettingRuns = new Set(); // Run IDs we just reset - show "Running" until complete/fail
         
         // Format timestamp to readable time
         function formatTime(timestamp) {
@@ -654,6 +666,13 @@
                 resetStuckBtn.style.display = 'none';
             }
             
+            // Clean up resettingRuns: remove runs that have completed or failed
+            runs.forEach(run => {
+                if ((run.status === 'completed' || run.status === 'failed') && resettingRuns.has(run.run_id)) {
+                    resettingRuns.delete(run.run_id);
+                }
+            });
+            
             container.innerHTML = runs.map(run => {
                 const statusClass = `status-${run.status}`;
                 const latestProgress = run.progress_events[0];
@@ -678,6 +697,21 @@
                 const now = Date.now() / 1000;
                 const runningTime = now - run.created_at;
                 const isStuck = (run.status === 'claimed' || run.status === 'running') && runningTime > 300;
+                const isResetting = resettingRuns.has(run.run_id);
+                
+                // After reset: show blue "Running..." until complete/fail. Otherwise show Reset for failed/claimed/running.
+                let actionButton = '';
+                if (isResetting && run.status !== 'completed' && run.status !== 'failed') {
+                    actionButton = `<span class="reset-btn-running">Running...</span>`;
+                } else if (run.status === 'failed' || run.status === 'claimed' || run.status === 'running') {
+                    actionButton = `
+                        <button class="reset-btn ${isStuck ? 'reset-btn-warning' : ''}" 
+                                onclick="resetRun(${run.run_id}, '${run.issue_key}')"
+                                title="${isStuck ? 'Run appears stuck - click to reset' : 'Reset this run'}">
+                            ${isStuck ? '⚠️ Reset' : '🔄 Reset'}
+                        </button>
+                    `;
+                }
                 
                 return `
                     <div class="run-card">
@@ -685,13 +719,7 @@
                             <div class="run-title">${run.issue_key}</div>
                             <div style="display: flex; gap: 10px; align-items: center;">
                                 <div class="status-badge ${statusClass}">${run.status}</div>
-                                ${(run.status === 'failed' || run.status === 'claimed' || run.status === 'running') ? `
-                                    <button class="reset-btn ${isStuck ? 'reset-btn-warning' : ''}" 
-                                            onclick="resetRun(${run.run_id}, '${run.issue_key}')"
-                                            title="${isStuck ? 'Run appears stuck - click to reset' : 'Reset this run'}">
-                                        ${isStuck ? '⚠️ Reset' : '🔄 Reset'}
-                                    </button>
-                                ` : ''}
+                                ${actionButton}
                             </div>
                         </div>
                         
@@ -738,8 +766,7 @@
                 const data = await response.json();
                 
                 if (data.ok || response.ok) {
-                    alert(`✅ Run #${runId} (${issueKey}) has been reset and queued for retry.`);
-                    // Refresh the status immediately
+                    resettingRuns.add(runId);
                     fetchStatus();
                 } else {
                     alert(`❌ Failed to reset run: ${data.error || 'Unknown error'}`);
