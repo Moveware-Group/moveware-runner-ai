@@ -164,6 +164,23 @@ ERROR_PATTERNS = {
             "- Or use inline type: `import { type Session, Prisma } from '@prisma/client'` - Prisma without 'type'"
         )
     },
+    "prisma_schema_mismatch": {
+        "patterns": [
+            r"Object literal may only specify known properties",
+            r"does not exist in type ['\"].*CreateInput['\"]",
+            r"'(\\w+)' does not exist in type ['\"].*(?:CreateInput|UpdateInput)['\"]"
+        ],
+        "fix_hint": (
+            "**PRISMA SCHEMA MISMATCH:**\n"
+            "- The property you're passing does NOT exist in the Prisma schema for this model.\n"
+            "- **Fix 1:** Check prisma/schema.prisma - what fields does the model actually have?\n"
+            "- **Fix 2:** Remove the invalid property from the create/update object if the schema doesn't need it.\n"
+            "- **Fix 3:** If the schema uses different names (e.g. first_name vs firstName, is_active vs isActive), "
+            "use the EXACT field names from the schema - Prisma generates TypeScript types from schema.prisma.\n"
+            "- **Fix 4:** To add a new field: add it to schema.prisma, run `npx prisma generate`, then use it.\n"
+            "- **CRITICAL:** Include schema.prisma in your context and match the exact field names."
+        )
+    },
 }
 
 

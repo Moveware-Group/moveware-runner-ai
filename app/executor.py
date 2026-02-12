@@ -1114,7 +1114,6 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         comprehensive_hint = get_comprehensive_hint(error_msg)
         error_context = extract_error_context(error_msg, max_context_lines=3)
         
-        print(f"Error category: {error_category}")
         if error_category != "unknown":
             print(f"Applying targeted fix strategy for {error_category}")
         
@@ -1154,6 +1153,10 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         for match in re.finditer(file_pattern, error_msg):
             file_path_str = match.group(0).replace('./', '').replace('online-docs/', '')
             error_files.add(file_path_str)
+        
+        # For Prisma schema mismatches, include schema.prisma so AI can match field names
+        if error_category == "prisma_schema_mismatch" and (repo_path / "prisma" / "schema.prisma").exists():
+            error_files.add("prisma/schema.prisma")
         
         # Also extract imports mentioned in errors (e.g., "import from '../data/storage'")
         import_pattern = r"from ['\"]([^'\"]+)['\"]"
@@ -1231,6 +1234,15 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             error_analysis_section = f"\n{comprehensive_hint}\n\n"
         elif specific_hint:
             error_analysis_section = f"\n**ERROR TYPE: {error_category.upper()}**\n{specific_hint}\n\n"
+        elif error_category == "unknown":
+            # Fallback for unclassified errors - give generic but useful guidance
+            error_analysis_section = (
+                "\n**ERROR TYPE: UNKNOWN (no specific pattern matched)**\n"
+                "Common causes: Prisma schema mismatches (property doesn't exist in CreateInput/UpdateInput), "
+                "type mismatches, missing exports, wrong field names. "
+                "Read the error message carefully - it often names the exact property and type. "
+                "If it says 'X does not exist in type Y', check the schema/interface for Y and use only valid properties.\n\n"
+            )
         
         fix_prompt = (
             f"The code has build errors. Please fix ALL the errors below.\n\n"
