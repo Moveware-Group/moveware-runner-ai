@@ -505,6 +505,10 @@
                 ⚠️ Reset All Stuck Runs
             </button>
             <a href="/repos" style="color:#00d4ff;text-decoration:none;margin-right:20px">Add Repository</a>
+            <span class="detail-label">Board:</span>
+            <select id="boardFilter" style="background:#1a1a1a;color:#e0e0e0;border:1px solid #555;padding:5px 10px;border-radius:4px;margin-right:20px;cursor:pointer">
+                <option value="all" selected>All Boards</option>
+            </select>
             <span class="detail-label">Time Range:</span>
             <select id="timeFilter" style="background:#1a1a1a;color:#e0e0e0;border:1px solid #555;padding:5px 10px;border-radius:4px;margin-right:20px;cursor:pointer">
                 <option value="1">Last Hour</option>
@@ -565,6 +569,7 @@
     <script>
         let detailMode = 'summary';
         let timeFilter = 24; // default to 24 hours
+        let boardFilter = 'all'; // default to all boards
         let autoRefreshInterval = null;
         const resettingRuns = new Set(); // Run IDs we just reset - show "Running" until complete/fail
         
@@ -693,14 +698,72 @@
                 return;
             }
             
-            // Check if any runs are stuck:
+            // Normalize issue_key for case-insensitive comparison
+            const norm = (k) => (k || '').toString().toUpperCase().trim();
+            
+            // Extract board prefix from issue key (e.g., TB-23 → TB, OD-48 → OD)
+            const getBoard = (issueKey) => {
+                const match = issueKey.match(/^([A-Z]+)-/);
+                return match ? match[1] : 'OTHER';
+            };
+            
+            // Identify superseded failed runs (for stuck run calculation)
+            const supersededRuns = new Set();
+            runs.forEach(run => {
+                if (run.status === 'failed') {
+                    const hasNewerSuccess = runs.some(otherRun =>
+                        otherRun.run_id > run.run_id &&
+                        norm(otherRun.issue_key) === norm(run.issue_key) &&
+                        otherRun.status === 'completed'
+                    );
+                    if (hasNewerSuccess) {
+                        supersededRuns.add(run.run_id);
+                    }
+                }
+            });
+            
+            // Extract unique boards and populate dropdown
+            const boardsSet = new Set();
+            runs.forEach(run => {
+                const board = getBoard(run.issue_key);
+                boardsSet.add(board);
+            });
+            const boards = Array.from(boardsSet).sort();
+            
+            // Update board filter dropdown (only if changed)
+            const boardFilterEl = document.getElementById('boardFilter');
+            const currentOptions = Array.from(boardFilterEl.options).map(o => o.value).join(',');
+            const newOptions = ['all', ...boards].join(',');
+            if (currentOptions !== newOptions) {
+                const currentValue = boardFilter;
+                boardFilterEl.innerHTML = '<option value="all">All Boards</option>' +
+                    boards.map(board => `<option value="${board}">${board}</option>`).join('');
+                boardFilterEl.value = currentValue;
+            }
+            
+            // Filter runs by selected board
+            const filteredRuns = boardFilter === 'all' 
+                ? runs 
+                : runs.filter(run => getBoard(run.issue_key) === boardFilter);
+            
+            if (filteredRuns.length === 0) {
+                container.innerHTML = `<div class="no-data">No runs found for board: ${boardFilter}</div>`;
+                document.getElementById('resetStuckBtn').style.display = 'none';
+                return;
+            }
+            
+            // Check if any runs are stuck (excluding superseded failed runs):
             // - claimed/running for >5 min without progress
-            // - failed (always considered stuck until reset)
-            // Use locked_at (when worker claimed) - not created_at. After reset+reclaim, locked_at
-            // is recent, so we won't show "stuck" for a freshly reclaimed run.
+            // - failed (but NOT superseded) - needs manual intervention
             const now = Date.now() / 1000;
-            const stuckRuns = runs.filter(run => {
-                // Failed runs are always considered stuck (need manual intervention/reset)
+            const stuckRuns = filteredRuns.filter(run => {
+                // Skip superseded failed runs - they're not actually stuck
+                if (supersededRuns.has(run.run_id)) {
+                    console.log(`Run ${run.issue_key} (${run.run_id}) is superseded - not stuck`);
+                    return false;
+                }
+                
+                // Failed runs (not superseded) are considered stuck
                 if (run.status === 'failed') {
                     console.log(`Run ${run.issue_key} (${run.run_id}) is stuck: FAILED`);
                     return true;
@@ -745,27 +808,7 @@
                 }
             });
             
-            // Normalize issue_key for case-insensitive comparison
-            const norm = (k) => (k || '').toString().toUpperCase().trim();
-            
-            // Identify superseded failed runs:
-            // A failed run is superseded if there's a subsequent completed run for the same issue
-            const supersededRuns = new Set();
-            runs.forEach(run => {
-                if (run.status === 'failed') {
-                    // Check if there's a newer completed run for the same issue
-                    const hasNewerSuccess = runs.some(otherRun =>
-                        otherRun.run_id > run.run_id && // Newer run (higher ID)
-                        norm(otherRun.issue_key) === norm(run.issue_key) && // Same issue
-                        otherRun.status === 'completed' // Successfully completed
-                    );
-                    if (hasNewerSuccess) {
-                        supersededRuns.add(run.run_id);
-                    }
-                }
-            });
-            
-            container.innerHTML = runs.map(run => {
+            container.innerHTML = filteredRuns.map(run => {
                 const isSuperseded = supersededRuns.has(run.run_id);
                 const statusClass = `status-${run.status}`;
                 const latestProgress = run.progress_events[0];
@@ -941,11 +984,44 @@
             const data = await response.json();
             const runs = data.runs || [];
             
-            // Find stuck runs
+            // Normalize issue_key
+            const norm = (k) => (k || '').toString().toUpperCase().trim();
+            
+            // Identify superseded failed runs
+            const supersededRuns = new Set();
+            runs.forEach(run => {
+                if (run.status === 'failed') {
+                    const hasNewerSuccess = runs.some(otherRun =>
+                        otherRun.run_id > run.run_id &&
+                        norm(otherRun.issue_key) === norm(run.issue_key) &&
+                        otherRun.status === 'completed'
+                    );
+                    if (hasNewerSuccess) {
+                        supersededRuns.add(run.run_id);
+                    }
+                }
+            });
+            
+            // Find stuck runs (excluding superseded)
             const now = Date.now() / 1000;
             const stuckRuns = runs.filter(run => {
-                const runningTime = now - run.created_at;
-                return (run.status === 'claimed' || run.status === 'running') && runningTime > 300;
+                // Skip superseded runs
+                if (supersededRuns.has(run.run_id)) {
+                    return false;
+                }
+                
+                // Failed runs are stuck
+                if (run.status === 'failed') {
+                    return true;
+                }
+                
+                // Claimed/running runs stuck if >5 min
+                if (run.status === 'claimed' || run.status === 'running') {
+                    const runningTime = run.locked_at ? (now - run.locked_at) : (now - run.created_at);
+                    return runningTime > 300;
+                }
+                
+                return false;
             });
             
             if (stuckRuns.length === 0) {
@@ -989,6 +1065,12 @@
         // Toggle detail mode
         document.getElementById('detailToggle').addEventListener('change', (e) => {
             detailMode = e.target.checked ? 'detailed' : 'summary';
+            fetchStatus();
+        });
+        
+        // Board filter change
+        document.getElementById('boardFilter').addEventListener('change', (e) => {
+            boardFilter = e.target.value;
             fetchStatus();
         });
         
