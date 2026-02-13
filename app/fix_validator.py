@@ -75,42 +75,70 @@ class FixValidator:
         self._check_balanced_braces(path, content)
     
     def _check_duplicate_declarations(self, path: str, content: str) -> None:
-        """Check for duplicate const/let/var/function/class declarations."""
+        """Check for duplicate const/let/var/function/class declarations at same scope."""
         
-        # Extract all declarations
-        declarations = {}
+        # Extract function/class boundaries to understand scope
+        function_ranges = []
+        for match in re.finditer(r'(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\([^)]*\)\s*(?::\s*[^{]+)?\s*\{', content):
+            start = match.end()
+            # Find matching closing brace (simplified - doesn't handle nested functions perfectly)
+            brace_count = 1
+            pos = start
+            while pos < len(content) and brace_count > 0:
+                if content[pos] == '{':
+                    brace_count += 1
+                elif content[pos] == '}':
+                    brace_count -= 1
+                pos += 1
+            function_ranges.append((match.start(), pos, match.group(1)))
+        
+        # Check declarations at module level (outside functions) and top-level exports
+        # These MUST be unique
+        module_level_declarations = {}
         
         # const/let/var declarations
-        for match in re.finditer(r'(?:const|let|var)\s+(\w+)\s*[:=]', content):
+        for match in re.finditer(r'(?:export\s+)?(?:const|let|var)\s+(\w+)\s*[:=]', content):
             name = match.group(1)
-            if name in declarations:
-                self.validation_errors.append(
-                    f"{path}: Duplicate declaration of '{name}' "
-                    f"(lines ~{content[:match.start()].count(chr(10))+1} and "
-                    f"~{content[:declarations[name]].count(chr(10))+1})"
-                )
-            else:
-                declarations[name] = match.start()
+            pos = match.start()
+            
+            # Check if this is inside a function
+            in_function = False
+            for func_start, func_end, func_name in function_ranges:
+                if func_start < pos < func_end:
+                    in_function = True
+                    break
+            
+            # Only check module-level declarations for duplicates
+            # (same variable name is OK in different function scopes)
+            if not in_function:
+                if name in module_level_declarations:
+                    self.validation_errors.append(
+                        f"{path}: Duplicate module-level declaration of '{name}' "
+                        f"(lines ~{content[:match.start()].count(chr(10))+1} and "
+                        f"~{content[:module_level_declarations[name]].count(chr(10))+1})"
+                    )
+                else:
+                    module_level_declarations[name] = match.start()
         
-        # function declarations
+        # function declarations (always module-level)
         for match in re.finditer(r'(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(', content):
             name = match.group(1)
-            if name in declarations:
+            if name in module_level_declarations:
                 self.validation_errors.append(
                     f"{path}: Duplicate declaration of function '{name}'"
                 )
             else:
-                declarations[name] = match.start()
+                module_level_declarations[name] = match.start()
         
-        # class declarations
+        # class declarations (always module-level)
         for match in re.finditer(r'(?:export\s+)?class\s+(\w+)', content):
             name = match.group(1)
-            if name in declarations:
+            if name in module_level_declarations:
                 self.validation_errors.append(
                     f"{path}: Duplicate declaration of class '{name}'"
                 )
             else:
-                declarations[name] = match.start()
+                module_level_declarations[name] = match.start()
     
     def _check_basic_syntax(self, path: str, content: str) -> None:
         """Check for basic syntax errors."""

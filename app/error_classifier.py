@@ -394,6 +394,39 @@ ERROR_PATTERNS = {
             "- Remove required parameters to make it \"work\""
         )
     },
+    "missing_comment_marker": {
+        "patterns": [
+            r"Expression expected.*?\* \w+",
+            r"Expected ';', '\}' or <eof>.*?\* \w+",
+            r"Unexpected token.*?after return.*?\*/"
+        ],
+        "fix_hint": (
+            "**MISSING COMMENT MARKER:**\n"
+            "A comment is missing its opening marker (/** or /*).\n\n"
+            "**PATTERN:**\n"
+            "```typescript\n"
+            "  return result.count;\n"
+            " * Check if session is valid  ← Missing /**\n"
+            " */\n"
+            "export function foo() {\n"
+            "```\n\n"
+            "**FIX:**\n"
+            "Add /** before the comment line:\n"
+            "```typescript\n"
+            "  return result.count;\n"
+            "}\n"  # Also may need closing brace
+            "/**\n"
+            " * Check if session is valid\n"
+            " */\n"
+            "export function foo() {\n"
+            "```\n\n"
+            "**CRITICAL:** Also check if previous function is missing closing brace!\n\n"
+            "**DO NOT:**\n"
+            "- Try to fix by changing variables (won't solve comment syntax)\n"
+            "- Add duplicate declarations\n"
+            "- Ignore the structural issue"
+        )
+    },
 }
 
 
@@ -555,9 +588,10 @@ def extract_error_context(error_msg: str, max_context_lines: int = 5) -> List[st
     for i, line in enumerate(lines):
         for pattern in important_patterns:
             if re.search(pattern, line, re.IGNORECASE):
-                # Get context: 2 lines before, current, 2 lines after
-                start = max(0, i - 2)
-                end = min(len(lines), i + 3)
+                # Get MORE context: 5 lines before, current, 5 lines after
+                # (Increased from 2 to 5 to help AI understand structure better)
+                start = max(0, i - 5)
+                end = min(len(lines), i + 6)
                 context = lines[start:end]
                 important_lines.append('\n'.join(context))
                 break

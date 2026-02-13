@@ -1051,8 +1051,42 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
     # Try all auto-fixes before engaging AI (saves time and cost!)
     if verification_errors:
         from .auto_fixes import try_all_auto_fixes
+        from .syntax_fixer import try_syntax_auto_fixes
         error_text_for_autofix = "\n".join(verification_errors)
-        auto_fix_success, auto_fix_desc = try_all_auto_fixes(error_text_for_autofix, repo_path, is_node_project)
+        
+        # First try syntax fixes (handles structural issues)
+        if is_node_project:
+            # Extract file path from error
+            file_match = re.search(r'\./([^\s:]+\.(?:ts|tsx|js|jsx))', error_text_for_autofix)
+            if file_match:
+                error_file = repo_path / file_match.group(1)
+                syntax_fixed, syntax_desc = try_syntax_auto_fixes(error_file, error_text_for_autofix)
+                if syntax_fixed:
+                    print(f"✅ Syntax auto-fix applied: {syntax_desc}")
+                    if run_id:
+                        add_progress_event(run_id, "verifying", f"Syntax auto-fix: {syntax_desc}", {})
+                    
+                    # Re-run build
+                    result = subprocess.run(
+                        ["npm", "run", "build"],
+                        cwd=repo_path,
+                        capture_output=True,
+                        text=True,
+                        timeout=180,
+                        env=_get_nextjs_build_env(),
+                    )
+                    if result.returncode == 0:
+                        print("✅ Build succeeded after syntax auto-fix!")
+                        verification_errors = []
+                        error_text_for_autofix = ""
+                    else:
+                        error_output = result.stderr or result.stdout
+                        verification_errors = [f"Build still failing after syntax fix ({syntax_desc}):\n{error_output[:2000]}"]
+                        error_text_for_autofix = "\n".join(verification_errors)
+        
+        # Then try general auto-fixes
+        if verification_errors:
+            auto_fix_success, auto_fix_desc = try_all_auto_fixes(error_text_for_autofix, repo_path, is_node_project)
         
         if auto_fix_success:
             print(f"✅ Auto-fix applied: {auto_fix_desc}")
@@ -1813,7 +1847,43 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                 attempt_metadata = extract_fix_metadata(fix_payload, [])
                 attempt_metadata["error"] = error_msg
                 attempt_metadata["validation_failed"] = True
+                attempt_metadata["validation_errors"] = validation_errors
                 previous_fix_attempts.append(attempt_metadata)
+                
+                # If validation keeps failing on same file, add explicit file contents with line numbers
+                validation_failures_on_file = sum(
+                    1 for attempt in previous_fix_attempts 
+                    if attempt.get("validation_failed")
+                )
+                
+                if validation_failures_on_file >= 2:
+                    # Add explicit guidance about the validation failure
+                    error_file_with_issues = validation_errors[0].split(":")[0] if validation_errors else ""
+                    if error_file_with_issues:
+                        file_to_show = repo_path / error_file_with_issues
+                        if file_to_show.exists():
+                            try:
+                                actual_content = file_to_show.read_text(encoding="utf-8")
+                                lines_with_numbers = []
+                                for i, line in enumerate(actual_content.split('\n')[:200], 1):  # First 200 lines
+                                    lines_with_numbers.append(f"{i:4d} | {line}")
+                                
+                                comprehensive_context += (
+                                    f"\n\n**⚠️ VALIDATION KEEPS FAILING ON {error_file_with_issues}**\n"
+                                    f"**CRITICAL - HERE IS THE CURRENT FILE WITH LINE NUMBERS:**\n\n"
+                                    f"```typescript\n"
+                                    f"{''.join(lines_with_numbers[:150])}\n"  # First 150 lines
+                                    f"```\n\n"
+                                    f"**VALIDATION FAILURES:**\n"
+                                    + "\n".join(f"  - {e}" for e in validation_errors) + "\n\n"
+                                    f"**INSTRUCTIONS:**\n"
+                                    f"1. READ the line numbers above to find exact locations\n"
+                                    f"2. CHECK for duplicate declarations at the mentioned lines\n"
+                                    f"3. DO NOT add new declarations with same name - rename or remove duplicates\n"
+                                    f"4. Provide the COMPLETE fixed file\n"
+                                )
+                            except Exception as e:
+                                print(f"Could not add file with line numbers: {e}")
                 
                 continue  # Skip to next attempt
             
