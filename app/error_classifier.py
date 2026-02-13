@@ -365,6 +365,35 @@ ERROR_PATTERNS = {
             "- In React: use useEffect with async function inside it"
         )
     },
+    "function_signature_mismatch": {
+        "patterns": [
+            r"Expected (\d+) arguments?, but got (\d+)",
+            r"Expected (\d+)-(\d+) arguments?, but got (\d+)",
+            r"Supplied parameters do not match",
+            r"No overload matches this call"
+        ],
+        "fix_hint": (
+            "**FUNCTION SIGNATURE MISMATCH:**\n"
+            "The function is being called with wrong number of arguments.\n\n"
+            "**CRITICAL STEPS:**\n"
+            "1. **READ THE FUNCTION DEFINITION** - Don't guess the signature!\n"
+            "2. **CHECK THE PARAMETERS** - How many does it actually expect?\n"
+            "3. **MATCH THE CALL** - Provide correct number and types of arguments\n\n"
+            "**COMMON CAUSES:**\n"
+            "- Function signature changed but calls not updated\n"
+            "- Optional parameters made required (or vice versa)\n"
+            "- Different function overload needed\n\n"
+            "**EXAMPLE FIX:**\n"
+            "❌ Error: Expected 1 argument, but got 0\n"
+            "❌ Bad: `getSession()` \n"
+            "✅ Read function: `function getSession(userId: string): Promise<Session>`\n"
+            "✅ Fix: `getSession(userId)` or pass the required userId\n\n"
+            "**DO NOT:**\n"
+            "- Guess the function signature\n"
+            "- Change the function definition without understanding why\n"
+            "- Remove required parameters to make it \"work\""
+        )
+    },
 }
 
 

@@ -1624,11 +1624,17 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             f"   - File contains: 'export const UserRepository' ← Different casing!\n"
             f"   - OR File contains: 'const userRepository' ← Missing 'export' keyword!\n"
             f"   - Fix: Either add export OR fix import to match actual name\n\n"
-            f"4. **APPLY THE FIX**\n"
-            f"   - Missing export? Add 'export' keyword\n"
+            f"4. **BEFORE CHANGING ANY FILE - VERIFY:**\n"
+            f"   - If adding an import → CHECK the source file exports that name\n"
+            f"   - If adding a function call → CHECK the function signature (arguments)\n"
+            f"   - If adding a constant → CHECK it doesn't already exist (no duplicates!)\n"
+            f"   - If changing a file → READ IT FIRST to understand current state\n\n"
+            f"5. **APPLY THE FIX**\n"
+            f"   - Missing export? Add 'export' keyword to the SOURCE file\n"
             f"   - Wrong name? Fix the import to match actual export name\n"
             f"   - Missing package? Add to package.json dependencies\n"
-            f"   - Type error? Check interface and add missing properties\n\n"
+            f"   - Type error? Check interface and add missing properties\n"
+            f"   - Function signature mismatch? Check actual function definition\n\n"
             f"**Key Error Context:**\n{chr(10).join(error_context) if error_context else 'See full errors above'}\n\n"
             f"**Full Repository Context:**\n{comprehensive_context}\n\n"
             f"**RESPONSE FORMAT - CRITICAL:**\n"
@@ -1770,10 +1776,57 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                 print(f"Full Claude response (first 1000 chars):\n{fix_text[:1000]}")
                 raise RuntimeError(f"Claude's fix response was not valid JSON: {e}")
             
-            # Apply the fixes
+            # Validate the fix BEFORE applying it
+            from .fix_validator import validate_fix_before_apply
+            is_valid, validation_errors, validation_warnings = validate_fix_before_apply(fix_payload, repo_path)
+            
+            if not is_valid:
+                print(f"❌ Fix validation FAILED:")
+                for error in validation_errors:
+                    print(f"  - {error}")
+                
+                # Add validation errors to verification errors and continue to next attempt
+                verification_errors.append(
+                    f"Fix validation failed before applying:\n" + 
+                    "\n".join(f"  - {e}" for e in validation_errors)
+                )
+                print(f"Skipping this fix due to validation errors, will try again...")
+                
+                # Record failed attempt
+                from .pattern_learner import record_fix_attempt, record_failed_fix
+                from .self_reflection import extract_fix_metadata
+                fix_strategy = fix_payload.get("summary", "Unknown fix strategy")
+                if run_id:
+                    record_fix_attempt(
+                        run_id=run_id,
+                        issue_key=issue.key,
+                        attempt_number=fix_attempt,
+                        error_msg=error_msg,
+                        fix_strategy=fix_strategy,
+                        files_changed=[],
+                        model_used=model_name,
+                        success=False
+                    )
+                record_failed_fix(error_msg, f"{fix_strategy} (validation failed)")
+                
+                # Track for self-reflection
+                attempt_metadata = extract_fix_metadata(fix_payload, [])
+                attempt_metadata["error"] = error_msg
+                attempt_metadata["validation_failed"] = True
+                previous_fix_attempts.append(attempt_metadata)
+                
+                continue  # Skip to next attempt
+            
+            # Show warnings if any
+            if validation_warnings:
+                print(f"⚠️  Fix validation warnings:")
+                for warning in validation_warnings:
+                    print(f"  - {warning}")
+            
+            # Apply the fixes (validation passed!)
             fix_files = fix_payload.get("files", [])
             if fix_files:
-                print(f"Applying {len(fix_files)} file fixes...")
+                print(f"✅ Validation passed - applying {len(fix_files)} file fixes...")
                 fixed_files = []
                 for file_op in fix_files:
                     file_path = repo_path / file_op["path"]
