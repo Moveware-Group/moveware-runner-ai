@@ -6,7 +6,7 @@ Handles trailing commas, missing commas, unescaped strings, etc.
 """
 import json
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 def repair_json(text: str) -> str:
