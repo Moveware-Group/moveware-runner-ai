@@ -628,7 +628,16 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         json_text = '\n'.join(lines)
     
     try:
-        payload = json.loads(json_text)
+        from .json_repair import try_parse_json
+        payload = try_parse_json(json_text, max_repair_attempts=3)
+        
+        if payload is None:
+            # JSON repair failed - log and raise
+            print(f"❌ Could not parse JSON after repair attempts")
+            print(f"Extracted text (first 2000 chars): {json_text[:2000]}")
+            raise RuntimeError("Failed to parse Claude response as JSON after repairs")
+    except RuntimeError:
+        raise
     except json.JSONDecodeError as e:
         # JSON parsing failed - try to repair common issues
         print(f"Failed to parse JSON. Error: {e}")
@@ -1800,15 +1809,16 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                     if last_brace > first_brace:
                         fix_json_text = fix_json_text[first_brace:last_brace+1]
             
-            # Try to parse JSON
-            try:
-                fix_payload = json.loads(fix_json_text)
-            except json.JSONDecodeError as e:
-                print(f"JSON parsing failed: {e}")
+            # Try to parse JSON with repair
+            from .json_repair import try_parse_json
+            fix_payload = try_parse_json(fix_json_text, max_repair_attempts=3)
+            
+            if fix_payload is None:
+                print(f"❌ JSON parsing failed after repairs")
                 print(f"Attempted to parse (first 500 chars):\n{fix_json_text[:500]}")
                 # Log the full response for debugging
-                print(f"Full Claude response (first 1000 chars):\n{fix_text[:1000]}")
-                raise RuntimeError(f"Claude's fix response was not valid JSON: {e}")
+                print(f"Full {model_name} response (first 1000 chars):\n{fix_text[:1000]}")
+                raise RuntimeError(f"{model_name}'s fix response was not valid JSON after repair attempts")
             
             # Validate the fix BEFORE applying it
             from .fix_validator import validate_fix_before_apply

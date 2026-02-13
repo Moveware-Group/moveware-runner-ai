@@ -202,29 +202,63 @@ def generate_plan(
     user_prompt = _user_prompt(issue, revision_feedback, previous_plan) + schema_prompt
     
     print("Step 1: Generating plan with Claude extended thinking...")
-    response = claude_client.messages_create({
-        "model": settings.ANTHROPIC_MODEL,
-        "system": _system_prompt_claude(),
-        "messages": [{"role": "user", "content": user_prompt}],
-        "max_tokens": 16000,
-        "temperature": 1,
-        "thinking": {
-            "type": "enabled",
-            "budget_tokens": 10000  # Extra thinking for planning!
-        }
-    })
-    inp, out, thinking = _extract_claude_usage(response)
-    claude_in += inp
-    claude_out += out
-    claude_thinking += thinking
+    
+    # Try plan generation with retry on JSON parse failure
+    max_plan_attempts = 2
+    initial_plan = None
+    initial_plan_text = ""
+    
+    for plan_attempt in range(1, max_plan_attempts + 1):
+        response = claude_client.messages_create({
+            "model": settings.ANTHROPIC_MODEL,
+            "system": _system_prompt_claude(),
+            "messages": [{"role": "user", "content": user_prompt}],
+            "max_tokens": 16000,
+            "temperature": 1,
+            "thinking": {
+                "type": "enabled",
+                "budget_tokens": 10000  # Extra thinking for planning!
+            }
+        })
+        inp, out, thinking = _extract_claude_usage(response)
+        claude_in += inp
+        claude_out += out
+        claude_thinking += thinking
 
-    initial_plan_text = claude_client.extract_text(response)
-    
-    # Parse initial plan
-    if run_id:
-        add_progress_event(run_id, "planning", "Parsing Claude's initial plan", {})
-    
-    initial_plan = _parse_plan_json(initial_plan_text)
+        initial_plan_text = claude_client.extract_text(response)
+        
+        # Parse initial plan
+        if run_id:
+            add_progress_event(run_id, "planning", f"Parsing Claude's plan (attempt {plan_attempt})", {})
+        
+        try:
+            initial_plan = _parse_plan_json(initial_plan_text)
+            print(f"✅ Successfully parsed plan on attempt {plan_attempt}")
+            break  # Success!
+        except (ValueError, json.JSONDecodeError) as e:
+            print(f"❌ Plan parsing failed on attempt {plan_attempt}: {e}")
+            
+            if plan_attempt < max_plan_attempts:
+                # Retry with stricter instructions
+                print(f"Retrying plan generation with stricter JSON formatting instructions...")
+                user_prompt += (
+                    "\n\n**CRITICAL - PREVIOUS RESPONSE HAD INVALID JSON:**\n"
+                    f"Error: {str(e)[:200]}\n\n"
+                    "**FIX YOUR JSON:**\n"
+                    "- Do NOT use trailing commas before } or ]\n"
+                    "- USE commas between array elements\n"
+                    "- USE double quotes for strings, not single quotes\n"
+                    "- Do NOT include comments in JSON\n"
+                    "- VALIDATE your JSON is properly formatted\n\n"
+                    "Please generate the plan again with VALID JSON."
+                )
+            else:
+                # Final attempt failed
+                raise ValueError(
+                    f"Could not parse plan JSON after {max_plan_attempts} attempts. "
+                    f"Last error: {e}\n"
+                    f"Response preview: {initial_plan_text[:500]}"
+                )
     
     # Step 2: ChatGPT reviews the plan
     if run_id:
@@ -355,22 +389,40 @@ def generate_plan(
 
 
 def _parse_plan_json(text: str) -> Dict[str, Any]:
-    """Parse JSON from model output, handling markdown wrappers."""
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        # Try to extract JSON from markdown code blocks
-        import re
-        json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
-        if json_match:
-            return json.loads(json_match.group(1))
+    """Parse JSON from model output, handling markdown wrappers and malformed JSON."""
+    from .json_repair import try_parse_json, extract_json_from_llm_response, validate_plan_json
+    
+    # First, try to extract JSON from the response
+    json_text = extract_json_from_llm_response(text)
+    if not json_text:
+        json_text = text
+    
+    # Try to parse with progressive repair
+    result = try_parse_json(json_text, max_repair_attempts=3)
+    
+    if result is None:
+        # Save the problematic text for debugging
+        error_file = Path("/tmp/failed_plan_json.txt")
+        try:
+            error_file.write_text(text, encoding="utf-8")
+            print(f"❌ Saved failed JSON to {error_file} for debugging")
+        except Exception:
+            pass
         
-        # Try to find JSON object boundaries
-        start = text.find("{")
-        end = text.rfind("}")
-        if start == -1 or end == -1 or end <= start:
-            raise ValueError(f"Could not parse JSON from response: {text[:200]}")
-        return json.loads(text[start : end + 1])
+        raise ValueError(
+            f"Could not parse JSON from response after multiple repair attempts.\n"
+            f"First 500 chars: {text[:500]}\n"
+            f"Check /tmp/failed_plan_json.txt for full output"
+        )
+    
+    # Validate plan structure
+    is_valid, validation_errors = validate_plan_json(result)
+    if not is_valid:
+        print(f"⚠️  Plan JSON validation warnings:")
+        for error in validation_errors:
+            print(f"  - {error}")
+    
+    return result
 
 
 def _validate_and_fix_plan(data: Dict[str, Any]) -> Dict[str, Any]:
