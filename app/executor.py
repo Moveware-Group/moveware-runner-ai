@@ -629,11 +629,102 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
     
     try:
         payload = json.loads(json_text)
-    except Exception as e:
-        # Log more context for debugging
+    except json.JSONDecodeError as e:
+        # JSON parsing failed - try to repair common issues
         print(f"Failed to parse JSON. Error: {e}")
+        print(f"Error position: line {e.lineno}, column {e.colno}, char {e.pos}")
         print(f"Extracted text (first 2000 chars): {json_text[:2000]}")
-        raise RuntimeError(f"Failed to parse Claude response as JSON: {e}")
+        
+        # Attempt 1: Check if JSON is truncated (missing closing braces/brackets)
+        # This is common when response is cut off mid-file
+        repaired_json = json_text
+        
+        # Count opening and closing braces
+        open_braces = repaired_json.count('{')
+        close_braces = repaired_json.count('}')
+        open_brackets = repaired_json.count('[')
+        close_brackets = repaired_json.count(']')
+        
+        if open_braces > close_braces or open_brackets > close_brackets:
+            print(f"Detected truncated JSON: {open_braces} {{ vs {close_braces} }}, {open_brackets} [ vs {close_brackets} ]")
+            print("Attempting to repair by closing open structures...")
+            
+            # Try to intelligently close the JSON
+            # Add missing closing quotes for strings if needed
+            if repaired_json.rstrip().endswith('"'):
+                pass  # String is closed
+            elif '"' in repaired_json[e.pos-50:e.pos] if e.pos else False:
+                # We might be in the middle of a string - close it
+                repaired_json += '"'
+            
+            # Close missing arrays
+            while open_brackets > close_brackets:
+                repaired_json += '\n  ]'
+                close_brackets += 1
+            
+            # Close missing objects
+            while open_braces > close_braces:
+                repaired_json += '\n}'
+                close_braces += 1
+            
+            try:
+                payload = json.loads(repaired_json)
+                print("✓ Successfully repaired truncated JSON!")
+                # Continue with repaired payload
+            except json.JSONDecodeError as e2:
+                print(f"Repair attempt 1 failed: {e2}")
+                
+                # Attempt 2: Try to find the last complete object/array before truncation
+                # Find the last valid position where we can close
+                print("Attempting repair by truncating to last valid position...")
+                try:
+                    # Try to parse progressively smaller chunks
+                    for cutoff in [e.pos - 100, e.pos - 500, e.pos - 1000, e.pos - 2000]:
+                        if cutoff < 0:
+                            continue
+                        test_json = json_text[:cutoff]
+                        # Close any open structures
+                        test_open_braces = test_json.count('{')
+                        test_close_braces = test_json.count('}')
+                        test_open_brackets = test_json.count('[')
+                        test_close_brackets = test_json.count(']')
+                        
+                        while test_open_brackets > test_close_brackets:
+                            test_json += '\n  ]'
+                            test_close_brackets += 1
+                        while test_open_braces > test_close_braces:
+                            test_json += '\n}'
+                            test_close_braces += 1
+                        
+                        try:
+                            payload = json.loads(test_json)
+                            print(f"✓ Successfully parsed by truncating to position {cutoff}")
+                            break
+                        except:
+                            continue
+                    else:
+                        raise RuntimeError(f"Could not repair JSON after multiple attempts: {e}")
+                except Exception as repair_error:
+                    print(f"All repair attempts failed: {repair_error}")
+                    raise RuntimeError(
+                        f"Failed to parse Claude response as JSON: {e}\n\n"
+                        f"The JSON response appears to be truncated or malformed at position {e.pos}.\n"
+                        f"This often happens when file contents are too large to embed in JSON.\n"
+                        f"Error details: {e.msg} at line {e.lineno}, column {e.colno}"
+                    )
+        else:
+            # Not a truncation issue - likely a syntax error
+            error_context = json_text[max(0, e.pos-100):e.pos+100] if e.pos else json_text[:200]
+            raise RuntimeError(
+                f"Failed to parse Claude response as JSON: {e}\n\n"
+                f"Error context around position {e.pos}:\n{error_context}\n\n"
+                f"This appears to be a JSON syntax error, not truncation."
+            )
+    except Exception as e:
+        # Other non-JSON errors
+        print(f"Unexpected error parsing response: {e}")
+        print(f"Response (first 2000 chars): {json_text[:2000]}")
+        raise RuntimeError(f"Failed to parse Claude response: {e}")
 
     # Check if there are questions instead of implementation
     if "questions" in payload and payload["questions"]:
