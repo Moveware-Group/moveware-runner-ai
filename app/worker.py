@@ -679,7 +679,7 @@ def worker_loop(poll_interval_seconds: float = 2.0, worker_id: str = "worker-1",
     
     if use_smart_queue:
         from .queue_manager import claim_next_run_smart
-        claim_func = lambda w: claim_next_run_smart(w, max_concurrent_per_repo=1, respect_priorities=True)
+        claim_func = lambda w: claim_next_run_smart(w, max_concurrent_per_repo=2, respect_priorities=True)
         logger.info(f"Worker {worker_id} started with SMART QUEUE (priorities + conflict avoidance), polling every {poll_interval_seconds}s")
     else:
         claim_func = claim_next_run
