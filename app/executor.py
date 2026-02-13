@@ -1401,10 +1401,10 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             if error_category in ("prisma_schema_mismatch", "prisma_model_missing"):
                 error_files.add("prisma/schema.prisma")
                 print(f"Including prisma/schema.prisma in context for {error_category} error")
-            # Also include if error message mentions @prisma/client at all
-            elif "@prisma/client" in error_msg:
+            # Also include if error message mentions @prisma/client or PrismaClient
+            elif "@prisma/client" in error_msg or "PrismaClient" in error_msg:
                 error_files.add("prisma/schema.prisma")
-                print("Including prisma/schema.prisma in context (@prisma/client error detected)")
+                print("Including prisma/schema.prisma in context (Prisma-related error detected)")
         
         # For env type errors, include env schema files so AI can add missing properties
         if error_category == "env_type_missing":

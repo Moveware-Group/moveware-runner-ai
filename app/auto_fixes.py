@@ -30,6 +30,7 @@ def try_all_auto_fixes(
         auto_fix_missing_npm_package,
         auto_fix_eslint_config_package,
         auto_fix_prettier_formatting,
+        auto_fix_prisma_model_missing,
         auto_fix_prisma_generate,
         auto_fix_prisma_import_type,
         auto_fix_env_type_missing,
@@ -160,6 +161,87 @@ def auto_fix_prettier_formatting(
         return True, f"Fixed Prettier formatting in {len(prettier_files)} file(s)"
     
     return False, ""
+
+
+def auto_fix_prisma_model_missing(
+    error_msg: str,
+    repo_path: Path,
+    is_node_project: bool
+) -> Tuple[bool, str]:
+    """
+    Auto-fix Prisma model missing from client error.
+    
+    Detects when code tries to access db.modelName but model doesn't exist in Prisma schema.
+    Runs `npx prisma generate` to regenerate client from schema.
+    """
+    if not is_node_project:
+        return False, ""
+    
+    # Check for the specific error pattern
+    match = re.search(
+        r"Property ['\"](\w+)['\"] does not exist on type ['\"]PrismaClient",
+        error_msg
+    )
+    if not match:
+        return False, ""
+    
+    missing_model = match.group(1)
+    print(f"Detected missing Prisma model: {missing_model}")
+    
+    prisma_schema = repo_path / "prisma" / "schema.prisma"
+    if not prisma_schema.exists():
+        print("No prisma/schema.prisma found - cannot auto-fix")
+        return False, ""
+    
+    try:
+        # Read schema to check if model exists
+        schema_content = prisma_schema.read_text(encoding="utf-8")
+        
+        # Extract all model names from schema (case-sensitive)
+        # Prisma models: "model ModelName {"
+        models = re.findall(r'^model\s+(\w+)\s*\{', schema_content, re.MULTILINE)
+        
+        # Convert to Prisma client accessor names (camelCase)
+        # ModelName → modelName, User → user, TenantSettings → tenantSettings
+        def to_camel_case(name: str) -> str:
+            if not name:
+                return name
+            return name[0].lower() + name[1:]
+        
+        model_accessors = [to_camel_case(m) for m in models]
+        
+        # Check if the missing model exists in schema
+        if missing_model in model_accessors:
+            # Model exists but client might be outdated
+            print(f"Model '{missing_model}' exists in schema - running prisma generate")
+        else:
+            # Model doesn't exist - check for similar names
+            similar = [m for m in model_accessors if missing_model.lower() in m.lower() or m.lower() in missing_model.lower()]
+            if similar:
+                print(f"Model '{missing_model}' not found. Similar models: {', '.join(similar)}")
+                print("Attempting prisma generate in case schema was updated...")
+            else:
+                print(f"Model '{missing_model}' not found in schema. Available: {', '.join(model_accessors[:10])}")
+                print("Attempting prisma generate anyway...")
+        
+        # Run prisma generate to regenerate client
+        result = subprocess.run(
+            ["npx", "prisma", "generate"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+        
+        if result.returncode == 0:
+            return True, f"Ran prisma generate (missing model: {missing_model})"
+        else:
+            print(f"prisma generate failed: {result.stderr}")
+            return False, ""
+    
+    except Exception as e:
+        print(f"Auto-fix failed: {e}")
+        return False, ""
 
 
 def auto_fix_prisma_generate(

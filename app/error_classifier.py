@@ -226,6 +226,40 @@ ERROR_PATTERNS = {
             "- Or use inline type: `import { type Session, Prisma } from '@prisma/client'` - Prisma without 'type'"
         )
     },
+    "prisma_model_missing": {
+        "patterns": [
+            r"Property ['\"](\w+)['\"] does not exist on type ['\"]PrismaClient",
+            r"does not exist on type ['\"]PrismaClient<.*?>['\"]\."
+        ],
+        "fix_hint": (
+            "**PRISMA MODEL MISSING FROM CLIENT:**\n"
+            "The code is trying to access a Prisma model that doesn't exist in the generated client.\n\n"
+            "**MANDATORY STEPS:**\n"
+            "1. **READ prisma/schema.prisma** - See what models ACTUALLY exist\n"
+            "2. **CHECK THE MODEL NAME** - Prisma uses camelCase for model accessors:\n"
+            "   - Schema: `model MovewareCredential` → Client: `db.movewareCredential` (lowercase first letter)\n"
+            "   - Schema: `model User` → Client: `db.user`\n"
+            "   - Schema: `model TenantSettings` → Client: `db.tenantSettings`\n\n"
+            "**FIX OPTIONS:**\n"
+            "**Option 1:** Model doesn't exist in schema → Add it\n"
+            "```prisma\n"
+            "model MovewareCredential {\n"
+            "  id        String   @id @default(cuid())\n"
+            "  tenantId  String   @unique\n"
+            "  apiKey    String\n"
+            "  createdAt DateTime @default(now())\n"
+            "}\n"
+            "```\n"
+            "Then run: `npx prisma generate`\n\n"
+            "**Option 2:** Model exists with different name → Use correct name\n"
+            "- Check schema for similar models (Credential, Tenant, etc.)\n"
+            "- Match the exact model name from schema (case-sensitive!)\n\n"
+            "**Option 3:** Use existing related model\n"
+            "- Maybe credentials are stored in `Tenant` model?\n"
+            "- Read schema to understand the data structure\n\n"
+            "**CRITICAL:** Always read prisma/schema.prisma first - don't guess model names!"
+        )
+    },
     "prisma_schema_mismatch": {
         "patterns": [
             r"Object literal may only specify known properties",
