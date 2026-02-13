@@ -456,6 +456,45 @@
             border-color: #ff8888;
             transform: scale(1.05);
         }
+        
+        .delete-btn {
+            padding: 6px 12px;
+            background: #660000;
+            border: 1px solid #880000;
+            border-radius: 4px;
+            color: #ff6666;
+            font-size: 0.85em;
+            cursor: pointer;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+        
+        .delete-btn:hover {
+            background: #880000;
+            border-color: #aa0000;
+            color: #ffaaaa;
+            transform: scale(1.05);
+        }
+        
+        .run-card.superseded {
+            opacity: 0.4;
+            border-left-color: #444;
+        }
+        
+        .run-card.superseded:hover {
+            opacity: 0.7;
+        }
+        
+        .superseded-badge {
+            display: inline-block;
+            padding: 3px 8px;
+            background: #333;
+            border: 1px solid #555;
+            border-radius: 4px;
+            color: #888;
+            font-size: 0.75em;
+            margin-left: 10px;
+        }
     </style>
 </head>
 <body>
@@ -709,7 +748,25 @@
             // Normalize issue_key for case-insensitive comparison
             const norm = (k) => (k || '').toString().toUpperCase().trim();
             
+            // Identify superseded failed runs:
+            // A failed run is superseded if there's a subsequent completed run for the same issue
+            const supersededRuns = new Set();
+            runs.forEach(run => {
+                if (run.status === 'failed') {
+                    // Check if there's a newer completed run for the same issue
+                    const hasNewerSuccess = runs.some(otherRun =>
+                        otherRun.run_id > run.run_id && // Newer run (higher ID)
+                        norm(otherRun.issue_key) === norm(run.issue_key) && // Same issue
+                        otherRun.status === 'completed' // Successfully completed
+                    );
+                    if (hasNewerSuccess) {
+                        supersededRuns.add(run.run_id);
+                    }
+                }
+            });
+            
             container.innerHTML = runs.map(run => {
+                const isSuperseded = supersededRuns.has(run.run_id);
                 const statusClass = `status-${run.status}`;
                 const latestProgress = run.progress_events[0];
                 
@@ -754,13 +811,28 @@
                     norm(r.issue_key) === norm(run.issue_key) &&
                     ['queued', 'claimed', 'running'].includes(r.status)
                 );
-                let actionButton = '';
+                let actionButtons = '';
                 if (isResetting && run.status !== 'completed' && run.status !== 'failed') {
-                    actionButton = `<span class="reset-btn-running">Running...</span>`;
+                    actionButtons = `<span class="reset-btn-running">Running...</span>`;
                 } else if (hasActiveRunForSameTask) {
-                    actionButton = '';  // Failed run but another run for this task is active - no Reset
-                } else if (run.status === 'failed' || run.status === 'claimed' || run.status === 'running') {
-                    actionButton = `
+                    actionButtons = '';  // Failed run but another run for this task is active - no buttons
+                } else if (run.status === 'failed') {
+                    // Failed runs get both Reset and Delete buttons
+                    actionButtons = `
+                        <button class="reset-btn ${isStuck ? 'reset-btn-warning' : ''}" 
+                                onclick="resetRun(${run.run_id}, '${run.issue_key}')"
+                                title="${isStuck ? 'Run appears stuck - click to reset' : 'Reset this run'}">
+                            ${isStuck ? '⚠️ Reset' : '🔄 Reset'}
+                        </button>
+                        <button class="delete-btn" 
+                                onclick="deleteRun(${run.run_id}, '${run.issue_key}')"
+                                title="Permanently delete this failed run">
+                            🗑️ Delete
+                        </button>
+                    `;
+                } else if (run.status === 'claimed' || run.status === 'running') {
+                    // Claimed/running runs only get Reset
+                    actionButtons = `
                         <button class="reset-btn ${isStuck ? 'reset-btn-warning' : ''}" 
                                 onclick="resetRun(${run.run_id}, '${run.issue_key}')"
                                 title="${isStuck ? 'Run appears stuck - click to reset' : 'Reset this run'}">
@@ -770,12 +842,15 @@
                 }
                 
                 return `
-                    <div class="run-card">
+                    <div class="run-card ${isSuperseded ? 'superseded' : ''}">
                         <div class="run-header">
-                            <div class="run-title">${run.issue_key}</div>
+                            <div class="run-title">
+                                ${run.issue_key}
+                                ${isSuperseded ? '<span class="superseded-badge" title="This failed run was superseded by a newer successful run">Superseded ✓</span>' : ''}
+                            </div>
                             <div style="display: flex; gap: 10px; align-items: center;">
                                 <div class="status-badge ${statusClass}">${run.status}</div>
-                                ${actionButton}
+                                ${actionButtons}
                             </div>
                         </div>
                         
@@ -830,6 +905,32 @@
             } catch (error) {
                 console.error('Failed to reset run:', error);
                 alert(`❌ Failed to reset run: ${error.message}`);
+            }
+        }
+        
+        // Delete a failed run
+        async function deleteRun(runId, issueKey) {
+            if (!confirm(`⚠️ DELETE run #${runId} (${issueKey})?\n\nThis will:\n- Permanently delete the run record\n- Delete all associated events and metrics\n- This action CANNOT be undone\n\nContinue?`)) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/runs/${runId}`, {
+                    method: 'DELETE'
+                });
+                
+                const data = await response.json();
+                
+                if (data.ok || response.ok) {
+                    // Refresh the status immediately
+                    fetchStatus();
+                    fetchMetrics(); // Also refresh metrics since run count changed
+                } else {
+                    alert(`❌ Failed to delete run: ${data.error || 'Unknown error'}`);
+                }
+            } catch (error) {
+                console.error('Failed to delete run:', error);
+                alert(`❌ Failed to delete run: ${error.message}`);
             }
         }
         

@@ -668,3 +668,88 @@ async def status_api(detail: str = "summary", hours: str = "24") -> Dict[str, An
             "error": str(e)
         }
 
+
+@app.post("/api/runs/{run_id}/retry")
+async def retry_run_api(run_id: int) -> Dict[str, Any]:
+    """
+    Retry a failed/stuck run by resetting it to 'queued' status and clearing the lock.
+    This allows the worker to pick it up again.
+    """
+    try:
+        with connect() as conn:
+            cursor = conn.cursor()
+            
+            # Check if run exists
+            cursor.execute("SELECT id, issue_key, status FROM runs WHERE id = ?", (run_id,))
+            run = cursor.fetchone()
+            
+            if not run:
+                return {"ok": False, "error": f"Run {run_id} not found"}
+            
+            issue_key = run[1]
+            old_status = run[2]
+            
+            # Reset status to queued and clear lock
+            cursor.execute("""
+                UPDATE runs 
+                SET status = 'queued',
+                    locked_by = NULL,
+                    locked_at = NULL,
+                    updated_at = ?
+                WHERE id = ?
+            """, (int(__import__('time').time()), run_id))
+            
+            conn.commit()
+            
+            # Add event
+            add_event(run_id, "info", f"Run reset from '{old_status}' to 'queued' via dashboard", {})
+            
+            print(f"[API] Reset run {run_id} ({issue_key}) from {old_status} to queued")
+            return {"ok": True, "run_id": run_id, "issue_key": issue_key, "old_status": old_status}
+            
+    except Exception as e:
+        print(f"[API] Failed to retry run {run_id}: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+@app.delete("/api/runs/{run_id}")
+async def delete_run_api(run_id: int) -> Dict[str, Any]:
+    """
+    Delete a run and all its associated events.
+    Use this to clean up failed runs that are no longer needed.
+    """
+    try:
+        with connect() as conn:
+            cursor = conn.cursor()
+            
+            # Check if run exists
+            cursor.execute("SELECT id, issue_key, status FROM runs WHERE id = ?", (run_id,))
+            run = cursor.fetchone()
+            
+            if not run:
+                return {"ok": False, "error": f"Run {run_id} not found"}
+            
+            issue_key = run[1]
+            status = run[2]
+            
+            # Delete events first (foreign key)
+            cursor.execute("DELETE FROM events WHERE run_id = ?", (run_id,))
+            
+            # Delete metrics if they exist
+            try:
+                cursor.execute("DELETE FROM execution_metrics WHERE run_id = ?", (run_id,))
+            except:
+                pass  # Table might not exist
+            
+            # Delete the run
+            cursor.execute("DELETE FROM runs WHERE id = ?", (run_id,))
+            
+            conn.commit()
+            
+            print(f"[API] Deleted run {run_id} ({issue_key}, status: {status})")
+            return {"ok": True, "run_id": run_id, "issue_key": issue_key, "deleted": True}
+            
+    except Exception as e:
+        print(f"[API] Failed to delete run {run_id}: {e}")
+        return {"ok": False, "error": str(e)}
+
