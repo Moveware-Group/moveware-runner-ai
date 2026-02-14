@@ -542,20 +542,30 @@ def get_story_breakdown(story_key: str) -> Optional[List[Dict[str, Any]]]:
     Retrieve Story breakdown from database.
     Fallback when Jira comment is not found.
     """
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    cursor.execute("""
-        SELECT subtasks_json FROM story_breakdowns WHERE story_key = ?
-    """, (story_key,))
-    
-    row = cursor.fetchone()
-    conn.close()
-    
-    if not row:
-        return None
-    
     try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Create table if not exists (in case it hasn't been created yet)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS story_breakdowns (
+                story_key TEXT PRIMARY KEY,
+                subtasks_json TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            )
+        """)
+        
+        cursor.execute("""
+            SELECT subtasks_json FROM story_breakdowns WHERE story_key = ?
+        """, (story_key,))
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        if not row:
+            return None
+        
         return json.loads(row[0])
-    except Exception:
+    except Exception as e:
+        print(f"⚠️  Error retrieving story breakdown from database: {e}")
         return None

@@ -352,7 +352,47 @@ def _create_subtasks_from_story(ctx: Context, story: JiraIssue) -> None:
             print(f"✅ Found Story breakdown in database for {story.key}")
     
     if not subtasks_data:
-        ctx.jira.add_comment(story.key, "AI Runner could not find Story breakdown. Please add sub-tasks manually.")
+        print(f"⚠️  No Story breakdown found for {story.key}. Generating plan now...")
+        # Generate a plan for this Story (treating it like a standalone task)
+        from .planner import build_plan
+        try:
+            plan_result = build_plan(story)
+            
+            # Extract subtasks from the generated plan
+            plan_data = plan_result.plan_data
+            if "stories" in plan_data and len(plan_data["stories"]) > 0:
+                # Plan has stories - use the first story's subtasks
+                subtasks_data = plan_data["stories"][0].get("subtasks", [])
+            elif "subtasks" in plan_data:
+                # Plan has direct subtasks
+                subtasks_data = plan_data["subtasks"]
+            else:
+                # No subtasks in plan - block the Story
+                ctx.jira.add_comment(story.key, "⚠️ AI Runner could not generate a valid plan for this Story. Please add sub-tasks manually.")
+                ctx.jira.transition_to_status(story.key, settings.JIRA_STATUS_BLOCKED)
+                ctx.jira.assign_issue(story.key, settings.JIRA_HUMAN_ACCOUNT_ID)
+                return
+            
+            # Save the breakdown to both Jira and database
+            from .planner import save_story_breakdown
+            save_story_breakdown(story.key, subtasks_data)
+            
+            # Also add as comment to Jira
+            subtasks_json = json.dumps(subtasks_data, indent=2)
+            ctx.jira.add_comment(story.key, f"[STORY BREAKDOWN]\n\n```json\n{subtasks_json}\n```")
+            
+            print(f"✅ Generated plan for {story.key} with {len(subtasks_data)} subtasks")
+            
+        except Exception as e:
+            print(f"❌ Failed to generate plan for {story.key}: {e}")
+            ctx.jira.add_comment(story.key, f"⚠️ AI Runner failed to generate plan: {e}\n\nPlease add sub-tasks manually.")
+            ctx.jira.transition_to_status(story.key, settings.JIRA_STATUS_BLOCKED)
+            ctx.jira.assign_issue(story.key, settings.JIRA_HUMAN_ACCOUNT_ID)
+            return
+    
+    # Now we should have subtasks_data (either from comment, database, or newly generated)
+    if not subtasks_data:
+        ctx.jira.add_comment(story.key, "⚠️ AI Runner could not find or generate Story breakdown. Please add sub-tasks manually.")
         ctx.jira.transition_to_status(story.key, settings.JIRA_STATUS_BLOCKED)
         ctx.jira.assign_issue(story.key, settings.JIRA_HUMAN_ACCOUNT_ID)
         return
