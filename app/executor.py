@@ -694,12 +694,35 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
     # Get human comments for additional context/clarifications
     human_comments = _get_human_comments(issue.key)
     
+    # Detect if this is a restoration task
+    from .restoration_detector import (
+        detect_restoration_task,
+        analyze_git_history,
+        format_restoration_context_for_prompt
+    )
+    
+    restoration_context = detect_restoration_task(issue.summary, issue.description or "")
+    
+    if restoration_context.is_restoration:
+        print(f"🔄 RESTORATION SUB-TASK DETECTED")
+        # Try to get git history context
+        try:
+            search_terms = [word for word in issue.summary.lower().split() if len(word) > 4]
+            restoration_context = analyze_git_history(repo_path, restoration_context, search_terms)
+        except Exception as e:
+            print(f"⚠️  Could not analyze git history for sub-task: {e}")
+    
     prompt = (
         f"Implement this Jira sub-task:\n\n"
         f"**Task:** {issue.key}\n"
         f"**Summary:** {issue.summary}\n\n"
         f"**Requirements:**\n{issue.description}\n\n"
     )
+    
+    # Inject restoration context if detected
+    if restoration_context.is_restoration:
+        restoration_prompt = format_restoration_context_for_prompt(restoration_context)
+        prompt += "\n" + restoration_prompt + "\n"
     
     if human_comments:
         prompt += (

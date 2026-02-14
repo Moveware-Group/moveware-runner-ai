@@ -470,6 +470,37 @@ def _handle_plan_parent(ctx: Context, issue: JiraIssue, run_id: Optional[int] = 
     if not issue.assignee_account_id == settings.JIRA_AI_ACCOUNT_ID:
         return
 
+    # Check if this is a restoration task and warn if missing critical info
+    from .restoration_detector import detect_restoration_task, check_restoration_quality
+    
+    restoration_context = detect_restoration_task(issue.summary, issue.description or "")
+    
+    if restoration_context.is_restoration and restoration_context.warnings:
+        warning_comment = (
+            "## ⚠️ Restoration Task Detected - Missing Information\n\n"
+            "This appears to be a restoration task (bringing back removed functionality), "
+            "but some critical information is missing that could help the AI succeed:\n\n"
+        )
+        for warning in restoration_context.warnings:
+            warning_comment += f"- {warning}\n"
+        
+        recommendations = check_restoration_quality(issue.description or "", restoration_context)
+        if recommendations:
+            warning_comment += "\n**Recommendations:**\n"
+            for rec in recommendations:
+                warning_comment += f"- {rec}\n"
+        
+        warning_comment += (
+            "\n\n*The AI will still attempt to generate a plan, but providing the above "
+            "information will significantly improve the results.*"
+        )
+        
+        # Post warning comment but continue with planning
+        try:
+            ctx.jira.add_comment(issue.key, warning_comment)
+        except Exception as e:
+            print(f"⚠️  Could not post restoration warning: {e}")
+    
     try:
         plan_res: PlanResult = build_plan(issue, run_id=run_id)
         # Save plan to database

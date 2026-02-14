@@ -187,6 +187,44 @@ def generate_plan(
     claude_in, claude_out, claude_thinking = 0, 0, 0
     openai_in, openai_out = 0, 0
 
+    # Detect if this is a restoration task
+    from .restoration_detector import (
+        detect_restoration_task,
+        analyze_git_history,
+        format_restoration_context_for_prompt,
+        check_restoration_quality
+    )
+    from .repo_config import get_repo_for_issue
+    
+    restoration_context = detect_restoration_task(issue.summary, issue.description)
+    
+    if restoration_context.is_restoration:
+        print(f"🔄 RESTORATION TASK DETECTED: {', '.join(restoration_context.keywords_found)}")
+        
+        # Warn if missing critical information
+        if restoration_context.warnings:
+            print("⚠️  RESTORATION WARNINGS:")
+            for warning in restoration_context.warnings:
+                print(f"   {warning}")
+        
+        # Try to get git history context
+        try:
+            repo_config = get_repo_for_issue(issue.key)
+            if repo_config:
+                repo_path = Path(repo_config["repo_workdir"])
+                # Extract search terms from summary
+                search_terms = [word for word in issue.summary.lower().split() if len(word) > 4]
+                restoration_context = analyze_git_history(repo_path, restoration_context, search_terms)
+        except Exception as e:
+            print(f"⚠️  Could not analyze git history: {e}")
+        
+        # Check story quality and provide recommendations
+        recommendations = check_restoration_quality(issue.description, restoration_context)
+        if recommendations:
+            print("💡 RECOMMENDATIONS FOR BETTER RESULTS:")
+            for rec in recommendations:
+                print(f"   - {rec}")
+
     # Step 1: Claude generates initial plan with extended thinking
     if run_id:
         add_progress_event(run_id, "planning", "Using Claude extended thinking to analyze Epic", {})
@@ -201,7 +239,14 @@ def generate_plan(
         + json.dumps(PLAN_SCHEMA_HINT, indent=2)
     )
     
-    user_prompt = _user_prompt(issue, revision_feedback, previous_plan) + schema_prompt
+    user_prompt = _user_prompt(issue, revision_feedback, previous_plan)
+    
+    # Inject restoration context if detected
+    if restoration_context.is_restoration:
+        restoration_prompt = format_restoration_context_for_prompt(restoration_context)
+        user_prompt = user_prompt + "\n" + restoration_prompt + "\n"
+    
+    user_prompt = user_prompt + schema_prompt
     
     print("Step 1: Generating plan with Claude extended thinking...")
     
