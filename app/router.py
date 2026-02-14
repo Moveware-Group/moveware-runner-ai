@@ -64,6 +64,11 @@ def _decide_internal(issue: JiraIssue) -> Optional[RouteDecision]:
             return RouteDecision(action="STORY_APPROVED", issue_key=issue.key, reason="Story approved, create sub-tasks and PR")
 
         # Fallback: Story moved directly to In Progress (user skipped Selected for Dev)
+        # Rework: Story moved back from In Testing to Selected for Development
+        # (Tester found issues with entire Story and wants AI to regenerate/fix plan)
+        if issue.status == settings.JIRA_STATUS_SELECTED_FOR_DEV and issue.assignee_account_id == settings.JIRA_AI_ACCOUNT_ID:
+            return RouteDecision(action="REWORK_STORY", issue_key=issue.key, reason="Story moved back for rework (issues found in testing)")
+        
         # Treat same as STORY_APPROVED - the handler will check if sub-tasks exist
         if issue.status == settings.JIRA_STATUS_IN_PROGRESS and issue.assignee_account_id == settings.JIRA_AI_ACCOUNT_ID:
             return RouteDecision(action="STORY_APPROVED", issue_key=issue.key, reason="Story in In Progress (create sub-tasks if needed, else check completion)")

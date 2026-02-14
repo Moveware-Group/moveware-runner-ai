@@ -727,6 +727,133 @@ def _check_story_completion(ctx: Context, story: JiraIssue) -> None:
         ctx.jira.assign_issue(story.key, settings.JIRA_HUMAN_ACCOUNT_ID)
 
 
+def _handle_rework_story(ctx: Context, story: JiraIssue, run_id: Optional[int] = None) -> None:
+    """
+    Handle when tester finds issues with entire Story and moves it back for rework.
+    
+    Workflow:
+    1. Tester moves Story from "In Testing" to "Selected for Development"
+    2. Tester assigns back to AI Runner
+    3. Tester adds comment explaining what's wrong with the Story
+    4. AI Runner can either:
+       - Create new subtasks with different approach
+       - Mark specific subtasks to redo
+       - Fix existing implementation
+    """
+    if story.issue_type != "Story":
+        return
+    
+    if story.status != settings.JIRA_STATUS_SELECTED_FOR_DEV:
+        return
+    if story.assignee_account_id != settings.JIRA_AI_ACCOUNT_ID:
+        return
+    
+    print(f"🔄 Story-level rework request detected for {story.key}")
+    
+    # Get human feedback from comments
+    from app.jira_adf import adf_to_plain_text
+    comments = ctx.jira.get_comments(story.key)
+    
+    human_feedback = []
+    for comment in comments:
+        author = comment.get("author", {})
+        author_id = author.get("accountId") if isinstance(author, dict) else None
+        
+        # Skip AI's own comments
+        if author_id == settings.JIRA_AI_ACCOUNT_ID:
+            continue
+        
+        body = comment.get("body")
+        if isinstance(body, dict):
+            text = adf_to_plain_text(body)
+        elif isinstance(body, str):
+            text = body
+        else:
+            continue
+        
+        human_feedback.append(text)
+    
+    rework_feedback = ""
+    if human_feedback:
+        # Take last 2 comments as feedback
+        rework_feedback = "\n\n---\n\n".join(human_feedback[-2:])
+        print(f"📝 Found Story rework feedback ({len(human_feedback)} comments)")
+    
+    # Post acknowledgment
+    ctx.jira.add_comment(
+        story.key,
+        f"🔄 **Story Rework Initiated**\n\n"
+        f"I'll review the feedback and determine the best approach:\n"
+        f"- If specific subtasks need fixes, I'll mark them for rework\n"
+        f"- If the approach was wrong, I'll create new subtasks\n"
+        f"- If just missing features, I'll add new subtasks\n\n"
+        f"Working on this now..."
+    )
+    
+    # Check existing subtasks
+    all_subtasks = ctx.jira.get_subtasks(story.key)
+    
+    if all_subtasks and len(all_subtasks) > 0:
+        # Subtasks exist - mark incomplete ones back to In Progress for rework
+        print(f"📋 Story has {len(all_subtasks)} existing subtasks, marking for rework...")
+        
+        # Move In Testing subtasks back to Selected for Dev so they get reworked
+        reworked_count = 0
+        for st in all_subtasks:
+            st_key = st.get("key")
+            fields = st.get("fields") or {}
+            status = (fields.get("status") or {}).get("name")
+            
+            if status == settings.JIRA_STATUS_IN_TESTING:
+                # This subtask was in testing - move back for rework
+                try:
+                    ctx.jira.transition_to_status(st_key, settings.JIRA_STATUS_SELECTED_FOR_DEV)
+                    ctx.jira.assign_issue(st_key, settings.JIRA_AI_ACCOUNT_ID)
+                    
+                    # Add feedback to subtask
+                    ctx.jira.add_comment(
+                        st_key,
+                        f"🔄 **Rework Requested** (from Story-level feedback)\n\n"
+                        f"Story-level issues found:\n{rework_feedback[:500]}\n\n"
+                        f"Please review and fix any issues in this subtask."
+                    )
+                    reworked_count += 1
+                except Exception as e:
+                    print(f"⚠️  Could not mark {st_key} for rework: {e}")
+        
+        if reworked_count > 0:
+            ctx.jira.add_comment(
+                story.key,
+                f"✅ Marked {reworked_count} subtask(s) for rework based on your feedback.\n\n"
+                f"Each subtask will be re-executed with the context from your comments."
+            )
+            
+            # Transition Story back to In Progress
+            ctx.jira.transition_to_status(story.key, settings.JIRA_STATUS_IN_PROGRESS)
+            ctx.jira.assign_issue(story.key, settings.JIRA_AI_ACCOUNT_ID)
+            
+            # Enqueue first subtask for processing
+            next_key = _pick_next_subtask_to_start(ctx, story.key)
+            if next_key:
+                enqueue_run(issue_key=next_key, payload={"issue_key": next_key})
+        else:
+            # No subtasks in testing - might need new subtasks
+            ctx.jira.add_comment(
+                story.key,
+                "ℹ️  No subtasks in testing to rework. If you need additional work:\n"
+                "1. Add more detail to your comment about what's needed\n"
+                "2. Or manually create new subtasks and assign them to AI Runner"
+            )
+            ctx.jira.assign_issue(story.key, settings.JIRA_HUMAN_ACCOUNT_ID)
+    else:
+        # No subtasks - Story level rework means regenerate plan/subtasks
+        ctx.jira.add_comment(
+            story.key,
+            "ℹ️  Story has no subtasks. Moving to In Progress to create them."
+        )
+        _handle_story_approved(ctx, story)
+
+
 def _handle_rework_subtask(ctx: Context, subtask: JiraIssue, run_id: Optional[int] = None) -> None:
     """
     Handle when tester finds issues and moves subtask back for rework.
@@ -889,6 +1016,9 @@ def process_run(ctx: Context, run_id: int, issue_key: str, payload: Dict[str, An
     elif action.name == "EPIC_APPROVED":
         add_progress_event(run_id, "executing", "Creating Stories from Epic plan", {})
         _handle_epic_approved(ctx, issue)
+    elif action.name == "REWORK_STORY":
+        add_progress_event(run_id, "executing", f"Processing Story-level rework for {issue_key}", {})
+        _handle_rework_story(ctx, issue, run_id)
     elif action.name == "STORY_APPROVED":
         add_progress_event(run_id, "executing", "Creating sub-tasks and Story PR", {})
         _handle_story_approved(ctx, issue)
