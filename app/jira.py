@@ -30,6 +30,18 @@ class JiraClient:
         r.raise_for_status()
         return r.json()
 
+    def update_issue_description(self, issue_key: str, description_md: str) -> None:
+        """Update an issue's description using Atlassian Document Format (ADF)."""
+        url = f"{self.base_url}/rest/api/3/issue/{issue_key}"
+        adf_body = wiki_to_adf(description_md)
+        payload = {
+            "fields": {
+                "description": adf_body
+            }
+        }
+        r = requests.put(url, headers=self._headers(), json=payload, timeout=self.timeout_s)
+        r.raise_for_status()
+    
     def add_comment(self, issue_key: str, body_md: str) -> None:
         """Add a comment to a Jira issue using Atlassian Document Format (ADF)."""
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}/comment"

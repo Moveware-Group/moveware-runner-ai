@@ -727,6 +727,105 @@ def _check_story_completion(ctx: Context, story: JiraIssue) -> None:
         ctx.jira.assign_issue(story.key, settings.JIRA_HUMAN_ACCOUNT_ID)
 
 
+def _handle_rework_subtask(ctx: Context, subtask: JiraIssue, run_id: Optional[int] = None) -> None:
+    """
+    Handle when tester finds issues and moves subtask back for rework.
+    
+    Workflow:
+    1. Tester moves subtask from "In Testing" to "Selected for Development"
+    2. Tester assigns back to AI Runner
+    3. Tester adds comment explaining what's wrong/missing
+    4. AI Runner re-executes with the feedback
+    """
+    if not subtask.is_subtask:
+        return
+    
+    # Only handle if in Selected for Development or In Progress and assigned to AI
+    if subtask.status not in (settings.JIRA_STATUS_SELECTED_FOR_DEV, settings.JIRA_STATUS_IN_PROGRESS):
+        return
+    if subtask.assignee_account_id != settings.JIRA_AI_ACCOUNT_ID:
+        return
+    if not subtask.parent_key:
+        return
+    
+    # Check if this is a rework scenario (was previously in In Testing)
+    # We can detect this by checking comments or just proceed with execution
+    
+    print(f"🔄 Rework request detected for {subtask.key}")
+    
+    # Get human feedback from comments
+    from app.jira_adf import adf_to_plain_text
+    comments = ctx.jira.get_comments(subtask.key)
+    
+    human_feedback = []
+    for comment in comments:
+        author = comment.get("author", {})
+        author_id = author.get("accountId") if isinstance(author, dict) else None
+        
+        # Skip AI's own comments
+        if author_id == settings.JIRA_AI_ACCOUNT_ID:
+            continue
+        
+        body = comment.get("body")
+        if isinstance(body, dict):
+            text = adf_to_plain_text(body)
+        elif isinstance(body, str):
+            text = body
+        else:
+            continue
+        
+        # Only include recent comments (likely the rework feedback)
+        human_feedback.append(text)
+    
+    if human_feedback:
+        # Take last 3 comments as feedback (most recent)
+        recent_feedback = "\n\n---\n\n".join(human_feedback[-3:])
+        print(f"📝 Found rework feedback ({len(human_feedback)} comments)")
+        
+        # Add feedback as a note in the subtask description (temporary)
+        # This will be picked up by execute_subtask's context gathering
+        original_desc = subtask.description or ""
+        enhanced_desc = (
+            f"{original_desc}\n\n"
+            f"---\n\n"
+            f"**REWORK REQUESTED - Issues Found in Testing:**\n\n"
+            f"{recent_feedback}\n\n"
+            f"**Please fix the above issues while preserving the existing implementation.**"
+        )
+        
+        # Update description temporarily
+        try:
+            ctx.jira.update_issue_description(subtask.key, enhanced_desc)
+        except Exception as e:
+            print(f"⚠️  Could not update description, feedback will be in comments: {e}")
+    
+    # Transition to In Progress
+    if subtask.status == settings.JIRA_STATUS_SELECTED_FOR_DEV:
+        ctx.jira.transition_to_status(subtask.key, settings.JIRA_STATUS_IN_PROGRESS)
+    
+    # Execute the subtask (will incorporate feedback from description/comments)
+    result: ExecutionResult = execute_subtask(subtask, run_id)
+    
+    # Comment + transition + assign
+    rework_comment = (
+        "## 🔄 Rework Complete\n\n"
+        "I've addressed the issues found in testing and updated the implementation.\n\n"
+        f"{result.jira_comment}"
+    )
+    
+    ctx.jira.add_comment(subtask.key, rework_comment)
+    ctx.jira.transition_to_status(subtask.key, settings.JIRA_STATUS_IN_TESTING)
+    ctx.jira.assign_issue(subtask.key, settings.JIRA_HUMAN_ACCOUNT_ID)
+    
+    # Update parent Story PR if needed
+    parent = _fetch_issue(ctx.jira, subtask.parent_key)
+    if parent and parent.issue_type == "Story" and result.branch.startswith("story/"):
+        ctx.jira.add_comment(
+            parent.key,
+            f"Sub-task {subtask.key} rework completed. Story PR updated with fixes."
+        )
+
+
 def _handle_subtask_done(ctx: Context, subtask: JiraIssue) -> None:
     if not subtask.is_subtask or not subtask.parent_key:
         return
@@ -796,6 +895,9 @@ def process_run(ctx: Context, run_id: int, issue_key: str, payload: Dict[str, An
     elif action.name == "CHECK_STORY_COMPLETION":
         add_progress_event(run_id, "analyzing", "Checking Story completion", {})
         _check_story_completion(ctx, issue)
+    elif action.name == "REWORK_SUBTASK":
+        add_progress_event(run_id, "executing", f"Reworking {issue_key} based on testing feedback", {})
+        _handle_rework_subtask(ctx, issue, run_id)
     elif action.name == "EXECUTE_SUBTASK":
         add_progress_event(run_id, "executing", f"Implementing {issue_key}", {})
         _handle_execute_subtask(ctx, issue, run_id)

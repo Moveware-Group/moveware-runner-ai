@@ -72,6 +72,11 @@ def _decide_internal(issue: JiraIssue) -> Optional[RouteDecision]:
 
     # Subtask behaviour - subtasks commit to Story branch
     if issue.is_subtask:
+        # Rework: subtask moved back from In Testing to Selected for Development
+        # (Tester found issues and wants AI to fix them)
+        if issue.status == settings.JIRA_STATUS_SELECTED_FOR_DEV and issue.assignee_account_id == settings.JIRA_AI_ACCOUNT_ID:
+            return RouteDecision(action="REWORK_SUBTASK", issue_key=issue.key, parent_key=issue.parent_key, reason="Subtask moved back for rework (issues found in testing)")
+        
         # Start execution when subtask is In Progress and assigned to AI.
         if issue.status == settings.JIRA_STATUS_IN_PROGRESS and issue.assignee_account_id == settings.JIRA_AI_ACCOUNT_ID:
             return RouteDecision(action="EXECUTE_SUBTASK", issue_key=issue.key, parent_key=issue.parent_key, reason="Subtask in progress assigned to AI")
