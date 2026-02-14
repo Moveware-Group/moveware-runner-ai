@@ -946,26 +946,56 @@ def _handle_rework_story(ctx: Context, story: JiraIssue, run_id: Optional[int] =
         f"Working on this now..."
     )
     
-    # Post the feedback as a comment for reference
-    if rework_feedback:
+    # Analyze feedback to determine if we need NEW subtasks or to fix existing ones
+    feedback_lower = rework_feedback.lower() if rework_feedback else ""
+    needs_new_subtasks = any(keyword in feedback_lower for keyword in [
+        "missing", "wasn't implemented", "not implemented", "didn't implement",
+        "no ui", "no interface", "where is", "don't see"
+    ])
+    
+    if needs_new_subtasks:
+        # Feedback indicates missing features - generate new subtasks
+        print(f"📋 Feedback indicates missing features - generating new subtasks for Story {story.key}")
+        
         ctx.jira.add_comment(
             story.key,
-            f"📋 **Rework Feedback Summary:**\n\n{rework_feedback}\n\n"
+            f"🔄 **Analyzing Missing Requirements**\n\n"
+            f"Your feedback indicates features that weren't implemented:\n\n{rework_feedback[:800]}\n\n"
+            f"I'll now generate additional subtasks to implement the missing functionality."
+        )
+        
+        # Use the story breakdown logic to create new subtasks
+        # This will read the Story description + feedback and create appropriate subtasks
+        try:
+            ctx.jira.transition_to_status(story.key, settings.JIRA_STATUS_SELECTED_FOR_DEV)
+            _create_subtasks_from_story(ctx, story)
+            
+            ctx.jira.add_comment(
+                story.key,
+                f"✅ Created new subtasks to implement the missing features.\n\n"
+                f"Review the subtasks and let me know if any adjustments are needed."
+            )
+        except Exception as e:
+            print(f"⚠️  Could not create new subtasks: {e}")
+            ctx.jira.add_comment(
+                story.key,
+                f"⚠️  I had trouble generating subtasks automatically. Error: {str(e)}\n\n"
+                f"Please manually create subtasks for the missing features or provide more detail."
+            )
+            ctx.jira.assign_issue(story.key, settings.JIRA_HUMAN_ACCOUNT_ID)
+    else:
+        # Feedback is about fixing existing implementation
+        ctx.jira.add_comment(
+            story.key,
+            f"📋 **Rework Feedback Received:**\n\n{rework_feedback}\n\n"
             f"---\n\n"
             f"**Next steps:**\n"
-            f"1. Review which subtasks need to be fixed\n"
-            f"2. Manually move specific subtasks to \"Needs Rework\" status\n"
-            f"3. AI Runner will pick them up and apply the fixes\n\n"
-            f"💡 **Tip:** Only move the subtasks that actually need changes. "
-            f"Leave correctly implemented subtasks in \"Done\" status."
+            f"Please manually move the specific subtasks that need fixing to \"Needs Rework\" status.\n"
+            f"I'll then apply your feedback to fix those specific issues."
         )
-    
-    # Assign back to human - they need to manually move specific subtasks to "Needs Rework"
-    ctx.jira.assign_issue(story.key, settings.JIRA_HUMAN_ACCOUNT_ID)
-    
-    # Keep Story in "Needs Rework" status as a visual indicator
-    # (Story will move to "In Progress" automatically when subtasks are being reworked)
-    print(f"✅ Story rework acknowledged. Waiting for human to mark specific subtasks for rework.")
+        
+        ctx.jira.assign_issue(story.key, settings.JIRA_HUMAN_ACCOUNT_ID)
+        print(f"✅ Story rework acknowledged. Waiting for human to mark specific subtasks for rework.")
 
 
 def _handle_rework_subtask(ctx: Context, subtask: JiraIssue, run_id: Optional[int] = None) -> None:
