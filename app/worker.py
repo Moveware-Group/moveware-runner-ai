@@ -285,10 +285,20 @@ def _create_stories_from_plan(ctx: Context, epic: JiraIssue) -> bool:
         if subtasks_data:
             # Add subtasks as a structured comment that we can parse later
             subtasks_json = json.dumps(subtasks_data, indent=2)
-            ctx.jira.add_comment(
-                story_key,
-                f"[STORY BREAKDOWN]\n```json\n{subtasks_json}\n```"
-            )
+            try:
+                ctx.jira.add_comment(
+                    story_key,
+                    f"[STORY BREAKDOWN]\n```json\n{subtasks_json}\n```"
+                )
+                print(f"✅ Added subtasks breakdown comment to {story_key} ({len(subtasks_data)} subtasks)")
+            except Exception as e:
+                print(f"⚠️  Warning: Could not add subtasks comment to {story_key}: {e}")
+                # Fallback: Store in database for later retrieval
+                from .planner import save_story_breakdown
+                save_story_breakdown(story_key, subtasks_data)
+                print(f"✅ Stored subtasks in database as fallback for {story_key}")
+        else:
+            print(f"⚠️  Warning: No subtasks in plan for Story {story_key}")
         
         # Assign Story to AI in Backlog - it will be picked up for breakdown
         ctx.jira.assign_issue(story_key, settings.JIRA_AI_ACCOUNT_ID)
@@ -309,7 +319,7 @@ def _create_stories_from_plan(ctx: Context, epic: JiraIssue) -> bool:
 
 def _create_subtasks_from_story(ctx: Context, story: JiraIssue) -> None:
     """Create sub-tasks from Story breakdown comment."""
-    # Look for [STORY BREAKDOWN] comment
+    # Try to get from Jira comment first
     comments = ctx.jira.get_comments(story.key)
     subtasks_data = None
     
@@ -327,9 +337,19 @@ def _create_subtasks_from_story(ctx: Context, story: JiraIssue) -> None:
                 start = body_text.index("```json") + len("```json")
                 end = body_text.index("```", start)
                 subtasks_data = json.loads(body_text[start:end].strip())
+                print(f"✅ Found Story breakdown in Jira comment for {story.key}")
                 break
-            except Exception:
+            except Exception as e:
+                print(f"⚠️  Failed to parse Story breakdown from comment: {e}")
                 continue
+    
+    # Fallback: Try database
+    if not subtasks_data:
+        print(f"⚠️  No breakdown comment found for {story.key}, checking database...")
+        from .planner import get_story_breakdown
+        subtasks_data = get_story_breakdown(story.key)
+        if subtasks_data:
+            print(f"✅ Found Story breakdown in database for {story.key}")
     
     if not subtasks_data:
         ctx.jira.add_comment(story.key, "AI Runner could not find Story breakdown. Please add sub-tasks manually.")

@@ -506,3 +506,54 @@ def build_plan(
     is_revision = bool(revision_feedback)
     comment = format_plan_as_jira_comment(plan_data, is_revision=is_revision)
     return PlanResult(comment=comment, plan_data=plan_data)
+
+
+def save_story_breakdown(story_key: str, subtasks_data: List[Dict[str, Any]]) -> None:
+    """
+    Save Story breakdown (subtasks) to database as fallback.
+    Used when Jira comment fails or is unreliable.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Create table if not exists
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS story_breakdowns (
+            story_key TEXT PRIMARY KEY,
+            subtasks_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        )
+    """)
+    
+    subtasks_json = json.dumps(subtasks_data)
+    cursor.execute("""
+        INSERT OR REPLACE INTO story_breakdowns (story_key, subtasks_json, created_at)
+        VALUES (?, ?, ?)
+    """, (story_key, subtasks_json, int(time.time())))
+    
+    conn.commit()
+    conn.close()
+
+
+def get_story_breakdown(story_key: str) -> Optional[List[Dict[str, Any]]]:
+    """
+    Retrieve Story breakdown from database.
+    Fallback when Jira comment is not found.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT subtasks_json FROM story_breakdowns WHERE story_key = ?
+    """, (story_key,))
+    
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row:
+        return None
+    
+    try:
+        return json.loads(row[0])
+    except Exception:
+        return None

@@ -240,16 +240,30 @@ class JiraClient:
         # Link Story to Epic using Epic Link field
         # Note: Epic Link field name varies by Jira instance, commonly "customfield_10014"
         # We'll try to find it dynamically or use the parent field
+        link_success = False
         try:
-            self.link_to_epic(story_key, epic_key)
+            link_success = self.link_to_epic(story_key, epic_key)
+            if link_success:
+                print(f"✅ Successfully linked {story_key} to Epic {epic_key}")
+            else:
+                print(f"⚠️  Could not link {story_key} to Epic {epic_key}, trying fallback...")
         except Exception as e:
-            # If linking fails, add a comment instead
-            self.add_comment(story_key, f"Part of Epic: {epic_key}")
+            print(f"⚠️  Warning: Epic linking failed for {story_key}: {e}")
+        
+        # If linking failed, add a comment AND log warning
+        if not link_success:
+            self.add_comment(story_key, f"⚠️ Part of Epic: {epic_key}\n\n(Auto-linking failed, please link manually)")
+            print(f"⚠️  CRITICAL: Story {story_key} not linked to Epic {epic_key} - this may cause duplicate creation!")
         
         return story_key
 
-    def link_to_epic(self, issue_key: str, epic_key: str) -> None:
-        """Link an issue to an Epic."""
+    def link_to_epic(self, issue_key: str, epic_key: str) -> bool:
+        """
+        Link an issue to an Epic.
+        
+        Returns:
+            True if linking succeeded, False otherwise
+        """
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}"
         # Try common Epic Link field names
         for epic_link_field in ["customfield_10014", "customfield_10008", "parent"]:
@@ -261,8 +275,14 @@ class JiraClient:
                 }
                 r = requests.put(url, headers=self._headers(), json=payload, timeout=self.timeout_s)
                 if r.status_code == 204 or r.status_code == 200:
-                    return
-            except Exception:
+                    print(f"✅ Linked {issue_key} to Epic {epic_key} using field '{epic_link_field}'")
+                    return True
+                else:
+                    print(f"⚠️  Field '{epic_link_field}' failed: HTTP {r.status_code}")
+            except Exception as e:
+                print(f"⚠️  Field '{epic_link_field}' failed: {e}")
                 continue
-        # If all attempts fail, that's okay - we'll have the comment as fallback
-        pass
+        
+        # If all attempts fail, return False
+        print(f"❌ All Epic link attempts failed for {issue_key} → {epic_key}")
+        return False
