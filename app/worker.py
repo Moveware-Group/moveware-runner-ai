@@ -898,7 +898,8 @@ def _handle_rework_story(ctx: Context, story: JiraIssue, run_id: Optional[int] =
     if story.issue_type != "Story":
         return
     
-    if story.status != settings.JIRA_STATUS_SELECTED_FOR_DEV:
+    # Handle if in Needs Rework or Selected for Dev (backward compatibility)
+    if story.status not in (settings.JIRA_STATUS_NEEDS_REWORK, settings.JIRA_STATUS_SELECTED_FOR_DEV):
         return
     if story.assignee_account_id != settings.JIRA_AI_ACCOUNT_ID:
         return
@@ -964,7 +965,8 @@ def _handle_rework_story(ctx: Context, story: JiraIssue, run_id: Optional[int] =
             if status in [settings.JIRA_STATUS_IN_TESTING, settings.JIRA_STATUS_DONE, settings.JIRA_STATUS_BACKLOG]:
                 # This subtask needs rework
                 try:
-                    ctx.jira.transition_to_status(st_key, settings.JIRA_STATUS_SELECTED_FOR_DEV)
+                    # Move to "Needs Rework" status (clearer intent)
+                    ctx.jira.transition_to_status(st_key, settings.JIRA_STATUS_NEEDS_REWORK)
                     ctx.jira.assign_issue(st_key, settings.JIRA_AI_ACCOUNT_ID)
                     
                     # Add feedback to subtask
@@ -977,6 +979,12 @@ def _handle_rework_story(ctx: Context, story: JiraIssue, run_id: Optional[int] =
                         f"Please re-read the original Story description and ensure ALL requirements are implemented.\n\n"
                         f"**Previous status:** {status} - this suggests the implementation was incomplete."
                     )
+                    
+                    # Enqueue with HIGH priority (rework is urgent)
+                    from .db import enqueue_run
+                    from .queue_manager import Priority
+                    enqueue_run(issue_key=st_key, payload={"issue_key": st_key}, priority=Priority.HIGH.value)
+                    
                     reworked_count += 1
                 except Exception as e:
                     print(f"⚠️  Could not mark {st_key} for rework: {e}")
@@ -1027,8 +1035,8 @@ def _handle_rework_subtask(ctx: Context, subtask: JiraIssue, run_id: Optional[in
     if not subtask.is_subtask:
         return
     
-    # Only handle if in Selected for Development or In Progress and assigned to AI
-    if subtask.status not in (settings.JIRA_STATUS_SELECTED_FOR_DEV, settings.JIRA_STATUS_IN_PROGRESS):
+    # Handle if in Needs Rework, Selected for Development, or In Progress (assigned to AI)
+    if subtask.status not in (settings.JIRA_STATUS_NEEDS_REWORK, settings.JIRA_STATUS_SELECTED_FOR_DEV, settings.JIRA_STATUS_IN_PROGRESS):
         return
     if subtask.assignee_account_id != settings.JIRA_AI_ACCOUNT_ID:
         return
@@ -1087,7 +1095,7 @@ def _handle_rework_subtask(ctx: Context, subtask: JiraIssue, run_id: Optional[in
             print(f"⚠️  Could not update description, feedback will be in comments: {e}")
     
     # Transition to In Progress
-    if subtask.status == settings.JIRA_STATUS_SELECTED_FOR_DEV:
+    if subtask.status in (settings.JIRA_STATUS_NEEDS_REWORK, settings.JIRA_STATUS_SELECTED_FOR_DEV):
         ctx.jira.transition_to_status(subtask.key, settings.JIRA_STATUS_IN_PROGRESS)
     
     # Execute the subtask (will incorporate feedback from description/comments)

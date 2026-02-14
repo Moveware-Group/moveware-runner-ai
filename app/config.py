@@ -33,6 +33,7 @@ class Settings:
     JIRA_STATUS_SELECTED_FOR_DEV: str = env("JIRA_STATUS_SELECTED_FOR_DEV", required=True)
     JIRA_STATUS_IN_PROGRESS: str = env("JIRA_STATUS_IN_PROGRESS", required=True)
     JIRA_STATUS_IN_TESTING: str = env("JIRA_STATUS_IN_TESTING", required=True)
+    JIRA_STATUS_NEEDS_REWORK: str = env("JIRA_STATUS_NEEDS_REWORK", default="Needs Rework")
     JIRA_STATUS_DONE: str = env("JIRA_STATUS_DONE", required=True)
     JIRA_STATUS_BLOCKED: str = env("JIRA_STATUS_BLOCKED", required=True)
 
