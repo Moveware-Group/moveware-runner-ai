@@ -68,6 +68,7 @@ def verify_code_integrity() -> None:
 class Context:
     jira: JiraClient
     router: Router
+    worker_id: str = "worker-1"
 
 
 def _get_repo_settings(issue_key: str) -> dict:
@@ -313,8 +314,8 @@ def _create_stories_from_plan(ctx: Context, epic: JiraIssue) -> bool:
             "AI created Stories from the approved plan:\n" + "\n".join([f"- {k}" for k in created_keys]),
         )
         
-        # 🚀 AUTO-START FIRST STORY (Sequential Processing)
-        if created_keys:
+        # 🚀 AUTO-START FIRST STORY (Sequential Processing) - if enabled
+        if settings.AUTO_START_NEXT_STORY and created_keys:
             first_story_key = created_keys[0]
             print(f"🚀 Auto-starting first Story: {first_story_key}")
             
@@ -343,6 +344,13 @@ def _create_stories_from_plan(ctx: Context, epic: JiraIssue) -> bool:
                     f"⚠️ Could not auto-start first Story ({first_story_key}): {e}\n\n"
                     f"Please manually move it to 'Selected for Development'."
                 )
+        elif not settings.AUTO_START_NEXT_STORY and created_keys:
+            # Auto-start disabled - notify user to manually start
+            ctx.jira.add_comment(
+                epic.key,
+                f"✅ Stories created. Auto-start is disabled.\n\n"
+                f"To begin processing, manually move {created_keys[0]} to 'Selected for Development'."
+            )
         
         return True
     
@@ -607,10 +615,13 @@ def _handle_epic_approved(ctx: Context, epic: JiraIssue) -> None:
         ctx.jira.add_comment(epic.key, "AI Runner created Stories from the plan. Stories will be broken down into sub-tasks when approved.")
 
 
-def _handle_story_approved(ctx: Context, story: JiraIssue) -> None:
+def _handle_story_approved(ctx: Context, story: JiraIssue, skip_rework_detection: bool = False) -> None:
     """
     Handle Story approval - creates sub-tasks and Story PR.
     Also handles Story-level rework (when subtasks exist but Story moved back for fixes).
+    
+    Args:
+        skip_rework_detection: If True, skip rework detection (used when called from _handle_rework_story)
     """
     # Accept both Selected for Dev and In Progress (user may have moved directly to In Progress)
     if story.status not in (settings.JIRA_STATUS_SELECTED_FOR_DEV, settings.JIRA_STATUS_IN_PROGRESS):
@@ -623,7 +634,8 @@ def _handle_story_approved(ctx: Context, story: JiraIssue) -> None:
     
     # Check if this is a REWORK scenario (subtasks exist AND Story was moved back)
     # Detect by: subtasks exist AND at least one is in "In Testing" or "Done"
-    if all_subtasks and len(all_subtasks) > 0:
+    # Skip this check if called from rework handler to prevent infinite loop
+    if not skip_rework_detection and all_subtasks and len(all_subtasks) > 0:
         statuses = [
             ((st.get("fields") or {}).get("status") or {}).get("name")
             for st in all_subtasks
@@ -780,9 +792,9 @@ def _check_story_completion(ctx: Context, story: JiraIssue) -> None:
         ctx.jira.transition_to_status(story.key, settings.JIRA_STATUS_IN_TESTING)
         ctx.jira.assign_issue(story.key, settings.JIRA_HUMAN_ACCOUNT_ID)
         
-        # 🚀 AUTO-START NEXT STORY (Sequential Processing)
+        # 🚀 AUTO-START NEXT STORY (Sequential Processing) - if enabled
         # Check if this Story is part of an Epic
-        if story.parent_key:
+        if settings.AUTO_START_NEXT_STORY and story.parent_key:
             epic_key = story.parent_key
             print(f"🔄 Story {story.key} completed, checking for next Story in Epic {epic_key}")
             
@@ -880,6 +892,38 @@ def _check_story_completion(ctx: Context, story: JiraIssue) -> None:
             except Exception as e:
                 print(f"⚠️  Could not auto-start next Story: {e}")
                 # Don't fail - just log the error
+        elif not settings.AUTO_START_NEXT_STORY and story.parent_key:
+            # Auto-start disabled but Story is part of Epic - just update progress
+            epic_key = story.parent_key
+            try:
+                all_stories = ctx.jira.get_stories_for_epic(epic_key)
+                if all_stories:
+                    total_stories = len(all_stories)
+                    completed_stories = len([
+                        s for s in all_stories
+                        if ((s.get("fields") or {}).get("status") or {}).get("name") in [
+                            settings.JIRA_STATUS_IN_TESTING,
+                            settings.JIRA_STATUS_DONE
+                        ]
+                    ])
+                    
+                    # Find remaining backlog stories
+                    backlog_stories = [
+                        s for s in all_stories
+                        if ((s.get("fields") or {}).get("status") or {}).get("name") == settings.JIRA_STATUS_BACKLOG
+                    ]
+                    
+                    if backlog_stories:
+                        next_story_key = backlog_stories[0].get("key")
+                        ctx.jira.add_comment(
+                            epic_key,
+                            f"📊 **Story Progress Update**\n\n"
+                            f"✅ Completed: {story.key}\n\n"
+                            f"Progress: {completed_stories}/{total_stories} Stories completed\n\n"
+                            f"Next Story: {next_story_key} (awaiting manual start)"
+                        )
+            except Exception as e:
+                print(f"⚠️  Could not update Epic progress: {e}")
 
 
 def _handle_rework_story(ctx: Context, story: JiraIssue, run_id: Optional[int] = None) -> None:
@@ -909,6 +953,36 @@ def _handle_rework_story(ctx: Context, story: JiraIssue, run_id: Optional[int] =
     # Get human feedback from comments
     from app.jira_adf import adf_to_plain_text
     comments = ctx.jira.get_comments(story.key)
+    
+    # Check if rework was already processed (to prevent infinite loop)
+    rework_already_processed = False
+    for comment in comments:
+        author = comment.get("author", {})
+        author_id = author.get("accountId") if isinstance(author, dict) else None
+        
+        # Check AI's own comments for the marker
+        if author_id == settings.JIRA_AI_ACCOUNT_ID:
+            body = comment.get("body")
+            if isinstance(body, dict):
+                text = adf_to_plain_text(body)
+            elif isinstance(body, str):
+                text = body
+            else:
+                continue
+            
+            if "[REWORK_PROCESSED]" in text:
+                rework_already_processed = True
+                print(f"⚠️  Rework was already processed for {story.key}, skipping to prevent loop")
+                break
+    
+    if rework_already_processed:
+        # Rework was already processed - assign back to human to review progress
+        ctx.jira.add_comment(
+            story.key,
+            f"ℹ️  Rework was already initiated. Please review the new subtasks or provide additional feedback if needed."
+        )
+        ctx.jira.assign_issue(story.key, settings.JIRA_HUMAN_ACCOUNT_ID)
+        return
     
     human_feedback = []
     for comment in comments:
@@ -964,47 +1038,103 @@ def _handle_rework_story(ctx: Context, story: JiraIssue, run_id: Optional[int] =
         # Feedback indicates missing features - generate new subtasks
         print(f"📋 Feedback indicates missing features - generating new subtasks for Story {story.key}")
         
+        # Mark that we're processing this rework to prevent re-processing
         ctx.jira.add_comment(
             story.key,
             f"🔄 **Analyzing Missing Requirements**\n\n"
             f"Your feedback indicates features that weren't implemented:\n\n{rework_feedback[:800]}\n\n"
-            f"I'll now generate additional subtasks to implement the missing functionality."
+            f"I'll now generate additional subtasks to implement the missing functionality.\n\n"
+            f"[REWORK_PROCESSED]"  # Marker to prevent re-processing
         )
         
         # Generate FRESH plan incorporating the rework feedback
         # Temporarily update Story description in Jira to include feedback
         try:
-            ctx.jira.transition_to_status(story.key, settings.JIRA_STATUS_SELECTED_FOR_DEV)
+            # Create a modified version of the Story for planning
+            from copy import deepcopy
+            story_for_planning = deepcopy(story)
             
-            # Enhance Story description temporarily to include the feedback
+            # Enhance Story description to include the feedback
             original_desc = story.description or ""
             enhanced_desc = (
                 f"{original_desc}\n\n"
                 f"---\n\n"
                 f"**REWORK FEEDBACK - Missing Features:**\n\n{rework_feedback}\n\n"
-                f"**IMPORTANT:** Generate NEW subtasks ONLY for the missing functionality described above."
+                f"**IMPORTANT:** Generate NEW subtasks ONLY for the missing functionality described above. "
+                f"DO NOT regenerate existing subtasks."
             )
+            story_for_planning.description = enhanced_desc
             
-            # Update Story description temporarily
-            ctx.jira.update_issue_description(story.key, enhanced_desc)
+            # Generate plan with the enhanced description
+            from .planner import build_plan
+            plan_result = build_plan(story_for_planning)
             
-            # Force fresh plan by treating it as a newly approved Story
-            # This will bypass cached breakdowns and generate new plan
-            _handle_story_approved(ctx, story)
+            # Extract subtasks from the generated plan
+            plan_data = plan_result.plan_data
+            new_subtasks_data = []
             
-            # Restore original description
-            try:
-                ctx.jira.update_issue_description(story.key, original_desc)
-            except Exception as e:
-                print(f"⚠️  Could not restore original description: {e}")
+            if "stories" in plan_data and len(plan_data["stories"]) > 0:
+                # Plan has stories - use the first story's subtasks
+                new_subtasks_data = plan_data["stories"][0].get("subtasks", [])
+            elif "subtasks" in plan_data:
+                # Plan has direct subtasks
+                new_subtasks_data = plan_data["subtasks"]
             
-            ctx.jira.add_comment(
-                story.key,
-                f"✅ Created new subtasks to implement the missing features.\n\n"
-                f"Review the subtasks and let me know if any adjustments are needed."
-            )
+            if new_subtasks_data:
+                # Create the new subtasks in Jira
+                created_keys = []
+                for task in new_subtasks_data:
+                    summary = (task.get("summary") or "").strip()
+                    if not summary:
+                        continue
+                    desc = task.get("description") or ""
+                    is_independent = task.get("independent", False)
+                    
+                    labels = []
+                    if is_independent:
+                        labels.append("independent-pr")
+                    
+                    # Create subtask under Story
+                    key = ctx.jira.create_subtask(
+                        project_key=None,
+                        parent_key=story.key,
+                        summary=summary,
+                        description=str(desc),
+                        labels=labels if labels else None,
+                    )
+                    created_keys.append(key)
+                    # Assign to AI in Backlog
+                    ctx.jira.assign_issue(key, settings.JIRA_AI_ACCOUNT_ID)
+                
+                ctx.jira.add_comment(
+                    story.key,
+                    f"✅ **Created {len(created_keys)} new subtask(s) to implement missing features:**\n\n" + 
+                    "\n".join([f"- {k}" for k in created_keys]) +
+                    f"\n\nReview the subtasks and let me know if any adjustments are needed."
+                )
+                
+                # Transition Story to In Progress and start first new subtask
+                ctx.jira.transition_to_status(story.key, settings.JIRA_STATUS_IN_PROGRESS)
+                
+                if created_keys:
+                    next_key = created_keys[0]
+                    ctx.jira.transition_to_status(next_key, settings.JIRA_STATUS_IN_PROGRESS)
+                    ctx.jira.assign_issue(next_key, settings.JIRA_AI_ACCOUNT_ID)
+                    enqueue_run(issue_key=next_key, payload={"issue_key": next_key})
+                    ctx.jira.add_comment(story.key, f"🚀 Starting work on {next_key}")
+            else:
+                # No subtasks generated
+                ctx.jira.add_comment(
+                    story.key,
+                    f"⚠️  I couldn't generate subtasks from the feedback. Please provide more specific details about what's missing, "
+                    f"or manually create subtasks for the missing features."
+                )
+                ctx.jira.assign_issue(story.key, settings.JIRA_HUMAN_ACCOUNT_ID)
+                
         except Exception as e:
             print(f"⚠️  Could not create new subtasks: {e}")
+            import traceback
+            traceback.print_exc()
             ctx.jira.add_comment(
                 story.key,
                 f"⚠️  I had trouble generating subtasks automatically. Error: {str(e)}\n\n"
@@ -1224,7 +1354,7 @@ def worker_loop(poll_interval_seconds: float = 2.0, worker_id: str = "worker-1",
     verify_code_integrity()
     
     init_db()
-    ctx = Context(jira=JiraClient(), router=Router())
+    ctx = Context(jira=JiraClient(), router=Router(), worker_id=worker_id)
     
     # Initialize logger
     logger = get_logger()

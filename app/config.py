@@ -59,6 +59,9 @@ class Settings:
 
     # ---- Verification / self-healing ----
     MAX_FIX_ATTEMPTS: int = int(env("MAX_FIX_ATTEMPTS", default="7"))
+    
+    # ---- Story Auto-Start ----
+    AUTO_START_NEXT_STORY: bool = env("AUTO_START_NEXT_STORY", default="true").lower() in ("1", "true", "yes", "y")
 
 
 # Plan comment marker constant
