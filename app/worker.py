@@ -1359,6 +1359,12 @@ def worker_loop(poll_interval_seconds: float = 2.0, worker_id: str = "worker-1",
     # Initialize logger
     logger = get_logger()
     
+    # Reset stale runs on startup (from previous worker crash/restart)
+    from .queue_manager import reset_stale_runs
+    stale_count = reset_stale_runs()
+    if stale_count > 0:
+        logger.info(f"Reset {stale_count} stale run(s) on startup")
+    
     # Determine which claim function to use
     if use_smart_queue is None:
         use_smart_queue = os.getenv("USE_SMART_QUEUE", "true").lower() in ("true", "1", "yes")
