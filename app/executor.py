@@ -988,8 +988,23 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                     )
                     if tsc_result.returncode != 0:
                         tsc_output = tsc_result.stdout or tsc_result.stderr
-                        verification_errors.append(f"TypeScript check failed (tsc --noEmit):\n{tsc_output[:3000]}")
-                        print(f"tsc failed:\n{tsc_output[:500]}")
+                        
+                        # Use intelligent error summarization
+                        from .error_summarizer import format_concise_error_summary, should_show_full_errors
+                        
+                        # Count errors
+                        error_count = tsc_output.count("error TS")
+                        
+                        if should_show_full_errors(error_count):
+                            # Few errors - show them all
+                            error_message = f"TypeScript check failed (tsc --noEmit):\n{tsc_output[:3000]}"
+                        else:
+                            # Many errors - show concise summary
+                            summary = format_concise_error_summary(tsc_output)
+                            error_message = f"TypeScript check failed (tsc --noEmit):\n\n{summary}\n\n--- Full Output (first 1000 chars) ---\n{tsc_output[:1000]}"
+                        
+                        verification_errors.append(error_message)
+                        print(f"tsc failed ({error_count} errors):\n{tsc_output[:500]}")
                     else:
                         print("✅ TypeScript check passed")
                 except subprocess.TimeoutExpired:
@@ -1032,17 +1047,34 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                         if result.returncode != 0:
                             # Build failed - this is a CRITICAL error
                             error_output = result.stderr if result.stderr else result.stdout
-                            verification_errors.append(
-                                f"❌ CRITICAL: Production build failed\n\n"
-                                f"Build output:\n{error_output[:2000]}\n\n"
-                                f"Common fixes:\n"
-                                f"- Check for missing exports in service files\n"
-                                f"- Verify all imported functions/types exist\n"
-                                f"- Check Tailwind CSS classes are valid\n"
-                                f"- Ensure 'use client' directive is added for client components\n"
-                                f"- Fix TypeScript type errors"
-                            )
-                            print(f"Build failed:\n{error_output[:1000]}")
+                            
+                            # Use intelligent error summarization
+                            from .error_summarizer import format_concise_error_summary, should_show_full_errors
+                            
+                            # Count errors in build output
+                            error_count = error_output.count("error TS") + error_output.count("Error:")
+                            
+                            if should_show_full_errors(error_count):
+                                # Few errors - show them all
+                                build_message = (
+                                    f"❌ CRITICAL: Production build failed\n\n"
+                                    f"Build output:\n{error_output[:2000]}\n\n"
+                                    f"Common fixes:\n"
+                                    f"- Check for missing exports\n"
+                                    f"- Verify all imports exist\n"
+                                    f"- Fix TypeScript type errors"
+                                )
+                            else:
+                                # Many errors - show concise summary
+                                summary = format_concise_error_summary(error_output)
+                                build_message = (
+                                    f"❌ CRITICAL: Production build failed\n\n"
+                                    f"{summary}\n\n"
+                                    f"--- First 800 chars of build output ---\n{error_output[:800]}"
+                                )
+                            
+                            verification_errors.append(build_message)
+                            print(f"Build failed ({error_count} errors):\n{error_output[:500]}")
                         else:
                             print("✅ Build succeeded!")
                             
