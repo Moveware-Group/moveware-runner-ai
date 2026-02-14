@@ -194,6 +194,17 @@ def _extract_all_human_feedback(jira: JiraClient, parent_key: str) -> str:
 
 def _create_stories_from_plan(ctx: Context, epic: JiraIssue) -> bool:
     """Create Stories from Epic plan. Returns True if successful."""
+    # CRITICAL: Check if Stories already exist to prevent infinite loop
+    existing_stories = ctx.jira.get_stories_for_epic(epic.key)
+    if existing_stories and len(existing_stories) > 0:
+        print(f"⚠️  Epic {epic.key} already has {len(existing_stories)} Stories, skipping creation to prevent duplicates")
+        ctx.jira.add_comment(
+            epic.key,
+            f"Stories already exist for this Epic ({len(existing_stories)} found). "
+            "If you need to regenerate Stories, please delete existing ones first or move Epic back to Backlog."
+        )
+        return True  # Return True because Stories exist (even if we didn't create them just now)
+    
     # Retrieve plan from database
     plan = get_plan(epic.key)
     if not plan:
@@ -215,6 +226,19 @@ def _create_stories_from_plan(ctx: Context, epic: JiraIssue) -> bool:
             )
         else:
             ctx.jira.add_comment(epic.key, "AI plan did not include stories. Please move back to Backlog to regenerate.")
+        ctx.jira.transition_to_status(epic.key, settings.JIRA_STATUS_BLOCKED)
+        ctx.jira.assign_issue(epic.key, settings.JIRA_HUMAN_ACCOUNT_ID)
+        return False
+    
+    # Add safety limit to prevent runaway creation
+    MAX_STORIES_PER_EPIC = 50
+    if len(stories) > MAX_STORIES_PER_EPIC:
+        print(f"⚠️  Plan has {len(stories)} stories, which exceeds safety limit of {MAX_STORIES_PER_EPIC}")
+        ctx.jira.add_comment(
+            epic.key,
+            f"⚠️ Plan has {len(stories)} stories, which seems excessive (limit: {MAX_STORIES_PER_EPIC}).\n\n"
+            "This might indicate a plan generation error. Please review the plan and regenerate if needed."
+        )
         ctx.jira.transition_to_status(epic.key, settings.JIRA_STATUS_BLOCKED)
         ctx.jira.assign_issue(epic.key, settings.JIRA_HUMAN_ACCOUNT_ID)
         return False
@@ -285,6 +309,19 @@ def _create_subtasks_from_story(ctx: Context, story: JiraIssue) -> None:
     
     if not subtasks_data:
         ctx.jira.add_comment(story.key, "AI Runner could not find Story breakdown. Please add sub-tasks manually.")
+        ctx.jira.transition_to_status(story.key, settings.JIRA_STATUS_BLOCKED)
+        ctx.jira.assign_issue(story.key, settings.JIRA_HUMAN_ACCOUNT_ID)
+        return
+    
+    # Add safety limit to prevent runaway creation
+    MAX_SUBTASKS_PER_STORY = 30
+    if len(subtasks_data) > MAX_SUBTASKS_PER_STORY:
+        print(f"⚠️  Story breakdown has {len(subtasks_data)} subtasks, which exceeds safety limit of {MAX_SUBTASKS_PER_STORY}")
+        ctx.jira.add_comment(
+            story.key,
+            f"⚠️ Story breakdown has {len(subtasks_data)} subtasks, which seems excessive (limit: {MAX_SUBTASKS_PER_STORY}).\n\n"
+            "This might indicate a breakdown error. Please review and regenerate if needed."
+        )
         ctx.jira.transition_to_status(story.key, settings.JIRA_STATUS_BLOCKED)
         ctx.jira.assign_issue(story.key, settings.JIRA_HUMAN_ACCOUNT_ID)
         return

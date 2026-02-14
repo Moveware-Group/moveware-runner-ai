@@ -105,6 +105,28 @@ class JiraClient:
             if st_key:
                 full_subtasks.append(self.get_issue(st_key))
         return full_subtasks
+    
+    def get_stories_for_epic(self, epic_key: str) -> List[Dict[str, Any]]:
+        """Get all Stories linked to an Epic using JQL search."""
+        # Use JQL to find Stories with parent = epic_key
+        # Also try Epic Link field in case parent field doesn't work
+        jql = f'parent = "{epic_key}" AND issuetype = Story'
+        
+        url = f"{self.base_url}/rest/api/3/search"
+        params = {
+            "jql": jql,
+            "maxResults": 100,  # Safety limit
+            "fields": "summary,status,assignee,parent,issuetype"
+        }
+        
+        try:
+            r = requests.get(url, headers=self._headers(), params=params, timeout=self.timeout_s)
+            r.raise_for_status()
+            result = r.json()
+            return result.get("issues", [])
+        except Exception as e:
+            print(f"Warning: Could not fetch Stories for Epic {epic_key}: {e}")
+            return []
 
     def create_subtask(
         self,
