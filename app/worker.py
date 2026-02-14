@@ -971,15 +971,65 @@ def _handle_rework_story(ctx: Context, story: JiraIssue, run_id: Optional[int] =
             f"I'll now generate additional subtasks to implement the missing functionality."
         )
         
-        # Use the story breakdown logic to create new subtasks
-        # This will read the Story description + feedback and create appropriate subtasks
+        # Generate FRESH plan incorporating the rework feedback
+        # We need to bypass the cached breakdown and create new subtasks
         try:
             ctx.jira.transition_to_status(story.key, settings.JIRA_STATUS_SELECTED_FOR_DEV)
-            _create_subtasks_from_story(ctx, story)
+            
+            # Generate new plan WITH the rework feedback as context
+            from .planner import build_plan
+            
+            # Enhance Story description temporarily to include the feedback
+            enhanced_story_desc = (
+                f"{story.description or ''}\n\n"
+                f"---\n\n"
+                f"**REWORK FEEDBACK - Missing Features:**\n\n{rework_feedback}\n\n"
+                f"**IMPORTANT:** The above feedback indicates features that were NOT implemented in the first attempt. "
+                f"Generate NEW subtasks ONLY for the missing functionality described in the feedback."
+            )
+            
+            # Create temporary issue with enhanced description
+            enhanced_story = JiraIssue(
+                key=story.key,
+                summary=story.summary,
+                description=enhanced_story_desc,
+                status=story.status,
+                issue_type=story.issue_type,
+                assignee_account_id=story.assignee_account_id,
+                labels=story.labels,
+                parent_key=story.parent_key,
+                is_subtask=story.is_subtask
+            )
+            
+            plan_result = build_plan(enhanced_story)
+            plan_data = plan_result.plan_data
+            
+            # Extract subtasks from plan
+            if "stories" in plan_data and len(plan_data["stories"]) > 0:
+                subtasks_data = plan_data["stories"][0].get("subtasks", [])
+            elif "subtasks" in plan_data:
+                subtasks_data = plan_data["subtasks"]
+            else:
+                raise ValueError("No subtasks generated in plan")
+            
+            # Create the subtasks
+            created_keys = []
+            for idx, subtask in enumerate(subtasks_data, 1):
+                title = subtask.get("title") or subtask.get("summary")
+                desc = subtask.get("description", "")
+                
+                new_subtask = ctx.jira.create_subtask(
+                    parent_key=story.key,
+                    summary=title,
+                    description=desc
+                )
+                created_keys.append(new_subtask["key"])
+                print(f"  ✓ Created {new_subtask['key']}: {title}")
             
             ctx.jira.add_comment(
                 story.key,
-                f"✅ Created new subtasks to implement the missing features.\n\n"
+                f"✅ Created {len(created_keys)} new subtasks to implement the missing features:\n\n"
+                + "\n".join([f"- {k}" for k in created_keys]) + "\n\n"
                 f"Review the subtasks and let me know if any adjustments are needed."
             )
         except Exception as e:
