@@ -3,11 +3,10 @@
 Delete duplicate Stories for Epic OD-48
 
 Usage:
-    python scripts/delete_duplicate_stories.py OD-48
+    python3 scripts/delete_duplicate_stories.py OD-48
 
 Requirements:
-    - JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN in .env
-    - Or pass via environment variables
+    - Environment variables loaded (from .env or systemd environment file)
 """
 import os
 import sys
@@ -16,6 +15,33 @@ from pathlib import Path
 
 # Add parent directory to path to import app modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# Load environment variables from .env file if it exists
+env_file = Path(__file__).parent.parent / ".env"
+if env_file.exists():
+    print(f"Loading environment from {env_file}")
+    with open(env_file) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, value = line.split("=", 1)
+                # Remove quotes if present
+                value = value.strip().strip('"').strip("'")
+                os.environ.setdefault(key, value)
+else:
+    # Try systemd environment file
+    systemd_env = Path("/etc/moveware-ai.env")
+    if systemd_env.exists():
+        print(f"Loading environment from {systemd_env}")
+        with open(systemd_env) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, value = line.split("=", 1)
+                    value = value.strip().strip('"').strip("'")
+                    os.environ.setdefault(key, value)
+    else:
+        print("⚠️  Warning: No .env file found. Make sure environment variables are set.")
 
 from app.jira import JiraClient
 from app.config import settings
