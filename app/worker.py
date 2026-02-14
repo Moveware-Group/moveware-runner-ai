@@ -1044,8 +1044,11 @@ def _handle_rework_story(ctx: Context, story: JiraIssue, run_id: Optional[int] =
     feedback_lower = rework_feedback.lower() if rework_feedback else ""
     keywords = [
         "missing", "wasn't implemented", "not implemented", "didn't implement",
+        "haven't implemented", "havent implemented", "still not implemented",
         "no ui", "no interface", "where is", "don't see", "dont see", "not seeing",
-        "doesnt have", "doesn't have", "no button", "no tab", "no form"
+        "doesnt have", "doesn't have", "no button", "no tab", "no form",
+        "not there", "never added", "never created", "still missing",
+        "should have a", "needs a", "needs to have", "prior to this"
     ]
     needs_new_subtasks = any(keyword in feedback_lower for keyword in keywords)
     
