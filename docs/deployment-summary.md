@@ -379,15 +379,21 @@ journalctl -u moveware-ai-worker -f
 - ✅ Manually created Stories now auto-generate plans (no blocking)
 - ✅ Git divergence auto-recovery (no more stuck workers)
 - ✅ Error summarization (concise, actionable build errors)
+- ✅ **Post-deployment step detection** (auto-detects migrations, env vars, dependencies)
 
 **Latest Critical Fixes (Feb 14, 2026):**
 - ✅ Missing imports in `planner.py` (sqlite3, time, DB_PATH)
 - ✅ Story breakdown table creation (no more "table not found" errors)
 - ✅ Auto plan generation for manual Stories (OD-750 will work now!)
+- ✅ **NEW:** Post-deployment step detection (Prisma migrations, env vars, npm install)
+  - Automatically comments on Jira tasks with required steps
+  - Grouped by priority: Required, Recommended, Optional
+  - Includes exact commands to run
 
 **Ready to deploy:**
-- 24 commits ready (including all critical fixes)
+- 26 commits ready (including all critical fixes + post-deployment detection)
 - Push to GitHub → Deploy on server → OD-750 will process correctly
+- See `docs/post-deployment-detection.md` for details on new feature
 
 **Expected outcome:**
 - **Accuracy:** 95% → 103-106% (exceeds goal!)
