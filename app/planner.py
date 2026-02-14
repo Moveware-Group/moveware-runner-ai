@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
+import time
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -12,7 +14,7 @@ from .config import settings, PARENT_PLAN_COMMENT_PREFIX
 from .llm_openai import OpenAIClient
 from .llm_anthropic import AnthropicClient
 from .models import JiraIssue
-from .db import add_progress_event
+from .db import add_progress_event, DB_PATH
 from .metrics import ExecutionMetrics, calculate_cost, save_metrics
 
 
