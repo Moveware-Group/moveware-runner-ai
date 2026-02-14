@@ -608,7 +608,10 @@ def _handle_epic_approved(ctx: Context, epic: JiraIssue) -> None:
 
 
 def _handle_story_approved(ctx: Context, story: JiraIssue) -> None:
-    """Handle Story approval - creates sub-tasks and Story PR."""
+    """
+    Handle Story approval - creates sub-tasks and Story PR.
+    Also handles Story-level rework (when subtasks exist but Story moved back for fixes).
+    """
     # Accept both Selected for Dev and In Progress (user may have moved directly to In Progress)
     if story.status not in (settings.JIRA_STATUS_SELECTED_FOR_DEV, settings.JIRA_STATUS_IN_PROGRESS):
         return
@@ -618,15 +621,32 @@ def _handle_story_approved(ctx: Context, story: JiraIssue) -> None:
     # Check for existing subtasks (including Done and Blocked)
     all_subtasks = ctx.jira.get_subtasks(story.key)
     
+    # Check if this is a REWORK scenario (subtasks exist AND Story was moved back)
+    # Detect by: subtasks exist AND at least one is in "In Testing" or "Done"
+    if all_subtasks and len(all_subtasks) > 0:
+        statuses = [
+            ((st.get("fields") or {}).get("status") or {}).get("name")
+            for st in all_subtasks
+        ]
+        
+        # If ANY subtask is in In Testing or Done, this is likely a rework
+        is_rework = any(s in [settings.JIRA_STATUS_IN_TESTING, settings.JIRA_STATUS_DONE] for s in statuses)
+        
+        if is_rework:
+            print(f"🔄 REWORK DETECTED for Story {story.key} - subtasks exist and were previously completed")
+            # Delegate to rework handler
+            _handle_rework_story(ctx, story, run_id=None)
+            return
+        else:
+            # Subtasks exist but all in Backlog/In Progress - just continue normal flow
+            print(f"Story {story.key} already has {len(all_subtasks)} sub-task(s), checking progress")
+    
     if not all_subtasks or len(all_subtasks) == 0:
         # No subtasks exist yet - create them from Story breakdown
         _create_subtasks_from_story(ctx, story)
         
         # Refresh subtasks after creation
         all_subtasks = ctx.jira.get_subtasks(story.key)
-    else:
-        # Subtasks already exist - just check if we need to start/continue work
-        print(f"Story {story.key} already has {len(all_subtasks)} sub-task(s), checking progress")
     
     # Find active (not Done, not Blocked) subtasks
     active_subtasks = [
