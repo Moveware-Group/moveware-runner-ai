@@ -211,7 +211,7 @@ def generate_plan(
         try:
             repo_config = get_repo_for_issue(issue.key)
             if repo_config:
-                repo_path = Path(repo_config["repo_workdir"])
+                repo_path = Path(repo_config.repo_workdir)
                 # Extract search terms from summary
                 search_terms = [word for word in issue.summary.lower().split() if len(word) > 4]
                 restoration_context = analyze_git_history(repo_path, restoration_context, search_terms)
