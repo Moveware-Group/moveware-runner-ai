@@ -2303,6 +2303,7 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
     post_deploy_comment = None
     try:
         from .post_deploy_detector import check_and_notify_post_deploy_steps
+        from .jira import JiraClient
         
         # Extract file paths from files_changed (remove "Created "/"Updated "/"Deleted " prefix)
         changed_file_paths = []
@@ -2313,6 +2314,13 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                 changed_file_paths.append(parts[1])
         
         if changed_file_paths:
+            # Create Jira client for posting post-deployment steps
+            jira_client = JiraClient(
+                base_url=settings.JIRA_BASE_URL,
+                email=settings.JIRA_EMAIL,
+                api_token=settings.JIRA_API_TOKEN,
+                timeout_s=120
+            )
             check_and_notify_post_deploy_steps(
                 repo_path=repo_path,
                 changed_files=changed_file_paths,
