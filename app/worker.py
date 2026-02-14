@@ -946,80 +946,26 @@ def _handle_rework_story(ctx: Context, story: JiraIssue, run_id: Optional[int] =
         f"Working on this now..."
     )
     
-    # Check existing subtasks
-    all_subtasks = ctx.jira.get_subtasks(story.key)
-    
-    if all_subtasks and len(all_subtasks) > 0:
-        # Subtasks exist - mark ALL non-blocked subtasks for rework
-        print(f"📋 Story has {len(all_subtasks)} existing subtasks, marking for rework...")
-        
-        # Move In Testing OR Done subtasks back to Selected for Dev for rework
-        # (Done subtasks means they were previously completed but implementation was insufficient)
-        reworked_count = 0
-        for st in all_subtasks:
-            st_key = st.get("key")
-            fields = st.get("fields") or {}
-            status = (fields.get("status") or {}).get("name")
-            
-            # Rework any subtask that's not already being worked on
-            if status in [settings.JIRA_STATUS_IN_TESTING, settings.JIRA_STATUS_DONE, settings.JIRA_STATUS_BACKLOG]:
-                # This subtask needs rework
-                try:
-                    # Move to "Needs Rework" status (clearer intent)
-                    ctx.jira.transition_to_status(st_key, settings.JIRA_STATUS_NEEDS_REWORK)
-                    ctx.jira.assign_issue(st_key, settings.JIRA_AI_ACCOUNT_ID)
-                    
-                    # Add feedback to subtask (FULL feedback, no truncation)
-                    ctx.jira.add_comment(
-                        st_key,
-                        f"🔄 **Rework Requested** (from Story-level feedback)\n\n"
-                        f"**Story-level issues found:**\n{rework_feedback if rework_feedback else 'Previous implementation was incomplete or incorrect.'}\n\n"
-                        f"**What needs to be fixed:**\n"
-                        f"Review the feedback above carefully. Do NOT re-implement from scratch. "
-                        f"Instead, analyze what's wrong with the current implementation and fix ONLY those specific issues.\n\n"
-                        f"**Previous status:** {status}"
-                    )
-                    
-                    # Enqueue with HIGH priority (rework is urgent)
-                    from .db import enqueue_run
-                    from .queue_manager import Priority
-                    enqueue_run(issue_key=st_key, payload={"issue_key": st_key}, priority=Priority.HIGH.value)
-                    
-                    reworked_count += 1
-                except Exception as e:
-                    print(f"⚠️  Could not mark {st_key} for rework: {e}")
-        
-        if reworked_count > 0:
-            ctx.jira.add_comment(
-                story.key,
-                f"✅ Marked {reworked_count} subtask(s) for rework based on your feedback.\n\n"
-                f"Each subtask will be re-executed with the context from your comments."
-            )
-            
-            # Transition Story back to In Progress
-            ctx.jira.transition_to_status(story.key, settings.JIRA_STATUS_IN_PROGRESS)
-            ctx.jira.assign_issue(story.key, settings.JIRA_AI_ACCOUNT_ID)
-            
-            # Enqueue first subtask for processing
-            next_key = _pick_next_subtask_to_start(ctx, story.key)
-            if next_key:
-                enqueue_run(issue_key=next_key, payload={"issue_key": next_key})
-        else:
-            # No subtasks in testing - might need new subtasks
-            ctx.jira.add_comment(
-                story.key,
-                "ℹ️  No subtasks in testing to rework. If you need additional work:\n"
-                "1. Add more detail to your comment about what's needed\n"
-                "2. Or manually create new subtasks and assign them to AI Runner"
-            )
-            ctx.jira.assign_issue(story.key, settings.JIRA_HUMAN_ACCOUNT_ID)
-    else:
-        # No subtasks - Story level rework means regenerate plan/subtasks
+    # Post the feedback as a comment for reference
+    if rework_feedback:
         ctx.jira.add_comment(
             story.key,
-            "ℹ️  Story has no subtasks. Moving to In Progress to create them."
+            f"📋 **Rework Feedback Summary:**\n\n{rework_feedback}\n\n"
+            f"---\n\n"
+            f"**Next steps:**\n"
+            f"1. Review which subtasks need to be fixed\n"
+            f"2. Manually move specific subtasks to \"Needs Rework\" status\n"
+            f"3. AI Runner will pick them up and apply the fixes\n\n"
+            f"💡 **Tip:** Only move the subtasks that actually need changes. "
+            f"Leave correctly implemented subtasks in \"Done\" status."
         )
-        _handle_story_approved(ctx, story)
+    
+    # Assign back to human - they need to manually move specific subtasks to "Needs Rework"
+    ctx.jira.assign_issue(story.key, settings.JIRA_HUMAN_ACCOUNT_ID)
+    
+    # Keep Story in "Needs Rework" status as a visual indicator
+    # (Story will move to "In Progress" automatically when subtasks are being reworked)
+    print(f"✅ Story rework acknowledged. Waiting for human to mark specific subtasks for rework.")
 
 
 def _handle_rework_subtask(ctx: Context, subtask: JiraIssue, run_id: Optional[int] = None) -> None:
