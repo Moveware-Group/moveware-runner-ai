@@ -998,7 +998,8 @@ def _handle_rework_story(ctx: Context, story: JiraIssue, run_id: Optional[int] =
                 assignee_account_id=story.assignee_account_id,
                 labels=story.labels,
                 parent_key=story.parent_key,
-                is_subtask=story.is_subtask
+                is_subtask=story.is_subtask,
+                raw=story.raw  # Pass the original raw data
             )
             
             plan_result = build_plan(enhanced_story)
