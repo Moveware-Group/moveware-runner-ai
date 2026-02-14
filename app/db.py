@@ -59,6 +59,10 @@ def init_db() -> None:
     # Initialize pattern learning schema
     from .pattern_learner import init_pattern_learning_schema
     init_pattern_learning_schema()
+    
+    # Initialize story creation tracker schema
+    from .story_creation_tracker import init_story_creation_tracker
+    init_story_creation_tracker()
 
 
 @contextmanager

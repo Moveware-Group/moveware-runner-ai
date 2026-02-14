@@ -194,16 +194,36 @@ def _extract_all_human_feedback(jira: JiraClient, parent_key: str) -> str:
 
 def _create_stories_from_plan(ctx: Context, epic: JiraIssue) -> bool:
     """Create Stories from Epic plan. Returns True if successful."""
-    # CRITICAL: Check if Stories already exist to prevent infinite loop
+    from .story_creation_tracker import were_stories_already_created, mark_stories_created
+    
+    # CRITICAL: Check database first (more reliable than Jira API)
+    already_created, existing_count = were_stories_already_created(epic.key)
+    if already_created:
+        print(f"🛑 Epic {epic.key} already has Stories created (DB flag set, {existing_count} Stories)")
+        print(f"   Skipping creation to prevent infinite loop")
+        ctx.jira.add_comment(
+            epic.key,
+            f"✅ Stories were already created for this Epic ({existing_count} Stories).\n\n"
+            "This is a duplicate Story creation request (webhook retry or worker restart).\n"
+            "If you need to regenerate Stories, please:\n"
+            "1. Delete all existing Stories manually\n"
+            "2. Contact admin to clear the Epic flag in the database"
+        )
+        return True  # Return True because Stories exist
+    
+    # FALLBACK: Also check via Jira API (in case DB flag was cleared)
     existing_stories = ctx.jira.get_stories_for_epic(epic.key)
     if existing_stories and len(existing_stories) > 0:
-        print(f"⚠️  Epic {epic.key} already has {len(existing_stories)} Stories, skipping creation to prevent duplicates")
+        print(f"⚠️  Epic {epic.key} already has {len(existing_stories)} Stories (found via Jira API)")
+        print(f"   Marking in database and skipping creation")
+        # Mark in database for future checks
+        mark_stories_created(epic.key, len(existing_stories), ctx.worker_id)
         ctx.jira.add_comment(
             epic.key,
             f"Stories already exist for this Epic ({len(existing_stories)} found). "
-            "If you need to regenerate Stories, please delete existing ones first or move Epic back to Backlog."
+            "Skipping creation to prevent duplicates."
         )
-        return True  # Return True because Stories exist (even if we didn't create them just now)
+        return True
     
     # Retrieve plan from database
     plan = get_plan(epic.key)
@@ -274,6 +294,10 @@ def _create_stories_from_plan(ctx: Context, epic: JiraIssue) -> bool:
         ctx.jira.assign_issue(story_key, settings.JIRA_AI_ACCOUNT_ID)
 
     if created_keys:
+        # Mark Stories created in database to prevent duplicates
+        from .story_creation_tracker import mark_stories_created
+        mark_stories_created(epic.key, len(created_keys), ctx.worker_id)
+        
         ctx.jira.add_comment(
             epic.key,
             "AI created Stories from the approved plan:\n" + "\n".join([f"- {k}" for k in created_keys]),
