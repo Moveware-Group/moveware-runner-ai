@@ -58,9 +58,82 @@ class FixValidator:
                 # Validate imports/exports consistency
                 if path.endswith((".ts", ".tsx", ".js", ".jsx")):
                     self._validate_imports_exports(path, content, files)
+                
+                # Check for regression (only for updates, not new files)
+                if action == "update":
+                    self._check_for_regression(path, content)
         
         is_valid = len(self.validation_errors) == 0
         return is_valid, self.validation_errors, self.validation_warnings
+    
+    def _check_for_regression(self, path: str, new_content: str) -> None:
+        """
+        Check if the update removes existing functionality.
+        
+        Detects:
+        - Removed functions/components
+        - Removed exports
+        - Significant code deletion (>30% of file)
+        """
+        file_path = self.repo_path / path
+        
+        if not file_path.exists():
+            # New file, no regression possible
+            return
+        
+        try:
+            old_content = file_path.read_text(encoding="utf-8")
+        except Exception:
+            # Can't read old file, skip regression check
+            return
+        
+        # Extract exported functions/components from old content
+        old_exports = self._extract_exports(old_content)
+        new_exports = self._extract_exports(new_content)
+        
+        # Check for removed exports
+        removed_exports = old_exports - new_exports
+        
+        if removed_exports:
+            self.validation_warnings.append(
+                f"{path}: REGRESSION WARNING - Removed exports: {', '.join(sorted(removed_exports))}\n"
+                f"  These exports may be used by other files. Verify this is intentional."
+            )
+        
+        # Check for significant code deletion
+        old_lines = [l.strip() for l in old_content.split('\n') if l.strip() and not l.strip().startswith('//')]
+        new_lines = [l.strip() for l in new_content.split('\n') if l.strip() and not l.strip().startswith('//')]
+        
+        deletion_ratio = 1 - (len(new_lines) / max(len(old_lines), 1))
+        
+        if deletion_ratio > 0.3 and len(old_lines) > 20:  # >30% deleted and file had substance
+            self.validation_warnings.append(
+                f"{path}: REGRESSION WARNING - Significant code deletion detected\n"
+                f"  Old: {len(old_lines)} lines, New: {len(new_lines)} lines ({deletion_ratio*100:.0f}% deleted)\n"
+                f"  Verify existing functionality is preserved."
+            )
+    
+    def _extract_exports(self, content: str) -> Set[str]:
+        """Extract exported function/component names from content."""
+        exports = set()
+        
+        # export function/const/class NAME
+        for pattern in [
+            r'export\s+(?:async\s+)?function\s+(\w+)',
+            r'export\s+const\s+(\w+)\s*[:=]',
+            r'export\s+class\s+(\w+)',
+        ]:
+            for match in re.finditer(pattern, content):
+                exports.add(match.group(1))
+        
+        # export { name1, name2 }
+        for match in re.finditer(r'export\s*\{([^}]+)\}', content):
+            exports_block = match.group(1)
+            for name in re.findall(r'(\w+)(?:\s+as\s+\w+)?', exports_block):
+                if name not in ('from', 'as'):  # Filter out keywords
+                    exports.add(name)
+        
+        return exports
     
     def _validate_typescript_file(self, path: str, content: str) -> None:
         """Validate TypeScript/JavaScript file for common issues."""
