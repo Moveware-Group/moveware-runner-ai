@@ -948,10 +948,17 @@ def _handle_rework_story(ctx: Context, story: JiraIssue, run_id: Optional[int] =
     
     # Analyze feedback to determine if we need NEW subtasks or to fix existing ones
     feedback_lower = rework_feedback.lower() if rework_feedback else ""
-    needs_new_subtasks = any(keyword in feedback_lower for keyword in [
+    keywords = [
         "missing", "wasn't implemented", "not implemented", "didn't implement",
-        "no ui", "no interface", "where is", "don't see"
-    ])
+        "no ui", "no interface", "where is", "don't see", "dont see", "not seeing",
+        "doesnt have", "doesn't have", "no button", "no tab", "no form"
+    ]
+    needs_new_subtasks = any(keyword in feedback_lower for keyword in keywords)
+    
+    # Debug logging
+    if needs_new_subtasks:
+        matched_keywords = [kw for kw in keywords if kw in feedback_lower]
+        print(f"🔍 Detected missing features (matched: {matched_keywords})")
     
     if needs_new_subtasks:
         # Feedback indicates missing features - generate new subtasks
