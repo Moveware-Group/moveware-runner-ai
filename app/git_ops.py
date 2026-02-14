@@ -114,10 +114,15 @@ def checkout_repo(workdir: str, repo: str, base_branch: str, token: Optional[str
         # Explicitly specify remote and branch to avoid ambiguity
         run(["git", "pull", "--ff-only", "origin", base_branch], cwd=workdir)
     except RuntimeError as e:
-        # If fast-forward fails (diverged branches), reset to remote
+        # If fast-forward fails (diverged branches or multiple branches), reset to remote
         error_msg = str(e)
-        if "Not possible to fast-forward" in error_msg or "Diverging branches" in error_msg:
-            print(f"⚠️  Local branch diverged from remote, resetting to origin/{base_branch}")
+        if any(phrase in error_msg for phrase in [
+            "Not possible to fast-forward",
+            "Diverging branches",
+            "Cannot fast-forward to multiple branches",
+            "fatal: Cannot fast-forward"
+        ]):
+            print(f"⚠️  Git pull failed ({error_msg.split(':')[-1].strip()}), resetting to origin/{base_branch}")
             run(["git", "reset", "--hard", f"origin/{base_branch}"], cwd=workdir)
             print(f"✅ Reset to origin/{base_branch} complete")
         else:
