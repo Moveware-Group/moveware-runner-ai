@@ -108,8 +108,21 @@ def checkout_repo(workdir: str, repo: str, base_branch: str, token: Optional[str
     
     run(["git", "fetch", "--all", "--prune"], cwd=workdir)
     run(["git", "checkout", base_branch], cwd=workdir)
-    # Explicitly specify remote and branch to avoid ambiguity
-    run(["git", "pull", "--ff-only", "origin", base_branch], cwd=workdir)
+    
+    # Try fast-forward pull first
+    try:
+        # Explicitly specify remote and branch to avoid ambiguity
+        run(["git", "pull", "--ff-only", "origin", base_branch], cwd=workdir)
+    except RuntimeError as e:
+        # If fast-forward fails (diverged branches), reset to remote
+        error_msg = str(e)
+        if "Not possible to fast-forward" in error_msg or "Diverging branches" in error_msg:
+            print(f"⚠️  Local branch diverged from remote, resetting to origin/{base_branch}")
+            run(["git", "reset", "--hard", f"origin/{base_branch}"], cwd=workdir)
+            print(f"✅ Reset to origin/{base_branch} complete")
+        else:
+            # Some other error, re-raise
+            raise
 
 
 def create_or_checkout_branch(workdir: str, branch: str) -> None:
