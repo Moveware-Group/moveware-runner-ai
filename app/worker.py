@@ -969,15 +969,15 @@ def _handle_rework_story(ctx: Context, story: JiraIssue, run_id: Optional[int] =
                     ctx.jira.transition_to_status(st_key, settings.JIRA_STATUS_NEEDS_REWORK)
                     ctx.jira.assign_issue(st_key, settings.JIRA_AI_ACCOUNT_ID)
                     
-                    # Add feedback to subtask
+                    # Add feedback to subtask (FULL feedback, no truncation)
                     ctx.jira.add_comment(
                         st_key,
                         f"🔄 **Rework Requested** (from Story-level feedback)\n\n"
-                        f"Story-level issues found:\n{rework_feedback[:500] if rework_feedback else 'Previous implementation was incomplete or incorrect.'}\n\n"
+                        f"**Story-level issues found:**\n{rework_feedback if rework_feedback else 'Previous implementation was incomplete or incorrect.'}\n\n"
                         f"**What needs to be fixed:**\n"
-                        f"The previous implementation didn't meet the acceptance criteria. "
-                        f"Please re-read the original Story description and ensure ALL requirements are implemented.\n\n"
-                        f"**Previous status:** {status} - this suggests the implementation was incomplete."
+                        f"Review the feedback above carefully. Do NOT re-implement from scratch. "
+                        f"Instead, analyze what's wrong with the current implementation and fix ONLY those specific issues.\n\n"
+                        f"**Previous status:** {status}"
                     )
                     
                     # Enqueue with HIGH priority (rework is urgent)

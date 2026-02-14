@@ -694,6 +694,9 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
     # Get human comments for additional context/clarifications
     human_comments = _get_human_comments(issue.key)
     
+    # Detect if this is a REWORK scenario (fixing issues found in testing)
+    is_rework = "REWORK REQUESTED" in (issue.description or "").upper()
+    
     # Detect if this is a restoration task
     from .restoration_detector import (
         detect_restoration_task,
@@ -712,12 +715,29 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         except Exception as e:
             print(f"⚠️  Could not analyze git history for sub-task: {e}")
     
-    prompt = (
-        f"Implement this Jira sub-task:\n\n"
-        f"**Task:** {issue.key}\n"
-        f"**Summary:** {issue.summary}\n\n"
-        f"**Requirements:**\n{issue.description}\n\n"
-    )
+    # Build prompt with special handling for rework scenarios
+    if is_rework:
+        print(f"🔧 REWORK DETECTED for {issue.key} - emphasizing fixes over re-implementation")
+        prompt = (
+            f"⚠️  **THIS IS A REWORK TASK** - Fix specific issues, do NOT re-implement from scratch!\n\n"
+            f"**Task:** {issue.key}\n"
+            f"**Summary:** {issue.summary}\n\n"
+            f"**Original Requirements:**\n{issue.description}\n\n"
+            f"**CRITICAL INSTRUCTIONS FOR REWORK:**\n"
+            f"1. This code was already implemented but had issues\n"
+            f"2. READ the feedback carefully in the description above\n"
+            f"3. Identify what's WRONG or MISSING in the current implementation\n"
+            f"4. Make TARGETED fixes - do NOT delete and rewrite everything\n"
+            f"5. Preserve existing working functionality\n"
+            f"6. ONLY fix the specific issues mentioned in the feedback\n\n"
+        )
+    else:
+        prompt = (
+            f"Implement this Jira sub-task:\n\n"
+            f"**Task:** {issue.key}\n"
+            f"**Summary:** {issue.summary}\n\n"
+            f"**Requirements:**\n{issue.description}\n\n"
+        )
     
     # Inject restoration context if detected
     if restoration_context.is_restoration:
