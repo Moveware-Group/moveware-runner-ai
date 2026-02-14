@@ -5,7 +5,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from .config import settings
 from .git_ops import checkout_repo, create_branch, commit_and_push, create_pr, checkout_or_create_story_branch, create_rollback_tag
@@ -440,6 +440,148 @@ def _system_prompt() -> str:
         "- Copy the design system template provided in context and customize it for the project\n"
         "- This ensures consistent UI patterns from the start"
     )
+
+
+def _build_completion_summary(
+    issue: JiraIssue,
+    branch: str,
+    pr_url: Optional[str],
+    files_changed: List[str],
+    implementation_notes: str,
+    verification_errors: List[str],
+    repo_path: Path
+) -> str:
+    """
+    Build a comprehensive summary comment for Jira when task moves to In Testing.
+    
+    Includes:
+    - What was requested (task summary)
+    - What was implemented (AI's implementation notes)
+    - Files changed (grouped by type)
+    - Branch and PR links
+    - Testing notes
+    - Post-deployment steps (if any)
+    """
+    lines = []
+    
+    # Header
+    lines.append("## ✅ Implementation Complete")
+    lines.append("")
+    
+    # What was requested
+    lines.append("### 📋 Task")
+    lines.append(f"**{issue.summary}**")
+    lines.append("")
+    
+    # What was implemented
+    if implementation_notes:
+        lines.append("### 🛠️ What Was Implemented")
+        lines.append(implementation_notes)
+        lines.append("")
+    
+    # Files changed (grouped by type)
+    lines.append("### 📁 Files Changed")
+    if files_changed:
+        # Group files by action type
+        created = [f.replace("Created ", "") for f in files_changed if f.startswith("Created")]
+        updated = [f.replace("Updated ", "") for f in files_changed if f.startswith("Updated")]
+        deleted = [f.replace("Deleted ", "") for f in files_changed if f.startswith("Deleted")]
+        
+        if created:
+            lines.append(f"**Created** ({len(created)} files):")
+            for file_path in created[:10]:  # Limit to 10
+                lines.append(f"- `{file_path}`")
+            if len(created) > 10:
+                lines.append(f"- ... and {len(created) - 10} more")
+            lines.append("")
+        
+        if updated:
+            lines.append(f"**Updated** ({len(updated)} files):")
+            for file_path in updated[:10]:  # Limit to 10
+                lines.append(f"- `{file_path}`")
+            if len(updated) > 10:
+                lines.append(f"- ... and {len(updated) - 10} more")
+            lines.append("")
+        
+        if deleted:
+            lines.append(f"**Deleted** ({len(deleted)} files):")
+            for file_path in deleted[:10]:  # Limit to 10
+                lines.append(f"- `{file_path}`")
+            if len(deleted) > 10:
+                lines.append(f"- ... and {len(deleted) - 10} more")
+            lines.append("")
+    else:
+        lines.append("No files changed.")
+        lines.append("")
+    
+    # Branch and PR info
+    lines.append("### 🔗 Code Review")
+    lines.append(f"**Branch:** `{branch}`")
+    if pr_url:
+        lines.append(f"**Pull Request:** {pr_url}")
+    lines.append("")
+    
+    # Check for post-deployment steps
+    try:
+        from .post_deploy_detector import detect_post_deploy_steps, format_post_deploy_comment
+        
+        # Extract clean file paths
+        changed_file_paths = []
+        for fc in files_changed:
+            parts = fc.split(" ", 1)
+            if len(parts) == 2:
+                changed_file_paths.append(parts[1])
+        
+        if changed_file_paths:
+            post_deploy_steps = detect_post_deploy_steps(repo_path, changed_file_paths)
+            
+            if post_deploy_steps:
+                # Add just a summary, full details will be in separate comment
+                required = [s for s in post_deploy_steps if s.priority == "required"]
+                recommended = [s for s in post_deploy_steps if s.priority == "recommended"]
+                
+                lines.append("### ⚠️ Post-Deployment Steps")
+                if required:
+                    lines.append(f"**{len(required)} required step(s)** detected (migrations, env vars, etc.)")
+                if recommended:
+                    lines.append(f"**{len(recommended)} recommended step(s)** detected (dependencies, etc.)")
+                lines.append("")
+                lines.append("_See separate comment for detailed instructions._")
+                lines.append("")
+    except Exception as e:
+        # Don't fail if post-deploy detection errors
+        print(f"Warning: Post-deploy detection in summary failed: {e}")
+    
+    # Testing notes
+    lines.append("### 🧪 Testing Notes")
+    lines.append("Please test the following:")
+    lines.append(f"1. Pull branch `{branch}`")
+    lines.append(f"2. Run any required post-deployment steps (see above)")
+    lines.append(f"3. Verify the implementation matches the acceptance criteria")
+    lines.append(f"4. Test edge cases and error handling")
+    lines.append("")
+    
+    # Build verification status
+    if verification_errors:
+        lines.append("### ⚠️ Build Verification Warnings")
+        for error in verification_errors[:3]:  # Limit to 3
+            error_preview = error[:200] + "..." if len(error) > 200 else error
+            lines.append(f"- {error_preview}")
+        if len(verification_errors) > 3:
+            lines.append(f"- ... and {len(verification_errors) - 3} more warnings")
+        lines.append("")
+        lines.append("_Note: These warnings were present but did not block the build._")
+        lines.append("")
+    else:
+        lines.append("### ✅ Build Verification")
+        lines.append("All checks passed successfully.")
+        lines.append("")
+    
+    # Footer
+    lines.append("---")
+    lines.append("_Ready for testing! If you find issues, move back to 'In Progress' and assign to AI Runner._")
+    
+    return "\n".join(lines)
 
 
 def execute_subtask(issue: JiraIssue, run_id: Optional[int] = None) -> ExecutionResult:
@@ -2184,28 +2326,16 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         summary = f"Committed to Story branch ({branch}). Story PR will be updated automatically."
         pr_url = None  # Story owns the PR
     
-    # Build Jira comment (keep it clean and concise)
-    jira_comment_lines = [
-        f"✅ Implementation complete",
-        f"",
-        f"*Branch:* `{branch}`",
-    ]
-    if pr_url:
-        jira_comment_lines.append(f"*PR:* {pr_url}")
-    
-    jira_comment_lines.append(f"")
-    jira_comment_lines.append(f"*Changes:* {files_summary}")
-    
-    # Add verification warnings if present
-    if verification_errors:
-        jira_comment_lines.append(f"")
-        jira_comment_lines.append(f"⚠️ *Build Verification:*")
-        for error in verification_errors:
-            # Truncate long errors
-            error_preview = error[:300] + "..." if len(error) > 300 else error
-            jira_comment_lines.append(error_preview)
-    
-    jira_comment = "\n".join(jira_comment_lines)
+    # Build comprehensive Jira comment with summary
+    jira_comment = _build_completion_summary(
+        issue=issue,
+        branch=branch,
+        pr_url=pr_url,
+        files_changed=files_changed,
+        implementation_notes=notes,
+        verification_errors=verification_errors,
+        repo_path=repo_path
+    )
     
     # Update and save metrics
     if metrics:
