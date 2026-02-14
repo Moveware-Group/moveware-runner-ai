@@ -2134,6 +2134,29 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         if run_id:
             add_progress_event(run_id, "committing", f"Pushed to GitHub on branch {branch}", {"branch": branch})
     
+    # 5b) Detect and notify about post-deployment steps
+    post_deploy_comment = None
+    try:
+        from .post_deploy_detector import check_and_notify_post_deploy_steps
+        
+        # Extract file paths from files_changed (remove "Created "/"Updated "/"Deleted " prefix)
+        changed_file_paths = []
+        for fc in files_changed:
+            # Parse "Created path/to/file", "Updated path/to/file", etc.
+            parts = fc.split(" ", 1)
+            if len(parts) == 2:
+                changed_file_paths.append(parts[1])
+        
+        if changed_file_paths:
+            check_and_notify_post_deploy_steps(
+                repo_path=repo_path,
+                changed_files=changed_file_paths,
+                issue_key=issue.key,
+                jira_client=jira_client
+            )
+    except Exception as e:
+        print(f"⚠️  Post-deployment detection failed (non-critical): {e}")
+    
     # 6) Create PR only if independent
     pr_url = None
     if is_independent:
