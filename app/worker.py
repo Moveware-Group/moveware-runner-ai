@@ -954,8 +954,8 @@ def _handle_rework_story(ctx: Context, story: JiraIssue, run_id: Optional[int] =
     from app.jira_adf import adf_to_plain_text
     comments = ctx.jira.get_comments(story.key)
     
-    # Check if rework was already processed (to prevent infinite loop)
-    rework_already_processed = False
+    # Find the timestamp of the last rework processing
+    last_rework_processed_time = None
     for comment in comments:
         author = comment.get("author", {})
         author_id = author.get("accountId") if isinstance(author, dict) else None
@@ -971,20 +971,14 @@ def _handle_rework_story(ctx: Context, story: JiraIssue, run_id: Optional[int] =
                 continue
             
             if "[REWORK_PROCESSED]" in text:
-                rework_already_processed = True
-                print(f"⚠️  Rework was already processed for {story.key}, skipping to prevent loop")
-                break
+                # Get timestamp of this rework processing
+                created = comment.get("created", "")
+                last_rework_processed_time = created
+                print(f"📅 Found previous rework processing at {created}")
     
-    if rework_already_processed:
-        # Rework was already processed - assign back to human to review progress
-        ctx.jira.add_comment(
-            story.key,
-            f"ℹ️  Rework was already initiated. Please review the new subtasks or provide additional feedback if needed."
-        )
-        ctx.jira.assign_issue(story.key, settings.JIRA_HUMAN_ACCOUNT_ID)
-        return
-    
+    # Collect human feedback AFTER the last rework processing
     human_feedback = []
+    human_feedback_all = []
     for comment in comments:
         author = comment.get("author", {})
         author_id = author.get("accountId") if isinstance(author, dict) else None
@@ -1001,13 +995,39 @@ def _handle_rework_story(ctx: Context, story: JiraIssue, run_id: Optional[int] =
         else:
             continue
         
-        human_feedback.append(text)
+        if not text.strip():
+            continue
+        
+        # Add to all feedback
+        human_feedback_all.append(text)
+        
+        # Check if this comment is after the last rework processing
+        comment_created = comment.get("created", "")
+        if last_rework_processed_time is None or comment_created > last_rework_processed_time:
+            human_feedback.append(text)
+            print(f"📝 New feedback comment found (created: {comment_created})")
     
+    # Check if we have NEW feedback since last rework
+    if last_rework_processed_time and not human_feedback:
+        print(f"⚠️  No NEW feedback since last rework processing for {story.key}")
+        ctx.jira.add_comment(
+            story.key,
+            f"ℹ️  I already processed the previous rework feedback and created subtasks.\n\n"
+            f"Please review the new subtasks that were created, or provide additional specific feedback if more changes are needed."
+        )
+        ctx.jira.assign_issue(story.key, settings.JIRA_HUMAN_ACCOUNT_ID)
+        return
+    
+    # Use new feedback if available, otherwise use all feedback (first rework cycle)
     rework_feedback = ""
     if human_feedback:
-        # Take last 2 comments as feedback
-        rework_feedback = "\n\n---\n\n".join(human_feedback[-2:])
-        print(f"📝 Found Story rework feedback ({len(human_feedback)} comments)")
+        # Use only NEW feedback since last rework
+        rework_feedback = "\n\n---\n\n".join(human_feedback)
+        print(f"📝 Found {len(human_feedback)} NEW rework comment(s)")
+    elif human_feedback_all:
+        # First rework cycle - use last 2 comments
+        rework_feedback = "\n\n---\n\n".join(human_feedback_all[-2:])
+        print(f"📝 Found Story rework feedback ({len(human_feedback_all)} comments total)")
     
     # Post acknowledgment
     ctx.jira.add_comment(
