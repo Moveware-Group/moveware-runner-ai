@@ -929,18 +929,20 @@ def _handle_rework_story(ctx: Context, story: JiraIssue, run_id: Optional[int] =
     all_subtasks = ctx.jira.get_subtasks(story.key)
     
     if all_subtasks and len(all_subtasks) > 0:
-        # Subtasks exist - mark incomplete ones back to In Progress for rework
+        # Subtasks exist - mark ALL non-blocked subtasks for rework
         print(f"📋 Story has {len(all_subtasks)} existing subtasks, marking for rework...")
         
-        # Move In Testing subtasks back to Selected for Dev so they get reworked
+        # Move In Testing OR Done subtasks back to Selected for Dev for rework
+        # (Done subtasks means they were previously completed but implementation was insufficient)
         reworked_count = 0
         for st in all_subtasks:
             st_key = st.get("key")
             fields = st.get("fields") or {}
             status = (fields.get("status") or {}).get("name")
             
-            if status == settings.JIRA_STATUS_IN_TESTING:
-                # This subtask was in testing - move back for rework
+            # Rework any subtask that's not already being worked on
+            if status in [settings.JIRA_STATUS_IN_TESTING, settings.JIRA_STATUS_DONE, settings.JIRA_STATUS_BACKLOG]:
+                # This subtask needs rework
                 try:
                     ctx.jira.transition_to_status(st_key, settings.JIRA_STATUS_SELECTED_FOR_DEV)
                     ctx.jira.assign_issue(st_key, settings.JIRA_AI_ACCOUNT_ID)
@@ -949,8 +951,11 @@ def _handle_rework_story(ctx: Context, story: JiraIssue, run_id: Optional[int] =
                     ctx.jira.add_comment(
                         st_key,
                         f"🔄 **Rework Requested** (from Story-level feedback)\n\n"
-                        f"Story-level issues found:\n{rework_feedback[:500]}\n\n"
-                        f"Please review and fix any issues in this subtask."
+                        f"Story-level issues found:\n{rework_feedback[:500] if rework_feedback else 'Previous implementation was incomplete or incorrect.'}\n\n"
+                        f"**What needs to be fixed:**\n"
+                        f"The previous implementation didn't meet the acceptance criteria. "
+                        f"Please re-read the original Story description and ensure ALL requirements are implemented.\n\n"
+                        f"**Previous status:** {status} - this suggests the implementation was incomplete."
                     )
                     reworked_count += 1
                 except Exception as e:
