@@ -312,6 +312,38 @@ def _create_stories_from_plan(ctx: Context, epic: JiraIssue) -> bool:
             epic.key,
             "AI created Stories from the approved plan:\n" + "\n".join([f"- {k}" for k in created_keys]),
         )
+        
+        # 🚀 AUTO-START FIRST STORY (Sequential Processing)
+        if created_keys:
+            first_story_key = created_keys[0]
+            print(f"🚀 Auto-starting first Story: {first_story_key}")
+            
+            try:
+                # Move first Story to Selected for Development
+                ctx.jira.transition_to_status(first_story_key, settings.JIRA_STATUS_SELECTED_FOR_DEV)
+                ctx.jira.assign_issue(first_story_key, settings.JIRA_AI_ACCOUNT_ID)
+                
+                # Enqueue it for processing
+                from .db import enqueue_run
+                enqueue_run(issue_key=first_story_key, payload={"issue_key": first_story_key})
+                
+                ctx.jira.add_comment(
+                    epic.key,
+                    f"🚀 **Automatic Sequential Processing Started**\n\n"
+                    f"Starting with {first_story_key}. Other Stories will be processed automatically "
+                    f"when this one completes.\n\n"
+                    f"Progress: 1/{len(created_keys)} Stories"
+                )
+                
+                print(f"✅ Enqueued {first_story_key} for automatic processing")
+            except Exception as e:
+                print(f"⚠️  Could not auto-start first Story: {e}")
+                ctx.jira.add_comment(
+                    epic.key,
+                    f"⚠️ Could not auto-start first Story ({first_story_key}): {e}\n\n"
+                    f"Please manually move it to 'Selected for Development'."
+                )
+        
         return True
     
     return False
@@ -712,19 +744,122 @@ def _handle_execute_subtask(ctx: Context, subtask: JiraIssue, run_id: Optional[i
 
 
 def _check_story_completion(ctx: Context, story: JiraIssue) -> None:
-    """Check if all sub-tasks are done and mark Story PR as ready."""
+    """
+    Check if all sub-tasks are done and mark Story PR as ready.
+    If Story is part of an Epic, automatically start next Story in sequence.
+    """
     if story.issue_type != "Story":
         return
     
     if _all_subtasks_done(ctx, story.key):
-        # TODO: Mark PR as ready for review via GitHub API
-        # For now, just comment on the Story
+        # Mark this Story as complete
         ctx.jira.add_comment(
             story.key,
             "✅ All sub-tasks completed! Story PR is ready for review."
         )
         ctx.jira.transition_to_status(story.key, settings.JIRA_STATUS_IN_TESTING)
         ctx.jira.assign_issue(story.key, settings.JIRA_HUMAN_ACCOUNT_ID)
+        
+        # 🚀 AUTO-START NEXT STORY (Sequential Processing)
+        # Check if this Story is part of an Epic
+        if story.parent_key:
+            epic_key = story.parent_key
+            print(f"🔄 Story {story.key} completed, checking for next Story in Epic {epic_key}")
+            
+            try:
+                # Get all Stories in this Epic
+                all_stories = ctx.jira.get_stories_for_epic(epic_key)
+                
+                if all_stories:
+                    # Find Stories that are still in Backlog (not started yet)
+                    backlog_stories = [
+                        s for s in all_stories
+                        if ((s.get("fields") or {}).get("status") or {}).get("name") == settings.JIRA_STATUS_BACKLOG
+                    ]
+                    
+                    # Also check for Stories assigned to AI (in case status is different)
+                    ai_assignee = settings.JIRA_AI_ACCOUNT_ID
+                    pending_stories = [
+                        s for s in backlog_stories
+                        if ((s.get("fields") or {}).get("assignee") or {}).get("accountId") == ai_assignee
+                    ]
+                    
+                    if pending_stories:
+                        # Start the next Story
+                        next_story = pending_stories[0]
+                        next_story_key = next_story.get("key")
+                        
+                        print(f"🚀 Auto-starting next Story: {next_story_key}")
+                        
+                        # Move to Selected for Development
+                        ctx.jira.transition_to_status(next_story_key, settings.JIRA_STATUS_SELECTED_FOR_DEV)
+                        ctx.jira.assign_issue(next_story_key, settings.JIRA_AI_ACCOUNT_ID)
+                        
+                        # Enqueue for processing
+                        from .db import enqueue_run
+                        enqueue_run(issue_key=next_story_key, payload={"issue_key": next_story_key})
+                        
+                        # Calculate progress
+                        total_stories = len(all_stories)
+                        completed_stories = len([
+                            s for s in all_stories
+                            if ((s.get("fields") or {}).get("status") or {}).get("name") in [
+                                settings.JIRA_STATUS_IN_TESTING,
+                                settings.JIRA_STATUS_DONE
+                            ]
+                        ])
+                        
+                        # Update Epic with progress
+                        ctx.jira.add_comment(
+                            epic_key,
+                            f"📊 **Sequential Processing Progress**\n\n"
+                            f"✅ Completed: {story.key}\n"
+                            f"🚀 Starting: {next_story_key}\n\n"
+                            f"Progress: {completed_stories}/{total_stories} Stories completed"
+                        )
+                        
+                        print(f"✅ Next Story {next_story_key} queued ({completed_stories}/{total_stories} complete)")
+                        
+                    else:
+                        # No more Stories to process - Epic is complete!
+                        print(f"🎉 All Stories completed for Epic {epic_key}")
+                        
+                        # Check if ALL Stories are done (not just in testing)
+                        all_done = all(
+                            ((s.get("fields") or {}).get("status") or {}).get("name") == settings.JIRA_STATUS_DONE
+                            for s in all_stories
+                        )
+                        
+                        total_stories = len(all_stories)
+                        in_testing = len([
+                            s for s in all_stories
+                            if ((s.get("fields") or {}).get("status") or {}).get("name") == settings.JIRA_STATUS_IN_TESTING
+                        ])
+                        
+                        if all_done:
+                            # All Stories are Done - mark Epic as Done
+                            ctx.jira.transition_to_status(epic_key, settings.JIRA_STATUS_DONE)
+                            ctx.jira.add_comment(
+                                epic_key,
+                                f"🎉 **Epic Complete!**\n\n"
+                                f"All {total_stories} Stories have been completed and tested.\n\n"
+                                f"Epic is now marked as Done."
+                            )
+                            print(f"✅ Epic {epic_key} marked as Done")
+                        else:
+                            # Stories in testing - Epic stays in In Progress
+                            ctx.jira.add_comment(
+                                epic_key,
+                                f"📊 **All Stories Processed**\n\n"
+                                f"All {total_stories} Stories have been implemented.\n"
+                                f"{in_testing} Story/Stories currently in testing.\n\n"
+                                f"Epic will be marked Done once all Stories are approved."
+                            )
+                            print(f"ℹ️  Epic {epic_key} - all Stories processed, {in_testing} in testing")
+                
+            except Exception as e:
+                print(f"⚠️  Could not auto-start next Story: {e}")
+                # Don't fail - just log the error
 
 
 def _handle_rework_story(ctx: Context, story: JiraIssue, run_id: Optional[int] = None) -> None:
