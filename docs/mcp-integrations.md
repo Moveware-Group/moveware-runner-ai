@@ -16,9 +16,9 @@ Integrations work at two levels:
 | **Figma** | `app/integrations/figma.py` | - | `FIGMA_ACCESS_TOKEN` |
 | **Sentry** | `app/integrations/sentry_client.py` | `sentry-integration` | `SENTRY_ACCESS_TOKEN` + `SENTRY_ORG` |
 | **BrowserStack** | `app/integrations/browserstack.py` | `browserstack-testing` | `BROWSERSTACK_USERNAME` + `BROWSERSTACK_ACCESS_KEY` |
+| **Stripe** | `app/integrations/stripe_client.py` | `stripe-payments` | `STRIPE_SECRET_KEY` |
+| **Vercel** | `app/integrations/vercel_client.py` | - | `VERCEL_TOKEN` |
 | **Prisma** | - (via skill + npx) | `prisma-database` | Skill added to repo config |
-| **Stripe** | - (via skill) | `stripe-payments` | Skill added to repo config |
-| **Vercel** | - (via skill) | - | Next.js skill covers patterns |
 
 ## API Integrations (Python Modules)
 
@@ -88,6 +88,54 @@ BROWSERSTACK_ACCESS_KEY=your-access-key
 
 **Note:** BrowserStack checks run as warnings (non-blocking) since they require a publicly accessible URL. Most useful for staging/preview deployments.
 
+### Stripe (`app/integrations/stripe_client.py`)
+
+**What it does:** When a Jira story involves payment functionality (detected by keywords like "payment", "checkout", "subscription", "stripe"), the executor fetches the actual Stripe account state - products, prices, webhook endpoints, and customer portal config. This gives Claude the real product/price IDs to reference in generated code.
+
+**How it works:**
+1. Executor scans issue summary and description for payment-related keywords
+2. Calls the Stripe API to list products, prices, webhook endpoints, and portal config
+3. Formats the account state (IDs, amounts, currencies, intervals) as LLM context
+4. Claude uses the real IDs in generated code instead of placeholder values
+
+**Setup:**
+```bash
+# In .env - use test key for development, live key for production
+STRIPE_SECRET_KEY=sk_test_xxx
+STRIPE_WEBHOOK_SECRET=whsec_xxx  # optional, for webhook validation
+```
+
+Generate keys at: https://dashboard.stripe.com/apikeys
+
+**Security note:** Always use `sk_test_` keys during development. The orchestrator never exposes the secret key to the LLM - only the resulting account data (product names, price IDs, etc).
+
+### Vercel (`app/integrations/vercel_client.py`)
+
+**What it does:** For Next.js/React projects deployed to Vercel, the executor fetches project configuration (framework, build command, domains, environment variable names) and, for build-error tasks, the actual build logs from failed deployments. This ensures the AI generates deployment-ready code.
+
+**How it works:**
+1. Executor matches the repo name to a Vercel project, or detects deployment keywords
+2. Fetches project config: framework, Node version, build command, output dir, domains
+3. Lists configured environment variable **names** (never values) so the AI knows what's available
+4. If the task mentions "build error" or "deployment fail", fetches the latest error build logs
+5. Injects all context into the LLM prompt
+
+**Setup:**
+```bash
+# In .env
+VERCEL_TOKEN=xxx
+VERCEL_TEAM_ID=team_xxx  # optional, for team-scoped projects
+```
+
+Generate a token at: https://vercel.com/account/tokens
+
+**What the AI gets:**
+- Project framework and build settings
+- Domain names (production, preview)
+- Environment variable names (e.g., `DATABASE_URL [production,preview]`)
+- Latest deployment status
+- Build logs from failed deployments (when relevant)
+
 ## Skill-Based Integrations (Prompt Injection)
 
 These services are integrated through AI skills - markdown files loaded by `skill_loader.py` and injected into LLM prompts. The AI uses this knowledge to generate correct implementation patterns.
@@ -152,10 +200,13 @@ Jira Story arrives → Worker claims run
   ↓
 Executor loads repo context + skills
   ↓
-Figma: Scan description for Figma URLs → fetch design context
-Sentry: Scan for Sentry refs → fetch error details
+Auto-detect & fetch external context:
+  Figma:       Scan description for Figma URLs → fetch design specs
+  Sentry:      Scan for Sentry refs → fetch stack traces & breadcrumbs
+  Stripe:      Detect payment keywords → fetch products, prices, webhooks
+  Vercel:      Match repo to project → fetch config, env vars, build logs
   ↓
-Build LLM prompt with all context (skills + Figma + Sentry + repo)
+Build LLM prompt (skills + Figma + Sentry + Stripe + Vercel + repo)
   ↓
 Claude generates implementation
   ↓
@@ -182,6 +233,18 @@ Commit, push, create PR → report to Jira
 1. Verify `BROWSERSTACK_USERNAME` and `BROWSERSTACK_ACCESS_KEY` are set
 2. Check your BrowserStack plan has available parallel sessions
 3. The tested URL must be publicly accessible (or use BrowserStack Local)
+
+### Stripe context not loading
+1. Verify `STRIPE_SECRET_KEY` is set in `.env`
+2. Use `sk_test_` keys for development environments
+3. Look for `💳 Stripe account context loaded` in worker logs
+4. Ensure the key has read access to products, prices, and webhook endpoints
+
+### Vercel context not loading
+1. Verify `VERCEL_TOKEN` is set in `.env`
+2. If using a team, set `VERCEL_TEAM_ID` as well
+3. The Vercel project name must match the repo name for auto-detection
+4. Look for `▲ Vercel project context loaded` in worker logs
 
 ### Skills not loading
 1. Skill names in `repos.json` must match folder names in `.cursor/skills/`

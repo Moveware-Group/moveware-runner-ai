@@ -714,6 +714,30 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
     except Exception as e:
         print(f"Note: Sentry integration unavailable: {e}")
 
+    # Fetch Stripe account context if issue involves payment functionality
+    stripe_context = ""
+    try:
+        from app.integrations.stripe_client import get_stripe_context_for_issue
+        stripe_context = get_stripe_context_for_issue(issue.description or "", issue.summary)
+        if stripe_context:
+            print(f"💳 Stripe account context loaded for {issue.key}")
+    except Exception as e:
+        print(f"Note: Stripe integration unavailable: {e}")
+
+    # Fetch Vercel project context if issue involves deployment or Next.js
+    vercel_context = ""
+    try:
+        from app.integrations.vercel_client import get_vercel_context_for_issue
+        vercel_context = get_vercel_context_for_issue(
+            issue.description or "",
+            issue.summary,
+            repo_name=repo_settings.get("repo_name", ""),
+        )
+        if vercel_context:
+            print(f"▲ Vercel project context loaded for {issue.key}")
+    except Exception as e:
+        print(f"Note: Vercel integration unavailable: {e}")
+
     # Detect if this is a REWORK scenario (fixing issues found in testing)
     is_rework = "REWORK REQUESTED" in (issue.description or "").upper()
     
@@ -781,11 +805,15 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             f"Create logs/ directory for PM2 output.\n\n"
         )
     
-    # Inject external service context (Figma designs, Sentry errors)
+    # Inject external service context (Figma, Sentry, Stripe, Vercel)
     if figma_context:
         prompt += figma_context + "\n"
     if sentry_context:
         prompt += sentry_context + "\n"
+    if stripe_context:
+        prompt += stripe_context + "\n"
+    if vercel_context:
+        prompt += vercel_context + "\n"
 
     prompt += (
         f"**Repository Context:**\n{context_info}\n\n"
