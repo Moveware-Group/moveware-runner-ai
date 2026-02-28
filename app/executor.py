@@ -694,6 +694,26 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
     # Get human comments for additional context/clarifications
     human_comments = _get_human_comments(issue.key)
     
+    # Fetch Figma design context if story/description contains Figma URLs
+    figma_context = ""
+    try:
+        from app.integrations.figma import get_design_context_for_issue
+        figma_context = get_design_context_for_issue(issue.description or "")
+        if figma_context:
+            print(f"🎨 Figma design context loaded for {issue.key}")
+    except Exception as e:
+        print(f"Note: Figma integration unavailable: {e}")
+
+    # Fetch Sentry error context if issue references Sentry errors or is a bug fix
+    sentry_context = ""
+    try:
+        from app.integrations.sentry_client import get_error_context_for_issue
+        sentry_context = get_error_context_for_issue(issue.description or "")
+        if sentry_context:
+            print(f"🐛 Sentry error context loaded for {issue.key}")
+    except Exception as e:
+        print(f"Note: Sentry integration unavailable: {e}")
+
     # Detect if this is a REWORK scenario (fixing issues found in testing)
     is_rework = "REWORK REQUESTED" in (issue.description or "").upper()
     
@@ -761,6 +781,12 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             f"Create logs/ directory for PM2 output.\n\n"
         )
     
+    # Inject external service context (Figma designs, Sentry errors)
+    if figma_context:
+        prompt += figma_context + "\n"
+    if sentry_context:
+        prompt += sentry_context + "\n"
+
     prompt += (
         f"**Repository Context:**\n{context_info}\n\n"
         f"**REMINDER - SCOPE CHECK:**\n"

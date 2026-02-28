@@ -280,9 +280,63 @@ def verify_tests(repo_path: Path, changed_files: List[str], quick: bool = True) 
     return VerificationResult(passed=True, errors=errors, warnings=warnings)
 
 
-def run_all_verifications(repo_path: Path, changed_files: List[str], run_tests: bool = False) -> VerificationResult:
+def verify_responsive_browserstack(
+    url: str,
+    changed_files: List[str],
+) -> VerificationResult:
+    """
+    Run BrowserStack responsive design check on a deployed URL.
+    
+    Only triggers when UI-related files were changed and BrowserStack
+    credentials are configured. Results are warnings, not blocking errors.
+    """
+    errors = []
+    warnings = []
+    
+    ui_extensions = ('.tsx', '.jsx', '.css', '.scss', '.html')
+    has_ui_changes = any(f.endswith(ui_extensions) for f in changed_files)
+    if not has_ui_changes:
+        return VerificationResult(passed=True, errors=[], warnings=[])
+    
+    try:
+        from app.integrations.browserstack import is_configured, run_responsive_check
+        
+        if not is_configured():
+            return VerificationResult(passed=True, errors=[], warnings=[])
+        
+        print("Running BrowserStack responsive check...")
+        result = run_responsive_check(url)
+        
+        if result.error:
+            warnings.append(f"BrowserStack: {result.error}")
+        elif not result.passed:
+            warnings.append(
+                f"BrowserStack responsive check flagged issues.\n"
+                f"{result.to_jira_comment()}"
+            )
+        else:
+            print("  ✓ BrowserStack responsive check passed")
+        
+    except Exception as e:
+        warnings.append(f"BrowserStack check skipped: {e}")
+    
+    return VerificationResult(passed=True, errors=errors, warnings=warnings)
+
+
+def run_all_verifications(
+    repo_path: Path,
+    changed_files: List[str],
+    run_tests: bool = False,
+    deployed_url: str = "",
+) -> VerificationResult:
     """
     Run all pre-commit verifications.
+    
+    Args:
+        repo_path: Path to the repository
+        changed_files: List of changed file paths
+        run_tests: Whether to run the test suite
+        deployed_url: If provided, runs BrowserStack responsive checks
     
     Returns combined result with all errors and warnings.
     """
@@ -319,6 +373,16 @@ def run_all_verifications(repo_path: Path, changed_files: List[str], run_tests: 
         
         all_errors.extend(result.errors)
         all_warnings.extend(result.warnings)
+    
+    # Run BrowserStack responsive check if URL provided and UI files changed
+    if deployed_url:
+        print(f"\n[BrowserStack Responsive]")
+        bs_result = verify_responsive_browserstack(deployed_url, changed_files)
+        all_warnings.extend(bs_result.warnings)
+        if bs_result.warnings:
+            print(f"  ⚠ Warnings")
+        else:
+            print(f"  ✓ Passed (or skipped)")
     
     print("\n" + "="*60)
     if passed:
