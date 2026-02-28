@@ -1,0 +1,28 @@
+{
+  "mcpServers": {
+    "figma": {
+      "url": "https://modelcontextprotocol.figma.com"
+    },
+    "sentry": {
+      "url": "https://mcp.sentry.dev/mcp"
+    },
+    "browserstack": {
+      "command": "npx",
+      "args": ["-y", "@browserstack/mcp-server@latest"],
+      "env": {
+        "BROWSERSTACK_USERNAME": "${BROWSERSTACK_USERNAME}",
+        "BROWSERSTACK_ACCESS_KEY": "${BROWSERSTACK_ACCESS_KEY}"
+      }
+    },
+    "prisma": {
+      "command": "npx",
+      "args": ["-y", "prisma", "mcp"]
+    },
+    "stripe": {
+      "url": "https://mcp.stripe.com"
+    },
+    "vercel": {
+      "url": "https://mcp.vercel.com"
+    }
+  }
+}

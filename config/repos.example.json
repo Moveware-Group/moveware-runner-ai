@@ -8,7 +8,7 @@
       "base_branch": "main",
       "repo_owner_slug": "org",
       "repo_name": "online-docs",
-      "skills": ["nextjs-fullstack-dev"],
+      "skills": ["nextjs-fullstack-dev", "prisma-database", "stripe-payments", "sentry-integration", "browserstack-testing"],
       "port": 3000
     },
     {
@@ -19,7 +19,7 @@
       "base_branch": "main",
       "repo_owner_slug": "org",
       "repo_name": "video-surveys",
-      "skills": ["nextjs-fullstack-dev"],
+      "skills": ["nextjs-fullstack-dev", "prisma-database", "sentry-integration", "browserstack-testing"],
       "port": 3001
     },
     {
@@ -30,7 +30,7 @@
       "base_branch": "main",
       "repo_owner_slug": "org",
       "repo_name": "moveware-go",
-      "skills": ["flutter-dev"],
+      "skills": ["flutter-dev", "sentry-integration"],
       "port": 3000
     }
   ],
