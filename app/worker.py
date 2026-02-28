@@ -724,6 +724,19 @@ def _handle_execute_subtask(ctx: Context, subtask: JiraIssue, run_id: Optional[i
     ctx.jira.transition_to_status(subtask.key, settings.JIRA_STATUS_IN_TESTING)
     ctx.jira.assign_issue(subtask.key, settings.JIRA_HUMAN_ACCOUNT_ID)
 
+    # Slack notification for subtask completion
+    try:
+        from app.integrations.slack_notifier import notify_subtask_completed
+        notify_subtask_completed(
+            issue_key=subtask.key,
+            summary=subtask.summary,
+            branch=result.branch,
+            pr_url=result.pr_url,
+            story_key=subtask.parent_key,
+        )
+    except Exception:
+        pass
+
     # Check if parent is a Story and if PR needs to be created
     parent = _fetch_issue(ctx.jira, subtask.parent_key)
     if parent and parent.issue_type == "Story" and result.branch.startswith("story/"):
@@ -791,7 +804,20 @@ def _check_story_completion(ctx: Context, story: JiraIssue) -> None:
         )
         ctx.jira.transition_to_status(story.key, settings.JIRA_STATUS_IN_TESTING)
         ctx.jira.assign_issue(story.key, settings.JIRA_HUMAN_ACCOUNT_ID)
-        
+
+        # Slack notification for Story completion
+        try:
+            from app.integrations.slack_notifier import notify_story_completed
+            subtask_count = len(ctx.jira.get_subtasks(story.key) or [])
+            notify_story_completed(
+                story_key=story.key,
+                summary=story.summary,
+                subtask_count=subtask_count,
+                epic_key=story.parent_key,
+            )
+        except Exception:
+            pass
+
         # 🚀 AUTO-START NEXT STORY (Sequential Processing) - if enabled
         # Check if this Story is part of an Epic
         if settings.AUTO_START_NEXT_STORY and story.parent_key:
@@ -1427,6 +1453,17 @@ def worker_loop(poll_interval_seconds: float = 2.0, worker_id: str = "worker-1",
             add_progress_event(run_id, "failed", f"Error: {str(e)[:2000]}", {})
             add_event(run_id, "error", str(e), {})
             update_run(run_id, status="failed", last_error=str(e), locked_by=None, locked_at=None)
+
+            # Slack notification for failure
+            try:
+                from app.integrations.slack_notifier import notify_subtask_failed
+                notify_subtask_failed(
+                    issue_key=issue_key,
+                    summary=f"Run {run_id}",
+                    error=str(e),
+                )
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

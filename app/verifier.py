@@ -323,6 +323,46 @@ def verify_responsive_browserstack(
     return VerificationResult(passed=True, errors=errors, warnings=warnings)
 
 
+def verify_lighthouse_performance(
+    url: str,
+    changed_files: List[str],
+) -> VerificationResult:
+    """
+    Run Lighthouse / PageSpeed Insights audit on a deployed URL.
+
+    Only triggers when UI-related files were changed. Uses the free
+    PageSpeed Insights API. Results are warnings, not blocking errors.
+    """
+    errors = []
+    warnings = []
+
+    ui_extensions = ('.tsx', '.jsx', '.css', '.scss', '.html', '.svg')
+    has_ui_changes = any(f.endswith(ui_extensions) for f in changed_files)
+    if not has_ui_changes:
+        return VerificationResult(passed=True, errors=[], warnings=[])
+
+    try:
+        from app.integrations.lighthouse import run_audit
+
+        print("Running Lighthouse performance audit...")
+        result = run_audit(url, strategy="mobile")
+
+        if result.error:
+            warnings.append(f"Lighthouse: {result.error}")
+        elif not result.passed:
+            warnings.append(
+                f"Lighthouse flagged performance issues.\n"
+                f"{result.to_jira_comment()}"
+            )
+        else:
+            print(f"  ✓ Lighthouse audit passed (perf: {int(result.performance_score * 100)})")
+
+    except Exception as e:
+        warnings.append(f"Lighthouse audit skipped: {e}")
+
+    return VerificationResult(passed=True, errors=errors, warnings=warnings)
+
+
 def run_all_verifications(
     repo_path: Path,
     changed_files: List[str],
@@ -374,12 +414,20 @@ def run_all_verifications(
         all_errors.extend(result.errors)
         all_warnings.extend(result.warnings)
     
-    # Run BrowserStack responsive check if URL provided and UI files changed
+    # Run BrowserStack + Lighthouse checks if URL provided and UI files changed
     if deployed_url:
         print(f"\n[BrowserStack Responsive]")
         bs_result = verify_responsive_browserstack(deployed_url, changed_files)
         all_warnings.extend(bs_result.warnings)
         if bs_result.warnings:
+            print(f"  ⚠ Warnings")
+        else:
+            print(f"  ✓ Passed (or skipped)")
+
+        print(f"\n[Lighthouse Performance]")
+        lh_result = verify_lighthouse_performance(deployed_url, changed_files)
+        all_warnings.extend(lh_result.warnings)
+        if lh_result.warnings:
             print(f"  ⚠ Warnings")
         else:
             print(f"  ✓ Passed (or skipped)")

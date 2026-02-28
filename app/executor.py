@@ -2405,6 +2405,26 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
     except Exception as e:
         print(f"⚠️  Post-deployment detection failed (non-critical): {e}")
     
+    # 5c) Check GitHub Actions CI status (non-blocking)
+    ci_comment = ""
+    try:
+        from app.integrations.github_ci import check_ci_after_push
+        ci_status = check_ci_after_push(
+            owner=repo_settings["repo_owner_slug"],
+            repo=repo_settings["repo_name"],
+            branch=branch,
+            wait=False,
+        )
+        if ci_status.overall == "failure":
+            ci_comment = f"\n\n⚠️ CI checks failed on `{branch}`:\n{ci_status.to_jira_comment()}"
+            print(f"⚠️  CI checks failed on {branch}")
+        elif ci_status.overall == "success":
+            print(f"✓ CI checks passed on {branch}")
+        elif ci_status.overall == "pending":
+            print(f"⏳ CI checks still running on {branch}")
+    except Exception as e:
+        print(f"Note: GitHub CI check skipped: {e}")
+
     # 6) Create PR only if independent
     pr_url = None
     if is_independent:
