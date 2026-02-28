@@ -1,370 +1,218 @@
 """
-Vercel integration for the AI orchestrator.
+Vercel Engineering best practices for the AI orchestrator.
 
-Provides deployment context, build log analysis, and environment variable
-awareness for the LLM when working on Next.js/React projects deployed to
-Vercel. When a deployment fails, the executor can fetch build logs so Claude
-gets precise error context. Also provides project configuration (framework,
-env vars, domains) so generated code is deployment-ready.
+Provides Next.js and React best-practice guidance from Vercel Engineering
+as structured context for the LLM during code generation. This is injected
+into the executor prompt for any Next.js/React project so Claude follows
+modern patterns for performance, security, and code quality.
 
-Requires environment variables:
-  VERCEL_TOKEN   - Vercel API token (Bearer token)
-  VERCEL_TEAM_ID - (Optional) Vercel team/org ID for team-scoped projects
-
-Generate token at: https://vercel.com/account/tokens
+No API token required - this module is self-contained.
 """
 from __future__ import annotations
 
-import os
-import re
-from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any
-
-import requests
+from pathlib import Path
+from typing import Optional, List, Dict
 
 
-VERCEL_API_BASE = "https://api.vercel.com"
-
-
-@dataclass
-class VercelProjectContext:
-    """Vercel project configuration relevant to code generation."""
-    project_name: str = ""
-    framework: str = ""
-    node_version: str = ""
-    build_command: str = ""
-    output_directory: str = ""
-    root_directory: str = ""
-    domains: List[str] = field(default_factory=list)
-    env_vars: List[str] = field(default_factory=list)  # names only, no values
-    latest_deployment_status: str = ""
-    latest_deployment_url: str = ""
-
-    def to_prompt_context(self) -> str:
-        """Format as context for injection into LLM prompts."""
-        parts = [f"**Vercel Project: {self.project_name}**"]
-
-        if self.framework:
-            parts.append(f"- Framework: {self.framework}")
-        if self.node_version:
-            parts.append(f"- Node.js: {self.node_version}")
-        if self.build_command:
-            parts.append(f"- Build: `{self.build_command}`")
-        if self.output_directory:
-            parts.append(f"- Output dir: `{self.output_directory}`")
-        if self.root_directory:
-            parts.append(f"- Root dir: `{self.root_directory}`")
-
-        if self.domains:
-            parts.append(f"- Domains: {', '.join(self.domains[:5])}")
-
-        if self.env_vars:
-            parts.append(f"- Env vars configured: {', '.join(self.env_vars[:20])}")
-
-        if self.latest_deployment_status:
-            parts.append(
-                f"- Latest deployment: {self.latest_deployment_status}"
-                + (f" ({self.latest_deployment_url})" if self.latest_deployment_url else "")
-            )
-
-        return "\n".join(parts)
-
-
-@dataclass
-class VercelDeploymentError:
-    """Build error details from a failed Vercel deployment."""
-    deployment_url: str = ""
-    status: str = ""
-    error_message: str = ""
-    build_logs: str = ""
-    created_at: str = ""
-
-    def to_prompt_context(self) -> str:
-        """Format as context for injection into LLM prompts."""
-        parts = [
-            f"**Vercel Deployment Error:**",
-            f"- Status: {self.status}",
-            f"- URL: {self.deployment_url}" if self.deployment_url else None,
-            f"- Created: {self.created_at}" if self.created_at else None,
-        ]
-
-        if self.error_message:
-            parts.append(f"- Error: {self.error_message}")
-
-        if self.build_logs:
-            parts.append(f"\nBuild logs (last 3000 chars):\n```\n{self.build_logs[-3000:]}\n```")
-
-        return "\n".join(p for p in parts if p)
-
-
-def _get_token() -> Optional[str]:
-    return os.getenv("VERCEL_TOKEN")
-
-
-def _team_id() -> Optional[str]:
-    return os.getenv("VERCEL_TEAM_ID")
-
-
-def _headers() -> dict:
-    token = _get_token()
-    if not token:
-        return {}
-    return {"Authorization": f"Bearer {token}"}
-
-
-def _params() -> dict:
-    """Add team scope if configured."""
-    tid = _team_id()
-    return {"teamId": tid} if tid else {}
-
-
+# Always available - no external credentials needed
 def is_configured() -> bool:
-    """Check whether Vercel integration is configured."""
-    return bool(_get_token())
+    return True
 
 
-def _get(path: str, extra_params: Optional[dict] = None) -> Optional[dict]:
-    """Make a GET request to the Vercel API."""
-    token = _get_token()
-    if not token:
-        return None
+BEST_PRACTICES = """
+## Vercel Engineering — Next.js / React Best Practices
 
-    params = _params()
-    if extra_params:
-        params.update(extra_params)
+### App Router & Server Components (Next.js 13+)
+- Default to Server Components; add "use client" only when the component needs
+  browser APIs, event handlers, useState, or useEffect.
+- Use `loading.tsx` for streaming / Suspense boundaries per route segment.
+- Use `error.tsx` + `not-found.tsx` for graceful error and 404 handling.
+- Co-locate related files: `page.tsx`, `layout.tsx`, `loading.tsx`, `error.tsx`
+  inside each route folder.
 
+### Data Fetching
+- Fetch data in Server Components using `async/await` directly — no useEffect.
+- Use `fetch()` with Next.js caching: `{ next: { revalidate: 60 } }` for ISR,
+  `{ cache: "no-store" }` for dynamic data.
+- For mutations use Server Actions (`"use server"`) instead of API routes
+  when the caller is a Server Component or form.
+- Deduplicate requests with `React.cache()` or Next.js automatic fetch dedup.
+
+### Rendering Strategies
+- **Static (SSG):** Default for pages with no dynamic data. Generates at build time.
+- **ISR:** Use `revalidate` option for content that changes periodically.
+- **Dynamic:** Use `export const dynamic = "force-dynamic"` or `cookies()`/`headers()`
+  when every request must be unique.
+- Prefer Partial Prerendering (PPR) where supported — static shell + streaming dynamic.
+
+### Performance
+- Use `next/image` for all images (automatic WebP/AVIF, lazy loading, sizing).
+- Use `next/font` for fonts (zero layout shift, self-hosted, no external requests).
+- Use `next/link` for client-side navigation (automatic prefetching).
+- Use dynamic imports (`next/dynamic`) for heavy components below the fold.
+- Minimize client-side JavaScript: keep "use client" boundaries as small as possible.
+- Use `<Suspense>` boundaries to stream slow parts independently.
+- Avoid barrel files (`index.ts` re-exports) that prevent tree-shaking.
+
+### Metadata & SEO
+- Use the Metadata API (`export const metadata` or `generateMetadata()`) in layouts/pages.
+- Include `title`, `description`, `openGraph`, and `twitter` metadata.
+- Add `robots.ts` and `sitemap.ts` at the app root for search engines.
+- Use semantic HTML elements (`<main>`, `<article>`, `<nav>`, `<section>`).
+
+### API Routes & Server Actions
+- Place API routes under `app/api/` using Route Handlers (`route.ts`).
+- Always validate input (use Zod or similar) in both API routes and Server Actions.
+- Return proper HTTP status codes and structured error responses.
+- Use `NextResponse.json()` for responses.
+- For forms: prefer Server Actions with `useFormState` and `useFormStatus`
+  over manual fetch to API routes.
+
+### Authentication & Middleware
+- Use `middleware.ts` at the project root for auth checks, redirects, and headers.
+- Keep middleware lightweight — it runs on every matched request.
+- Use `matcher` config to scope middleware to specific routes.
+- Store sessions in HTTP-only cookies, not localStorage.
+
+### Styling
+- Use Tailwind CSS with the `tailwind.config.ts` file for theme customization.
+- Use CSS Modules (`*.module.css`) for component-scoped styles when not using Tailwind.
+- Avoid runtime CSS-in-JS (styled-components, Emotion) in Server Components.
+- Use CSS variables for theming (dark mode, brand colors).
+
+### TypeScript
+- Enable strict mode in `tsconfig.json`.
+- Type all props, API responses, and Server Action return values.
+- Use `satisfies` operator for type-safe config objects.
+- Use Zod schemas for runtime validation that generates TypeScript types.
+
+### Error Handling
+- Wrap data fetches in try/catch with meaningful error messages.
+- Use `error.tsx` boundaries per route for graceful degradation.
+- Log errors server-side; show user-friendly messages client-side.
+- Use `notFound()` from `next/navigation` for missing resources (triggers `not-found.tsx`).
+
+### Security
+- Never expose secrets to the client — only `NEXT_PUBLIC_*` vars are bundled.
+- Validate and sanitize all user input server-side.
+- Use Content Security Policy headers via `next.config.js` or middleware.
+- Use `HttpOnly`, `Secure`, `SameSite=Lax` for session cookies.
+- Escape user content to prevent XSS (React does this by default, but watch
+  `dangerouslySetInnerHTML`).
+
+### Project Structure
+```
+app/
+  (marketing)/        ← Route groups for shared layouts
+    page.tsx
+    about/page.tsx
+  (dashboard)/
+    layout.tsx        ← Dashboard-specific layout with sidebar
+    page.tsx
+    settings/page.tsx
+  api/
+    auth/route.ts
+    webhooks/stripe/route.ts
+  layout.tsx          ← Root layout (html, body, providers)
+  not-found.tsx
+  error.tsx
+  loading.tsx
+components/
+  ui/                 ← Reusable UI primitives (Button, Card, Input)
+  features/           ← Feature-specific components
+lib/
+  db.ts               ← Database client (Prisma singleton)
+  auth.ts             ← Auth helpers
+  utils.ts            ← Shared utilities
+  validations.ts      ← Zod schemas
+```
+
+### Common Anti-Patterns to Avoid
+- Using `useEffect` for data fetching (use Server Components or SWR/React Query).
+- Putting "use client" at the top of every file.
+- Using `<img>` instead of `next/image`.
+- Using `<a>` instead of `next/link`.
+- Fetching data in layouts then passing via props (use parallel data fetching).
+- Large client bundles from importing entire libraries (use tree-shakeable imports).
+- Hardcoding environment values instead of using `process.env`.
+- Skipping error boundaries and loading states.
+""".strip()
+
+
+def _detect_nextjs_project(repo_path: Path) -> bool:
+    """Check if the repo is a Next.js project."""
+    indicators = [
+        repo_path / "next.config.js",
+        repo_path / "next.config.mjs",
+        repo_path / "next.config.ts",
+        repo_path / "app" / "layout.tsx",
+        repo_path / "app" / "layout.jsx",
+        repo_path / "app" / "page.tsx",
+        repo_path / "pages" / "_app.tsx",
+    ]
+    return any(p.exists() for p in indicators)
+
+
+def _detect_react_project(repo_path: Path) -> bool:
+    """Check if the repo is a React project (non-Next.js)."""
+    pkg_path = repo_path / "package.json"
+    if not pkg_path.exists():
+        return False
     try:
-        resp = requests.get(
-            f"{VERCEL_API_BASE}{path}",
-            headers=_headers(),
-            params=params,
-            timeout=15,
-        )
-        resp.raise_for_status()
-        return resp.json()
-    except requests.RequestException as e:
-        print(f"Vercel API error ({path}): {e}")
-        return None
-
-
-def list_projects() -> List[Dict[str, str]]:
-    """List Vercel projects accessible with the current token."""
-    if not is_configured():
-        return []
-
-    data = _get("/v9/projects", {"limit": "20"})
-    if not data:
-        return []
-
-    projects = []
-    for p in data.get("projects", []):
-        projects.append({
-            "id": p.get("id", ""),
-            "name": p.get("name", ""),
-            "framework": p.get("framework") or "unknown",
-        })
-    return projects
-
-
-def find_project_by_repo(repo_name: str) -> Optional[str]:
-    """Find a Vercel project ID by matching its linked Git repository name."""
-    if not is_configured():
-        return None
-
-    projects = list_projects()
-    repo_lower = repo_name.lower()
-    for p in projects:
-        if p["name"].lower() == repo_lower:
-            return p["id"]
-    return None
-
-
-def fetch_project_context(project_id_or_name: str) -> Optional[VercelProjectContext]:
-    """
-    Fetch Vercel project configuration including framework, build settings,
-    domains, and environment variable names.
-    """
-    if not is_configured():
-        print("Vercel integration skipped: VERCEL_TOKEN not set")
-        return None
-
-    data = _get(f"/v9/projects/{project_id_or_name}")
-    if not data:
-        return None
-
-    ctx = VercelProjectContext()
-    ctx.project_name = data.get("name", "")
-    ctx.framework = data.get("framework") or ""
-    ctx.node_version = data.get("nodeVersion") or ""
-    ctx.build_command = data.get("buildCommand") or ""
-    ctx.output_directory = data.get("outputDirectory") or ""
-    ctx.root_directory = data.get("rootDirectory") or ""
-
-    # Domains
-    for alias in data.get("alias", []):
-        if isinstance(alias, dict):
-            ctx.domains.append(alias.get("domain", ""))
-        elif isinstance(alias, str):
-            ctx.domains.append(alias)
-
-    # Also check targets for production domain
-    targets = data.get("targets", {})
-    if isinstance(targets, dict):
-        prod = targets.get("production", {})
-        if isinstance(prod, dict) and prod.get("alias"):
-            for a in prod["alias"]:
-                if a not in ctx.domains:
-                    ctx.domains.append(a)
-
-    # Environment variables (names only - never expose values)
-    env_data = _get(f"/v9/projects/{project_id_or_name}/env")
-    if env_data:
-        for ev in env_data.get("envs", []):
-            key = ev.get("key", "")
-            target = ev.get("target", [])
-            if key:
-                targets_str = ",".join(target) if isinstance(target, list) else str(target)
-                ctx.env_vars.append(f"{key} [{targets_str}]")
-
-    # Latest deployment status
-    deployments = _get(f"/v6/deployments", {"projectId": data.get("id", ""), "limit": "1"})
-    if deployments and deployments.get("deployments"):
-        latest = deployments["deployments"][0]
-        ctx.latest_deployment_status = latest.get("readyState", latest.get("state", ""))
-        ctx.latest_deployment_url = f"https://{latest.get('url', '')}" if latest.get("url") else ""
-
-    return ctx
-
-
-def fetch_failed_deployment_logs(project_id_or_name: str) -> Optional[VercelDeploymentError]:
-    """
-    Fetch build logs from the most recent failed deployment.
-    Useful for debugging build errors in the executor's self-healing loop.
-    """
-    if not is_configured():
-        return None
-
-    # Get recent deployments
-    project_data = _get(f"/v9/projects/{project_id_or_name}")
-    if not project_data:
-        return None
-
-    project_id = project_data.get("id", "")
-    deployments = _get(f"/v6/deployments", {
-        "projectId": project_id,
-        "limit": "5",
-        "state": "ERROR",
-    })
-
-    if not deployments or not deployments.get("deployments"):
-        return None
-
-    latest_failed = deployments["deployments"][0]
-    deployment_uid = latest_failed.get("uid", "")
-
-    error = VercelDeploymentError()
-    error.deployment_url = f"https://{latest_failed.get('url', '')}" if latest_failed.get("url") else ""
-    error.status = latest_failed.get("readyState", latest_failed.get("state", "ERROR"))
-    error.created_at = str(latest_failed.get("createdAt", ""))
-
-    # Fetch build logs
-    if deployment_uid:
-        # Build logs via events endpoint
-        events = _get(f"/v2/deployments/{deployment_uid}/events")
-        if events:
-            log_lines = []
-            for event in events if isinstance(events, list) else []:
-                payload = event.get("payload", {})
-                text = payload.get("text", "")
-                if text:
-                    log_lines.append(text)
-            error.build_logs = "\n".join(log_lines)
-
-    # Also check deployment detail for error message
-    detail = _get(f"/v13/deployments/{deployment_uid}")
-    if detail:
-        error.error_message = detail.get("errorMessage") or ""
-
-    return error
-
-
-# Patterns to detect Vercel-related tasks
-VERCEL_KEYWORDS = [
-    "vercel", "deploy", "deployment", "build error", "build fail",
-    "serverless function", "edge function", "next.js deploy",
-]
-
-VERCEL_URL_PATTERN = re.compile(
-    r"https?://(?:[\w-]+\.)?vercel\.app"
-    r"|https?://vercel\.com/[\w-]+/[\w-]+/deployments"
-)
-
-
-def _is_vercel_task(text: str) -> bool:
-    """Detect if a task involves Vercel deployment or build issues."""
-    text_lower = (text or "").lower()
-    if VERCEL_URL_PATTERN.search(text or ""):
-        return True
-    return any(kw in text_lower for kw in VERCEL_KEYWORDS)
+        import json
+        pkg = json.loads(pkg_path.read_text(encoding="utf-8"))
+        deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+        return "react" in deps
+    except Exception:
+        return False
 
 
 def get_vercel_context_for_issue(
     description: str,
     summary: str = "",
     repo_name: str = "",
+    repo_path: Optional[str] = None,
+    skills: Optional[List[str]] = None,
 ) -> str:
     """
-    Fetch Vercel project context if the issue involves deployment or build topics.
+    Return Vercel Engineering best practices if the project is Next.js/React.
 
-    Auto-detects Vercel-related tasks by scanning for keywords like
-    "deploy", "build error", "vercel", etc. Also tries to match the
-    repo name to a Vercel project.
+    Detection is based on:
+    1. Skills list containing "nextjs-fullstack-dev"
+    2. Next.js config files in the repo
+    3. React in package.json dependencies
+
+    No API token required — this is a self-contained best-practice reference.
 
     Returns formatted context string for LLM prompt injection,
-    or empty string if not relevant or API unavailable.
+    or empty string if the project isn't Next.js/React.
     """
-    if not is_configured():
-        return ""
+    # Quick check via skills list (fastest path)
+    if skills and "nextjs-fullstack-dev" in skills:
+        return _format_context()
 
-    combined = f"{summary} {description}"
+    # Check via repo filesystem
+    if repo_path:
+        path = Path(repo_path)
+        if _detect_nextjs_project(path) or _detect_react_project(path):
+            return _format_context()
 
-    # Only fetch context if task is Vercel-related or we can match the repo
-    is_vercel = _is_vercel_task(combined)
-    project_id = None
+    # Check via task content keywords
+    combined = f"{summary} {description}".lower()
+    nextjs_keywords = [
+        "next.js", "nextjs", "next js", "app router", "server component",
+        "server action", "react server", "use client", "use server",
+    ]
+    if any(kw in combined for kw in nextjs_keywords):
+        return _format_context()
 
-    if repo_name:
-        project_id = find_project_by_repo(repo_name)
+    return ""
 
-    if not is_vercel and not project_id:
-        return ""
 
-    contexts = []
-
-    # Fetch project config if we can identify the project
-    if project_id:
-        project_ctx = fetch_project_context(project_id)
-        if project_ctx:
-            contexts.append(project_ctx.to_prompt_context())
-
-            # If the issue mentions build errors, also fetch failed deployment logs
-            if any(kw in combined.lower() for kw in ["build error", "build fail", "deployment fail"]):
-                error_ctx = fetch_failed_deployment_logs(project_id)
-                if error_ctx:
-                    contexts.append(error_ctx.to_prompt_context())
-    elif repo_name:
-        # Try by name directly
-        project_ctx = fetch_project_context(repo_name)
-        if project_ctx:
-            contexts.append(project_ctx.to_prompt_context())
-
-    if not contexts:
-        return ""
-
+def _format_context() -> str:
     return (
         "\n\n---\n\n"
-        "**Vercel Deployment Context:**\n\n"
-        + "\n\n".join(contexts)
-        + "\n\n**IMPORTANT:** Ensure your implementation is compatible with Vercel's "
-        "deployment model (serverless functions, edge runtime, static assets). "
-        "Reference the environment variables listed above using `process.env.VAR_NAME`.\n"
+        + BEST_PRACTICES
+        + "\n\n**Follow the Vercel Engineering best practices above for all "
+        "Next.js/React code in this task.**\n"
     )

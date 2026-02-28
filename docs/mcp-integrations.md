@@ -17,7 +17,7 @@ Integrations work at two levels:
 | **Sentry** | `app/integrations/sentry_client.py` | `sentry-integration` | `SENTRY_ACCESS_TOKEN` + `SENTRY_ORG` |
 | **BrowserStack** | `app/integrations/browserstack.py` | `browserstack-testing` | `BROWSERSTACK_USERNAME` + `BROWSERSTACK_ACCESS_KEY` |
 | **Stripe** | `app/integrations/stripe_client.py` | `stripe-payments` | `STRIPE_SECRET_KEY` |
-| **Vercel** | `app/integrations/vercel_client.py` | - | `VERCEL_TOKEN` |
+| **Vercel** | `app/integrations/vercel_client.py` | - | Auto (detects Next.js projects) |
 | **Prisma** | - (via skill + npx) | `prisma-database` | Skill added to repo config |
 
 ## API Integrations (Python Modules)
@@ -111,30 +111,27 @@ Generate keys at: https://dashboard.stripe.com/apikeys
 
 ### Vercel (`app/integrations/vercel_client.py`)
 
-**What it does:** For Next.js/React projects deployed to Vercel, the executor fetches project configuration (framework, build command, domains, environment variable names) and, for build-error tasks, the actual build logs from failed deployments. This ensures the AI generates deployment-ready code.
+**What it does:** Injects Vercel Engineering best practices for Next.js and React projects. This covers App Router patterns, Server Components, data fetching strategies, performance optimization, security, metadata/SEO, and project structure conventions. No API token needed - it auto-detects Next.js projects.
 
 **How it works:**
-1. Executor matches the repo name to a Vercel project, or detects deployment keywords
-2. Fetches project config: framework, Node version, build command, output dir, domains
-3. Lists configured environment variable **names** (never values) so the AI knows what's available
-4. If the task mentions "build error" or "deployment fail", fetches the latest error build logs
-5. Injects all context into the LLM prompt
+1. Executor checks if the project is Next.js/React via:
+   - Skills list containing `nextjs-fullstack-dev`
+   - Next.js config files in the repo (`next.config.js`, `app/layout.tsx`, etc.)
+   - Keywords in the task description (`next.js`, `server component`, `app router`, etc.)
+2. If detected, injects a comprehensive best-practice reference into the LLM prompt
 
-**Setup:**
-```bash
-# In .env
-VERCEL_TOKEN=xxx
-VERCEL_TEAM_ID=team_xxx  # optional, for team-scoped projects
-```
-
-Generate a token at: https://vercel.com/account/tokens
+**Setup:** None required - activates automatically for Next.js/React projects.
 
 **What the AI gets:**
-- Project framework and build settings
-- Domain names (production, preview)
-- Environment variable names (e.g., `DATABASE_URL [production,preview]`)
-- Latest deployment status
-- Build logs from failed deployments (when relevant)
+- App Router and Server Component patterns (when to use `"use client"` vs server)
+- Data fetching strategies (SSG, ISR, dynamic, Server Actions)
+- Performance rules (`next/image`, `next/font`, `next/link`, dynamic imports)
+- Metadata/SEO API usage
+- API Routes and Server Actions conventions
+- Middleware and authentication patterns
+- TypeScript and Zod validation patterns
+- Project structure recommendations
+- Common anti-patterns to avoid
 
 ## Skill-Based Integrations (Prompt Injection)
 
@@ -204,7 +201,7 @@ Auto-detect & fetch external context:
   Figma:       Scan description for Figma URLs → fetch design specs
   Sentry:      Scan for Sentry refs → fetch stack traces & breadcrumbs
   Stripe:      Detect payment keywords → fetch products, prices, webhooks
-  Vercel:      Match repo to project → fetch config, env vars, build logs
+  Vercel:      Detect Next.js project → inject best practices
   ↓
 Build LLM prompt (skills + Figma + Sentry + Stripe + Vercel + repo)
   ↓
@@ -240,11 +237,10 @@ Commit, push, create PR → report to Jira
 3. Look for `💳 Stripe account context loaded` in worker logs
 4. Ensure the key has read access to products, prices, and webhook endpoints
 
-### Vercel context not loading
-1. Verify `VERCEL_TOKEN` is set in `.env`
-2. If using a team, set `VERCEL_TEAM_ID` as well
-3. The Vercel project name must match the repo name for auto-detection
-4. Look for `▲ Vercel project context loaded` in worker logs
+### Vercel best practices not injecting
+1. Ensure the repo has `nextjs-fullstack-dev` in its skills list in `repos.json`
+2. Or ensure the repo has `next.config.js` / `app/layout.tsx` present
+3. Look for `▲ Vercel best practices injected` in worker logs
 
 ### Skills not loading
 1. Skill names in `repos.json` must match folder names in `.cursor/skills/`

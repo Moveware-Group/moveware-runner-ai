@@ -724,19 +724,20 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
     except Exception as e:
         print(f"Note: Stripe integration unavailable: {e}")
 
-    # Fetch Vercel project context if issue involves deployment or Next.js
+    # Inject Vercel Engineering best practices for Next.js/React projects
     vercel_context = ""
     try:
         from app.integrations.vercel_client import get_vercel_context_for_issue
         vercel_context = get_vercel_context_for_issue(
             issue.description or "",
             issue.summary,
-            repo_name=repo_settings.get("repo_name", ""),
+            repo_path=repo_settings.get("repo_workdir", ""),
+            skills=repo_settings.get("skills", []),
         )
         if vercel_context:
-            print(f"▲ Vercel project context loaded for {issue.key}")
+            print(f"▲ Vercel best practices injected for {issue.key}")
     except Exception as e:
-        print(f"Note: Vercel integration unavailable: {e}")
+        print(f"Note: Vercel best practices unavailable: {e}")
 
     # Detect if this is a REWORK scenario (fixing issues found in testing)
     is_rework = "REWORK REQUESTED" in (issue.description or "").upper()
