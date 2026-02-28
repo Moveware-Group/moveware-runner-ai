@@ -816,6 +816,16 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
     if vercel_context:
         prompt += vercel_context + "\n"
 
+    # Inject security requirements reminder
+    prompt += (
+        "**SECURITY REQUIREMENTS:**\n"
+        "- Never hardcode secrets, API keys, or tokens — use environment variables\n"
+        "- Use parameterized queries for all database operations (no string interpolation)\n"
+        "- Sanitize user input before rendering (avoid dangerouslySetInnerHTML unless sanitized)\n"
+        "- Set httpOnly and secure flags on cookies\n"
+        "- Use crypto.randomBytes() for tokens, never Math.random()\n\n"
+    )
+
     prompt += (
         f"**Repository Context:**\n{context_info}\n\n"
         f"**REMINDER - SCOPE CHECK:**\n"
@@ -1188,33 +1198,22 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                     verification_errors.append(f"npm install failed:\n{result.stderr[:800]}")
                     print(f"npm install failed: {result.stderr}")
                 else:
-                    # Address security vulnerabilities after install (non-breaking fixes only)
+                    # Run npm audit: fix safe vulnerabilities and report remaining
                     if run_id:
-                        add_progress_event(run_id, "verifying", "Checking and fixing security vulnerabilities (npm audit fix)", {})
+                        add_progress_event(run_id, "verifying", "Running npm audit (security vulnerability scan)", {})
                     try:
-                        print("Running npm audit fix to address security vulnerabilities...")
-                        audit_result = subprocess.run(
-                            ["npm", "audit", "fix"],
-                            cwd=repo_path,
-                            capture_output=True,
-                            text=True,
-                            timeout=60
-                        )
-                        if audit_result.returncode == 0:
-                            if audit_result.stdout and "fixed" in audit_result.stdout.lower():
-                                print(f"✓ Security vulnerabilities fixed:\n{audit_result.stdout[:500]}")
-                            else:
-                                print("✓ No fixable vulnerabilities or already up to date")
+                        from app.integrations.npm_audit import run_audit, run_audit_fix
+                        fix_msg = run_audit_fix(repo_path)
+                        print(f"npm audit fix: {fix_msg}")
+                        audit_report = run_audit(repo_path)
+                        if audit_report.has_actionable_issues:
+                            print(f"⚠ npm audit: {audit_report.critical} critical, {audit_report.high} high vulnerabilities remain")
+                        elif audit_report.total > 0:
+                            print(f"npm audit: {audit_report.total} low/moderate vulnerabilities (non-blocking)")
                         else:
-                            # audit fix exits 1 when vulns remain (e.g. require --force/breaking changes)
-                            audit_out = (audit_result.stdout or "") + (audit_result.stderr or "")
-                            if audit_out.strip():
-                                print(f"npm audit fix: {audit_out[:600]}")
-                            # Don't block build - we've applied safe fixes; remaining vulns need manual review
-                    except subprocess.TimeoutExpired:
-                        print("Warning: npm audit fix timed out")
+                            print("✓ npm audit: no vulnerabilities")
                     except Exception as e:
-                        print(f"Warning: npm audit fix failed: {e}")
+                        print(f"Warning: npm audit failed: {e}")
             except subprocess.TimeoutExpired:
                 verification_errors.append("npm install timed out after 60 seconds")
                 print("npm install timed out")
@@ -2424,6 +2423,44 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             print(f"⏳ CI checks still running on {branch}")
     except Exception as e:
         print(f"Note: GitHub CI check skipped: {e}")
+
+    # 5d) npm audit report (attach to Jira for visibility)
+    try:
+        from app.integrations.npm_audit import run_audit as run_npm_audit
+        if (repo_path / "node_modules").exists():
+            audit_result = run_npm_audit(repo_path)
+            if audit_result.has_actionable_issues:
+                jira_audit_comment = audit_result.to_jira_comment()
+                notes += f"\n\n{jira_audit_comment}"
+                print(f"⚠️  npm audit: {audit_result.critical} critical, {audit_result.high} high vulnerabilities")
+    except Exception as e:
+        print(f"Note: npm audit report skipped: {e}")
+
+    # 5e) Playwright E2E regression tests (non-blocking, reported in Jira)
+    try:
+        from app.integrations.playwright_runner import detect_playwright as _detect_pw, run_tests as _run_pw
+        if _detect_pw(repo_path):
+            print("Running Playwright E2E regression tests...")
+            if run_id:
+                add_progress_event(run_id, "verifying", "Running Playwright E2E tests", {})
+            pw_result = _run_pw(
+                repo_path,
+                project="chromium",
+                timeout_seconds=180,
+                max_retries=1,
+                changed_files=[f["path"] for f in files if f.get("action") != "delete"],
+            )
+            if pw_result.error:
+                notes += f"\n\n⚠️ E2E tests: {pw_result.error}"
+                print(f"⚠️  Playwright: {pw_result.error}")
+            elif not pw_result.all_passed:
+                notes += f"\n\n{pw_result.to_jira_comment()}"
+                print(f"⚠️  Playwright: {pw_result.failed}/{pw_result.total} tests failed")
+            elif pw_result.total > 0:
+                notes += f"\n\n✅ E2E tests: {pw_result.passed}/{pw_result.total} passed"
+                print(f"✓ Playwright: all {pw_result.total} tests passed")
+    except Exception as e:
+        print(f"Note: Playwright tests skipped: {e}")
 
     # 6) Create PR only if independent
     pr_url = None

@@ -323,6 +323,146 @@ def verify_responsive_browserstack(
     return VerificationResult(passed=True, errors=errors, warnings=warnings)
 
 
+def verify_security_scan(repo_path: Path, changed_files: List[str]) -> VerificationResult:
+    """
+    Run static security analysis on changed files.
+
+    Checks for hardcoded secrets, injection patterns, insecure configs,
+    and weak cryptography. Critical findings block the commit.
+    """
+    errors = []
+    warnings = []
+
+    try:
+        from app.integrations.security_scanner import scan_files
+
+        print("Running security scan...")
+        result = scan_files(repo_path, changed_files)
+
+        if result.error:
+            warnings.append(f"Security scan: {result.error}")
+        elif result.findings:
+            for f in result.findings:
+                msg = f"[{f.severity.upper()}] {f.file}:{f.line} — {f.category}: {f.message}"
+                if f.severity == "critical":
+                    errors.append(msg)
+                else:
+                    warnings.append(msg)
+
+    except Exception as e:
+        warnings.append(f"Security scan skipped: {e}")
+
+    return VerificationResult(
+        passed=len(errors) == 0,
+        errors=errors,
+        warnings=warnings,
+    )
+
+
+def verify_npm_audit(repo_path: Path, changed_files: List[str]) -> VerificationResult:
+    """
+    Run npm audit to detect dependency vulnerabilities.
+
+    Only triggers when package.json was modified or node_modules exists.
+    Critical/high vulnerabilities are reported as warnings (not blocking).
+    """
+    errors = []
+    warnings = []
+
+    if not (repo_path / "node_modules").exists():
+        return VerificationResult(passed=True, errors=[], warnings=[])
+
+    try:
+        from app.integrations.npm_audit import run_audit
+
+        print("Running npm audit...")
+        result = run_audit(repo_path)
+
+        if result.error:
+            warnings.append(f"npm audit: {result.error}")
+        elif result.total > 0:
+            summary = (
+                f"npm audit: {result.total} vulnerabilities "
+                f"({result.critical} critical, {result.high} high, "
+                f"{result.moderate} moderate, {result.low} low)"
+            )
+            if result.has_actionable_issues:
+                warnings.append(summary)
+                for f in result.findings[:5]:
+                    if f.severity in ("critical", "high"):
+                        warnings.append(
+                            f"  {f.severity}: {f.name} — {f.title}"
+                        )
+            else:
+                warnings.append(summary)
+        else:
+            print("  ✓ No vulnerabilities found")
+
+    except Exception as e:
+        warnings.append(f"npm audit skipped: {e}")
+
+    return VerificationResult(passed=True, errors=errors, warnings=warnings)
+
+
+def verify_playwright_tests(
+    repo_path: Path,
+    changed_files: List[str],
+) -> VerificationResult:
+    """
+    Run Playwright E2E tests to catch functional regressions.
+
+    Only triggers when a playwright.config exists in the repo and
+    code files were changed. Failures are reported as errors (blocking).
+    """
+    errors = []
+    warnings = []
+
+    code_extensions = ('.ts', '.tsx', '.js', '.jsx', '.py')
+    has_code_changes = any(f.endswith(code_extensions) for f in changed_files)
+    if not has_code_changes:
+        return VerificationResult(passed=True, errors=[], warnings=[])
+
+    try:
+        from app.integrations.playwright_runner import detect_playwright, run_tests
+
+        if not detect_playwright(repo_path):
+            return VerificationResult(passed=True, errors=[], warnings=[])
+
+        print("Running Playwright E2E tests...")
+        result = run_tests(
+            repo_path,
+            project="chromium",
+            timeout_seconds=180,
+            max_retries=1,
+            changed_files=changed_files,
+        )
+
+        if result.error:
+            if "No tests found" in result.error or "no tests" in result.error.lower():
+                warnings.append(f"Playwright: {result.error}")
+            else:
+                warnings.append(f"Playwright: {result.error}")
+        elif not result.all_passed:
+            errors.append(
+                f"Playwright E2E: {result.failed}/{result.total} tests failed"
+            )
+            for t in result.failures[:3]:
+                errors.append(f"  FAIL: {t.suite} > {t.name}")
+                if t.error_message:
+                    errors.append(f"    {t.error_message[:200]}")
+        else:
+            print(f"  ✓ All {result.total} E2E tests passed ({result.duration_ms / 1000:.1f}s)")
+
+    except Exception as e:
+        warnings.append(f"Playwright tests skipped: {e}")
+
+    return VerificationResult(
+        passed=len(errors) == 0,
+        errors=errors,
+        warnings=warnings,
+    )
+
+
 def verify_lighthouse_performance(
     url: str,
     changed_files: List[str],
@@ -386,6 +526,7 @@ def run_all_verifications(
     
     checks = [
         ("Package.json syntax", verify_package_json_syntax),
+        ("Security scan", verify_security_scan),
         ("TypeScript syntax", verify_typescript_syntax),
         ("ESLint", verify_eslint),
         ("Import resolution", verify_imports),
@@ -414,6 +555,29 @@ def run_all_verifications(
         all_errors.extend(result.errors)
         all_warnings.extend(result.warnings)
     
+    # npm audit — run after npm install (node_modules must exist)
+    if (repo_path / "node_modules").exists():
+        print(f"\n[npm audit]")
+        audit_result = verify_npm_audit(repo_path, changed_files)
+        all_warnings.extend(audit_result.warnings)
+        if audit_result.warnings:
+            print(f"  ⚠ Warnings")
+        else:
+            print(f"  ✓ Passed")
+
+    # Playwright E2E tests — run if playwright.config exists
+    print(f"\n[Playwright E2E]")
+    pw_result = verify_playwright_tests(repo_path, changed_files)
+    if not pw_result.passed:
+        passed = False
+        all_errors.extend(pw_result.errors)
+        print(f"  ✗ FAILED")
+    elif pw_result.warnings:
+        all_warnings.extend(pw_result.warnings)
+        print(f"  ⚠ Warnings")
+    else:
+        print(f"  ✓ Passed (or skipped)")
+
     # Run BrowserStack + Lighthouse checks if URL provided and UI files changed
     if deployed_url:
         print(f"\n[BrowserStack Responsive]")

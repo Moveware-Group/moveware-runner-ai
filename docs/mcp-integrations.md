@@ -18,6 +18,9 @@ Integrations work at two levels:
 | **BrowserStack** | `app/integrations/browserstack.py` | `browserstack-testing` | `BROWSERSTACK_USERNAME` + `BROWSERSTACK_ACCESS_KEY` |
 | **Stripe** | `app/integrations/stripe_client.py` | `stripe-payments` | `STRIPE_SECRET_KEY` |
 | **Vercel** | `app/integrations/vercel_client.py` | - | Auto (detects Next.js projects) |
+| **npm audit** | `app/integrations/npm_audit.py` | - | Auto (any Node.js project) |
+| **Playwright** | `app/integrations/playwright_runner.py` | `qa-tester` | Auto (if `playwright.config` in repo) |
+| **Security Scanner** | `app/integrations/security_scanner.py` | `security-tester` | Always on (all commits) |
 | **Prisma** | - (via skill + npx) | `prisma-database` | Skill added to repo config |
 
 ## API Integrations (Python Modules)
@@ -133,6 +136,76 @@ Generate keys at: https://dashboard.stripe.com/apikeys
 - Project structure recommendations
 - Common anti-patterns to avoid
 
+### npm audit (`app/integrations/npm_audit.py`)
+
+**What it does:** After `npm install`, runs `npm audit` to detect known security vulnerabilities in dependencies. Reports severity-classified findings (critical, high, moderate, low) as Jira comments and provides context for the LLM. Automatically runs `npm audit fix` for safe, non-breaking fixes.
+
+**How it works:**
+1. After `npm install` succeeds, runs `npm audit fix` (safe patches only)
+2. Then runs `npm audit --json` for a full vulnerability report
+3. Parses severity levels and affected packages
+4. Critical/high findings are reported in Jira and injected into LLM context
+5. Post-push: a summary of remaining vulnerabilities is attached to the Jira comment
+
+**Setup:** None required — uses npm's built-in advisory database.
+
+**What gets reported:**
+- Total vulnerability count by severity (critical, high, moderate, low)
+- Package name, advisory title, and fix availability for critical/high issues
+- Advisory URLs for manual review
+
+### Playwright E2E Tests (`app/integrations/playwright_runner.py`)
+
+**What it does:** Executes the target repo's Playwright E2E test suite after code changes. Catches functional regressions before the PR is created. Failed test details (test name, error message, code snippet) are fed back to the LLM self-healing loop.
+
+**How it works:**
+1. Detects `playwright.config.ts` (or `.js`/`.mjs`) in the repo
+2. Identifies test directories (`tests/`, `e2e/`, `test/`)
+3. Finds tests related to changed source files by name matching
+4. Runs Playwright with `--reporter json` for structured output
+5. Parses pass/fail/skip counts and failure details
+6. Failed tests trigger the self-healing loop; results are reported to Jira
+
+**Setup:** The target repository must have Playwright installed:
+```bash
+npm install -D @playwright/test
+npx playwright install chromium
+```
+
+**Integration points:**
+- **Pre-commit:** Runs as part of `run_all_verifications()` — test failures block the commit
+- **Post-push:** Runs independently and reports to Jira as an informational comment
+- **Self-healing:** Test failures are formatted as LLM context so Claude can fix the implementation (not the tests)
+
+### Security Scanner (`app/integrations/security_scanner.py`)
+
+**What it does:** Static analysis of changed files for common security vulnerabilities. Scans for hardcoded secrets, injection patterns (SQL, XSS, command), insecure configurations, weak cryptography, and OWASP-style issues. Critical findings (e.g., exposed API keys) block the commit.
+
+**How it works:**
+1. Runs as a pre-commit check in the verification pipeline
+2. Scans only the files changed by the AI (not the whole codebase)
+3. Applies regex-based rules across multiple categories
+4. Filters false positives (test files, examples, env var references)
+5. Reports findings by severity: critical (blocking), high, medium, low (warnings)
+
+**Setup:** None required — runs automatically on every commit.
+
+**Security categories checked:**
+| Category | Severity | Examples |
+|----------|----------|---------|
+| Hardcoded Secrets | Critical | API keys, tokens, private keys in source |
+| Stripe/AWS/GitHub Keys | Critical | Specific key pattern detection |
+| SQL Injection | High | String interpolation in queries |
+| XSS (innerHTML) | High | Dynamic innerHTML without sanitization |
+| Command Injection | High | Shell exec with string concatenation |
+| eval() usage | High | Dynamic code execution |
+| Insecure Randomness | High | Math.random() for tokens |
+| TLS Disabled | High | Certificate verification turned off |
+| Weak Hashing | Medium | MD5/SHA1 for passwords |
+| Insecure Cookies | Medium | Missing httpOnly/secure flags |
+| CORS Wildcard | Medium | `Access-Control-Allow-Origin: *` |
+| Debug Mode | Low | Debug flags enabled |
+
 ## Skill-Based Integrations (Prompt Injection)
 
 These services are integrated through AI skills - markdown files loaded by `skill_loader.py` and injected into LLM prompts. The AI uses this knowledge to generate correct implementation patterns.
@@ -203,15 +276,35 @@ Auto-detect & fetch external context:
   Stripe:      Detect payment keywords → fetch products, prices, webhooks
   Vercel:      Detect Next.js project → inject best practices
   ↓
-Build LLM prompt (skills + Figma + Sentry + Stripe + Vercel + repo)
+Build LLM prompt (skills + Figma + Sentry + Stripe + Vercel + security rules + repo)
   ↓
 Claude generates implementation
   ↓
-Verifier runs checks (TypeScript, ESLint, tests)
+PRE-COMMIT VERIFICATION:
+  Security scanner:  Static analysis for secrets, injection, XSS, config issues
+  Package.json:      JSON syntax check
+  TypeScript:        tsc --noEmit type checking
+  ESLint:            Code style and potential bugs
+  Import resolution: Relative import path validation
   ↓
-BrowserStack: If UI files changed → screenshot responsive check
+BUILD VERIFICATION:
+  npm install →  npm audit fix + npm audit (vulnerability report)
+  tsc --noEmit → npm run build
+  ↓ (if build fails, self-healing loop with up to 7 LLM fix attempts)
   ↓
-Commit, push, create PR → report to Jira
+POST-BUILD CHECKS:
+  Playwright E2E:  Run repo's test suite → failures feed self-healing loop
+  npm audit:       Report remaining vulnerabilities to Jira
+  ↓
+Commit, push → GitHub CI check
+  ↓
+POST-PUSH CHECKS (non-blocking):
+  GitHub Actions:  Check CI status
+  Playwright E2E:  Full regression test report for Jira
+  BrowserStack:    Screenshot responsive check (if UI files changed)
+  Lighthouse:      Performance audit (if deployed URL available)
+  ↓
+Create PR → report to Jira (with all check results)
 ```
 
 ## Troubleshooting
@@ -241,6 +334,24 @@ Commit, push, create PR → report to Jira
 1. Ensure the repo has `nextjs-fullstack-dev` in its skills list in `repos.json`
 2. Or ensure the repo has `next.config.js` / `app/layout.tsx` present
 3. Look for `▲ Vercel best practices injected` in worker logs
+
+### npm audit not reporting
+1. Ensure `node_modules/` exists (runs after `npm install`)
+2. Check worker logs for `npm audit:` messages
+3. Low/moderate vulnerabilities are logged but don't appear in Jira unless critical/high
+
+### Playwright tests not running
+1. Ensure the target repo has `playwright.config.ts` (or `.js`/`.mjs`)
+2. Playwright must be installed: `npm i -D @playwright/test`
+3. Browsers must be installed: `npx playwright install chromium`
+4. Check worker logs for `Running Playwright E2E` messages
+5. If "no tests found" — ensure tests are in `tests/`, `e2e/`, or `test/` directories
+
+### Security scanner false positives
+1. Test/mock files with fake secrets are automatically excluded
+2. Environment variable references (`process.env.X`) are excluded
+3. Type definition files (`.d.ts`) are excluded
+4. If persistent false positives occur, add patterns to `_is_likely_false_positive()` in `security_scanner.py`
 
 ### Skills not loading
 1. Skill names in `repos.json` must match folder names in `.cursor/skills/`
