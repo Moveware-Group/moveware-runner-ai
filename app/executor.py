@@ -2462,6 +2462,48 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
     except Exception as e:
         print(f"Note: Playwright tests skipped: {e}")
 
+    # 5f) Semgrep SAST scan report (non-blocking, informational for Jira)
+    try:
+        from app.integrations.semgrep_scanner import is_installed as _semgrep_ok, scan as _semgrep_scan
+        if _semgrep_ok():
+            print("Running Semgrep SAST scan for security report...")
+            if run_id:
+                add_progress_event(run_id, "verifying", "Running Semgrep SAST scan", {})
+            sg_result = _semgrep_scan(
+                repo_path,
+                changed_files=[f["path"] for f in files if f.get("action") != "delete"],
+            )
+            if sg_result.error:
+                print(f"⚠️  Semgrep: {sg_result.error}")
+            elif sg_result.total > 0:
+                notes += f"\n\n{sg_result.to_jira_comment()}"
+                print(f"⚠️  Semgrep: {sg_result.errors_count} errors, {sg_result.warnings_count} warnings")
+            else:
+                notes += f"\n\n✅ Semgrep SAST: no issues ({sg_result.files_scanned} files scanned)"
+                print(f"✓ Semgrep: clean ({sg_result.files_scanned} files)")
+    except Exception as e:
+        print(f"Note: Semgrep scan skipped: {e}")
+
+    # 5g) OWASP ZAP DAST scan (non-blocking, only if deployed URL available)
+    try:
+        from app.integrations.owasp_zap import is_configured as _zap_ok, run_baseline_scan
+        deployed_url = repo_settings.get("deployed_url", "")
+        if deployed_url and _zap_ok():
+            print(f"Running OWASP ZAP baseline scan on {deployed_url}...")
+            if run_id:
+                add_progress_event(run_id, "verifying", "Running OWASP ZAP security scan", {})
+            zap_result = run_baseline_scan(deployed_url)
+            if zap_result.error:
+                print(f"⚠️  ZAP: {zap_result.error}")
+            elif zap_result.total > 0:
+                notes += f"\n\n{zap_result.to_jira_comment()}"
+                print(f"⚠️  ZAP: {zap_result.high_count} high, {zap_result.medium_count} medium")
+            else:
+                notes += f"\n\n✅ OWASP ZAP: no vulnerabilities found"
+                print(f"✓ ZAP: no vulnerabilities")
+    except Exception as e:
+        print(f"Note: OWASP ZAP scan skipped: {e}")
+
     # 6) Create PR only if independent
     pr_url = None
     if is_independent:

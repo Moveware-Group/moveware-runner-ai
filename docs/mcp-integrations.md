@@ -21,6 +21,8 @@ Integrations work at two levels:
 | **npm audit** | `app/integrations/npm_audit.py` | - | Auto (any Node.js project) |
 | **Playwright** | `app/integrations/playwright_runner.py` | `qa-tester` | Auto (if `playwright.config` in repo) |
 | **Security Scanner** | `app/integrations/security_scanner.py` | `security-tester` | Always on (all commits) |
+| **Semgrep SAST** | `app/integrations/semgrep_scanner.py` | `security-tester` | Auto (if `semgrep` CLI installed) |
+| **OWASP ZAP DAST** | `app/integrations/owasp_zap.py` | `security-tester` | `ZAP_API_URL` (+ Docker daemon) |
 | **Prisma** | - (via skill + npx) | `prisma-database` | Skill added to repo config |
 
 ## API Integrations (Python Modules)
@@ -206,6 +208,93 @@ npx playwright install chromium
 | CORS Wildcard | Medium | `Access-Control-Allow-Origin: *` |
 | Debug Mode | Low | Debug flags enabled |
 
+### Semgrep SAST (`app/integrations/semgrep_scanner.py`)
+
+**What it does:** Runs Semgrep's AST-aware static analysis to detect OWASP Top 10 vulnerabilities with data-flow tracking, cross-file analysis, and framework-specific rules. Unlike the regex-based security scanner, Semgrep understands code structure — it tracks tainted data from user inputs through variable assignments and function calls to dangerous sinks (SQL queries, HTML rendering, shell commands).
+
+**How it works:**
+1. Checks if the `semgrep` CLI is installed
+2. If `SEMGREP_APP_TOKEN` is set, uses the Pro engine with full OWASP rule coverage
+3. Otherwise, uses the open-source engine with community rules (`--config auto`)
+4. Scans only the changed files (not the whole repo) for fast feedback
+5. Parses JSON output with OWASP/CWE tags, severity levels, and fix suggestions
+6. ERROR-level findings block the commit; warnings are reported to Jira
+
+**Setup:**
+```bash
+# Install the CLI (Python 3.9+)
+pip install semgrep
+
+# (Optional) For full Pro OWASP coverage, sign up free at https://semgrep.dev
+# Then set in .env:
+SEMGREP_APP_TOKEN=your-token-here
+```
+
+**What Semgrep catches that regex scanners miss:**
+- Taint tracking: user input flowing through 5+ function calls into a SQL query
+- Framework-aware: knows that `req.body` in Express, `request.form` in Flask, and `searchParams` in Next.js are user-controlled
+- Cross-file: import chains where a util function wraps an unsafe operation
+- Constant propagation: detects when a "constant" is actually derived from user input
+- Type-aware: distinguishes `innerHTML` on a trusted element vs. user-controlled content
+
+**OWASP coverage:**
+| OWASP Category | Examples |
+|----------------|----------|
+| A01: Broken Access Control | Missing auth checks, IDOR, path traversal |
+| A02: Cryptographic Failures | Weak algorithms, hardcoded keys, insecure random |
+| A03: Injection | SQL, NoSQL, LDAP, OS command, XSS |
+| A04: Insecure Design | Mass assignment, race conditions |
+| A05: Security Misconfiguration | Debug mode, permissive CORS, insecure headers |
+| A06: Vulnerable Components | (handled by npm audit) |
+| A07: Auth Failures | Weak passwords, missing rate limiting |
+| A08: Data Integrity | Deserialization, unsigned updates |
+| A09: Logging Failures | Sensitive data in logs |
+| A10: SSRF | Unvalidated URL fetching |
+
+### OWASP ZAP DAST (`app/integrations/owasp_zap.py`)
+
+**What it does:** Dynamic Application Security Testing — ZAP acts as an attacker, actively probing the running application for vulnerabilities that static analysis cannot detect. It crawls pages, submits forms with injection payloads, tests authentication flows, and checks for XSS, CSRF, insecure headers, and session management issues.
+
+**How it works:**
+1. ZAP runs as a daemon (Docker container recommended)
+2. The orchestrator sends API requests to ZAP's REST API
+3. **Baseline scan (passive):** Spiders the target and applies passive rules — safe for production
+4. **Active scan:** Sends injection probes, fuzzes parameters — staging/preview only
+5. **API scan:** Imports OpenAPI/Swagger spec and tests all endpoints with proper parameter types
+6. Alerts are classified by risk (High, Medium, Low, Informational) with CWE IDs
+7. High-risk findings are reported to Jira with fix recommendations
+
+**Setup:**
+```bash
+# Start ZAP in daemon mode via Docker
+docker run -u zap -p 8080:8080 -d zaproxy/zap-stable \
+  zap.sh -daemon -host 0.0.0.0 -port 8080 \
+  -config api.addrs.addr.name=.* -config api.addrs.addr.regex=true
+
+# In .env
+ZAP_API_URL=http://localhost:8080
+# ZAP_API_KEY=your-api-key  # Optional, for authenticated access
+```
+
+**Scan types:**
+| Type | Duration | Safe for Prod | What it does |
+|------|----------|---------------|-------------|
+| Baseline | 1-2 min | Yes | Spider + passive rules (headers, cookies, info leaks) |
+| Active | 5-15 min | No | Injection probes, parameter fuzzing, auth testing |
+| API | 5-15 min | No | OpenAPI-driven endpoint testing with typed parameters |
+
+**What ZAP catches that static analysis misses:**
+- Missing HTTP security headers (CSP, HSTS, X-Frame-Options)
+- Insecure cookie flags in the actual HTTP response
+- CSRF vulnerabilities in real form submissions
+- Open redirects that only manifest at runtime
+- Session fixation and management issues
+- Actual XSS that bypasses server-side sanitization
+- Information disclosure in error pages
+- Server misconfiguration (directory listing, debug endpoints)
+
+**Note:** The baseline scan is non-blocking (warnings only). Active scan high-risk findings block the commit. ZAP requires a reachable URL — most useful with staging/preview deployments.
+
 ## Skill-Based Integrations (Prompt Injection)
 
 These services are integrated through AI skills - markdown files loaded by `skill_loader.py` and injected into LLM prompts. The AI uses this knowledge to generate correct implementation patterns.
@@ -281,7 +370,8 @@ Build LLM prompt (skills + Figma + Sentry + Stripe + Vercel + security rules + r
 Claude generates implementation
   ↓
 PRE-COMMIT VERIFICATION:
-  Security scanner:  Static analysis for secrets, injection, XSS, config issues
+  Security scanner:  Regex-based static analysis for secrets, injection, XSS
+  Semgrep SAST:      AST-aware analysis with OWASP Top 10 data-flow tracking
   Package.json:      JSON syntax check
   TypeScript:        tsc --noEmit type checking
   ESLint:            Code style and potential bugs
@@ -300,9 +390,12 @@ Commit, push → GitHub CI check
   ↓
 POST-PUSH CHECKS (non-blocking):
   GitHub Actions:  Check CI status
+  Semgrep SAST:    Full security scan report for Jira
   Playwright E2E:  Full regression test report for Jira
+  npm audit:       Dependency vulnerability report
   BrowserStack:    Screenshot responsive check (if UI files changed)
   Lighthouse:      Performance audit (if deployed URL available)
+  OWASP ZAP:       Dynamic security scan (if ZAP configured + deployed URL)
   ↓
 Create PR → report to Jira (with all check results)
 ```
@@ -346,6 +439,21 @@ Create PR → report to Jira (with all check results)
 3. Browsers must be installed: `npx playwright install chromium`
 4. Check worker logs for `Running Playwright E2E` messages
 5. If "no tests found" — ensure tests are in `tests/`, `e2e/`, or `test/` directories
+
+### Semgrep not running
+1. Ensure the CLI is installed: `pip install semgrep` (requires Python 3.9+)
+2. Run `semgrep --version` to verify it's on the PATH
+3. For full OWASP coverage, set `SEMGREP_APP_TOKEN` in `.env` (free at https://semgrep.dev)
+4. Check worker logs for `Running Semgrep SAST scan` messages
+5. If scanning is slow on large repos, Semgrep may need more memory — check for timeout messages
+
+### OWASP ZAP not scanning
+1. Ensure ZAP daemon is running: `docker ps | grep zap`
+2. Test reachability: `curl http://localhost:8080/JSON/core/view/version/`
+3. Verify `ZAP_API_URL` in `.env` matches the ZAP daemon address
+4. If using `ZAP_API_KEY`, ensure it matches the daemon's API key config
+5. The target URL must be reachable from the ZAP container (use `--network host` if needed)
+6. Check worker logs for `Running OWASP ZAP` messages
 
 ### Security scanner false positives
 1. Test/mock files with fake secrets are automatically excluded

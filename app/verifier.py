@@ -359,6 +359,116 @@ def verify_security_scan(repo_path: Path, changed_files: List[str]) -> Verificat
     )
 
 
+def verify_semgrep(repo_path: Path, changed_files: List[str]) -> VerificationResult:
+    """
+    Run Semgrep AST-aware SAST scan on changed files.
+
+    Semgrep performs data-flow analysis, cross-file tracking, and
+    framework-specific checks (OWASP Top 10). ERROR-level findings
+    block the commit. Skipped gracefully if semgrep is not installed.
+    """
+    errors = []
+    warnings = []
+
+    try:
+        from app.integrations.semgrep_scanner import is_installed, scan
+
+        if not is_installed():
+            return VerificationResult(passed=True, errors=[], warnings=[])
+
+        print("Running Semgrep SAST scan...")
+        result = scan(repo_path, changed_files=changed_files)
+
+        if result.error:
+            warnings.append(f"Semgrep: {result.error}")
+        elif result.findings:
+            for f in result.findings:
+                owasp_tag = f" [{f.owasp}]" if f.owasp else ""
+                msg = f"Semgrep {f.severity}: {f.path}:{f.line_start} — {f.rule_id}{owasp_tag}: {f.message[:150]}"
+                if f.severity == "ERROR":
+                    errors.append(msg)
+                else:
+                    warnings.append(msg)
+
+            if not errors:
+                print(f"  ⚠ Semgrep: {result.warnings_count} warnings (non-blocking)")
+        else:
+            print(f"  ✓ Semgrep: no issues ({result.files_scanned} files, {result.engine} engine)")
+
+    except Exception as e:
+        warnings.append(f"Semgrep skipped: {e}")
+
+    return VerificationResult(
+        passed=len(errors) == 0,
+        errors=errors,
+        warnings=warnings,
+    )
+
+
+def verify_owasp_zap(
+    url: str,
+    changed_files: List[str],
+    scan_type: str = "baseline",
+) -> VerificationResult:
+    """
+    Run OWASP ZAP dynamic security scan against a deployed URL.
+
+    Performs active probing of the running application to find injection,
+    XSS, CSRF, authentication, and session management vulnerabilities.
+    Only runs when ZAP daemon is configured and reachable.
+
+    Args:
+        url: Deployed application URL to scan
+        changed_files: Changed file list (used to decide if scan is needed)
+        scan_type: "baseline" (passive, safe) or "active" (injection probes)
+    """
+    errors = []
+    warnings = []
+
+    code_extensions = ('.ts', '.tsx', '.js', '.jsx', '.py', '.html')
+    has_code_changes = any(f.endswith(code_extensions) for f in changed_files)
+    if not has_code_changes:
+        return VerificationResult(passed=True, errors=[], warnings=[])
+
+    try:
+        from app.integrations.owasp_zap import is_configured, run_baseline_scan, run_active_scan
+
+        if not is_configured():
+            return VerificationResult(passed=True, errors=[], warnings=[])
+
+        print(f"Running OWASP ZAP {scan_type} scan on {url}...")
+
+        if scan_type == "active":
+            result = run_active_scan(url)
+        else:
+            result = run_baseline_scan(url)
+
+        if result.error:
+            warnings.append(f"OWASP ZAP: {result.error}")
+        elif result.alerts:
+            for a in result.alerts:
+                cwe = f" (CWE-{a.cwe_id})" if a.cwe_id else ""
+                msg = f"ZAP {a.risk}: {a.name}{cwe} at {a.url[:80]}"
+                if a.risk == "High":
+                    errors.append(msg)
+                else:
+                    warnings.append(msg)
+
+            if not errors:
+                print(f"  ⚠ ZAP: {result.medium_count} medium, {result.low_count} low (non-blocking)")
+        else:
+            print(f"  ✓ ZAP {scan_type} scan: no vulnerabilities ({result.scan_duration_s}s)")
+
+    except Exception as e:
+        warnings.append(f"OWASP ZAP skipped: {e}")
+
+    return VerificationResult(
+        passed=len(errors) == 0,
+        errors=errors,
+        warnings=warnings,
+    )
+
+
 def verify_npm_audit(repo_path: Path, changed_files: List[str]) -> VerificationResult:
     """
     Run npm audit to detect dependency vulnerabilities.
@@ -527,6 +637,7 @@ def run_all_verifications(
     checks = [
         ("Package.json syntax", verify_package_json_syntax),
         ("Security scan", verify_security_scan),
+        ("Semgrep SAST", verify_semgrep),
         ("TypeScript syntax", verify_typescript_syntax),
         ("ESLint", verify_eslint),
         ("Import resolution", verify_imports),
@@ -578,7 +689,7 @@ def run_all_verifications(
     else:
         print(f"  ✓ Passed (or skipped)")
 
-    # Run BrowserStack + Lighthouse checks if URL provided and UI files changed
+    # Run post-deploy checks if URL provided
     if deployed_url:
         print(f"\n[BrowserStack Responsive]")
         bs_result = verify_responsive_browserstack(deployed_url, changed_files)
@@ -592,6 +703,18 @@ def run_all_verifications(
         lh_result = verify_lighthouse_performance(deployed_url, changed_files)
         all_warnings.extend(lh_result.warnings)
         if lh_result.warnings:
+            print(f"  ⚠ Warnings")
+        else:
+            print(f"  ✓ Passed (or skipped)")
+
+        print(f"\n[OWASP ZAP DAST]")
+        zap_result = verify_owasp_zap(deployed_url, changed_files, scan_type="baseline")
+        if not zap_result.passed:
+            passed = False
+            all_errors.extend(zap_result.errors)
+            print(f"  ✗ FAILED (high-risk vulnerabilities)")
+        elif zap_result.warnings:
+            all_warnings.extend(zap_result.warnings)
             print(f"  ⚠ Warnings")
         else:
             print(f"  ✓ Passed (or skipped)")
