@@ -2377,7 +2377,6 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
     post_deploy_comment = None
     try:
         from .post_deploy_detector import check_and_notify_post_deploy_steps
-        from .jira import JiraClient
         
         # Extract file paths from files_changed (remove "Created "/"Updated "/"Deleted " prefix)
         changed_file_paths = []
