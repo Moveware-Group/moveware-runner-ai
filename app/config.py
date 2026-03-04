@@ -63,6 +63,10 @@ class Settings:
     # ---- Story Auto-Start ----
     AUTO_START_NEXT_STORY: bool = env("AUTO_START_NEXT_STORY", default="true").lower() in ("1", "true", "yes", "y")
 
+    # ---- Post-deploy ticket ----
+    # When true, create a Jira subtask (assigned to JIRA_HUMAN_ACCOUNT_ID) with database/.env/migration steps
+    CREATE_POST_DEPLOY_TICKET: bool = env("CREATE_POST_DEPLOY_TICKET", default="false").lower() in ("1", "true", "yes", "y")
+
 
 # Plan comment marker constant
 PARENT_PLAN_COMMENT_PREFIX = "[AI PLAN]"

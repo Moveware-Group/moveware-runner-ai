@@ -2576,7 +2576,8 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                 repo_path=repo_path,
                 changed_files=changed_file_paths,
                 issue_key=issue.key,
-                jira_client=jira_client
+                jira_client=jira_client,
+                create_ticket_assigned_to_account_id=settings.JIRA_HUMAN_ACCOUNT_ID if settings.CREATE_POST_DEPLOY_TICKET else None,
             )
     except Exception as e:
         print(f"⚠️  Post-deployment detection failed (non-critical): {e}")

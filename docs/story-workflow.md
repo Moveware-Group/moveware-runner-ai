@@ -76,6 +76,7 @@ Epic (OD-1: "Create Online Documents platform")
 
 **AI Actions:**
 - Creates Story branch: `story/OD-4-quote-submission-flow`
+  - **Branch base:** If another story branch already exists on the repo (e.g. `story/tb-7`), the new branch is created from the most recently updated one. That way merging PRs in story order (TB-7 then TB-8) avoids merge conflicts. To always branch from `main` instead, set `STORY_CHAIN_FROM_PREVIOUS=false` in `.env`.
 - Creates **draft PR** for the Story with sub-task checklist
 - Creates sub-tasks under the Story
 - Assigns sub-tasks to AI Runner in Backlog

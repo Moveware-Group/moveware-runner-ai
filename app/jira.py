@@ -169,23 +169,20 @@ class JiraClient:
             }
         }
         
-        # Add description in ADF format if provided
+        # Add description in ADF format (supports multiple paragraphs via \n\n, line breaks via \n)
         if description:
-            payload["fields"]["description"] = {
-                "type": "doc",
-                "version": 1,
-                "content": [
-                    {
-                        "type": "paragraph",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": description
-                            }
-                        ]
-                    }
-                ]
-            }
+            blocks = [b.strip() for b in description.split("\n\n") if b.strip()]
+            content = []
+            for block in blocks:
+                nodes = []
+                for line in block.split("\n"):
+                    if nodes:
+                        nodes.append({"type": "hardBreak"})
+                    nodes.append({"type": "text", "text": line})
+                content.append({"type": "paragraph", "content": nodes})
+            if not content:
+                content = [{"type": "paragraph", "content": [{"type": "text", "text": description}]}]
+            payload["fields"]["description"] = {"type": "doc", "version": 1, "content": content}
         
         if labels:
             payload["fields"]["labels"] = labels

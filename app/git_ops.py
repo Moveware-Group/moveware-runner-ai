@@ -1,7 +1,7 @@
 import os
 import subprocess
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 # Import GitHub App auth (optional, falls back to PAT)
 try:
@@ -107,7 +107,16 @@ def checkout_repo(workdir: str, repo: str, base_branch: str, token: Optional[str
     clean_working_directory(workdir)
     
     run(["git", "fetch", "--all", "--prune"], cwd=workdir)
-    run(["git", "checkout", base_branch], cwd=workdir)
+    # Force checkout so PM2/logs or other runtime files don't block (discard local changes)
+    try:
+        run(["git", "checkout", base_branch], cwd=workdir)
+    except RuntimeError as e:
+        if "would be overwritten by checkout" in str(e) or "Please commit or stash" in str(e):
+            print(f"⚠️  Local changes blocked checkout; forcing checkout to {base_branch}")
+            clean_working_directory(workdir)
+            run(["git", "checkout", "-f", base_branch], cwd=workdir)
+        else:
+            raise
     
     # Try fast-forward pull first
     try:
@@ -137,7 +146,15 @@ def create_or_checkout_branch(workdir: str, branch: str) -> None:
     """
     # Clean any uncommitted changes before checkout
     clean_working_directory(workdir)
-    run(["git", "checkout", "-B", branch], cwd=workdir)
+    try:
+        run(["git", "checkout", "-B", branch], cwd=workdir)
+    except RuntimeError as e:
+        if "would be overwritten by checkout" in str(e) or "Please commit or stash" in str(e):
+            print(f"⚠️  Local changes blocked checkout; forcing checkout -B {branch}")
+            clean_working_directory(workdir)
+            run(["git", "checkout", "-f", "-B", branch], cwd=workdir)
+        else:
+            raise
 
 
 def make_placeholder_change(workdir: str, issue_key: str, summary: str, note: str) -> str:
@@ -224,24 +241,97 @@ def create_branch(workdir: str, branch: str) -> None:
     create_or_checkout_branch(workdir, branch)
 
 
-def checkout_or_create_story_branch(workdir: str, story_branch: str, base_branch: str) -> None:
-    """Checkout Story branch if it exists on remote, otherwise create it from base."""
+def _get_latest_story_branch_on_remote(workdir: str, exclude_branch: str) -> Optional[str]:
+    """
+    Return the name of the most recently updated remote story branch (origin/story/*),
+    excluding exclude_branch. Used so new story branches can be created from the
+    previous story instead of main, avoiding merge conflicts when merging in order.
+    """
+    try:
+        # List remote refs matching origin/story/*, sorted by committer date (newest first)
+        out = run(
+            [
+                "git",
+                "for-each-ref",
+                "--sort=-committerdate",
+                "--format=%(refname:short)",
+                "refs/remotes/origin",
+            ],
+            cwd=workdir,
+        )
+    except RuntimeError:
+        return None
+    # refname:short gives "origin/story/tb-7" etc.; we want "story/tb-7"
+    lines = [s.strip() for s in (out or "").splitlines() if s.strip()]
+    story_branches: List[str] = []
+    for ref in lines:
+        if ref.startswith("origin/story/"):
+            branch_name = ref.replace("origin/", "", 1)
+            if branch_name != exclude_branch:
+                story_branches.append(branch_name)
+    return story_branches[0] if story_branches else None
+
+
+def checkout_or_create_story_branch(
+    workdir: str,
+    story_branch: str,
+    base_branch: str,
+    prefer_latest_story_as_base: bool = True,
+) -> None:
+    """
+    Checkout Story branch if it exists on remote, otherwise create it from base.
+
+    When creating a new story branch, if prefer_latest_story_as_base is True (default)
+    and env STORY_CHAIN_FROM_PREVIOUS is not "false", the new branch is created from
+    the most recently updated other story branch (e.g. story/tb-7 when creating story/tb-8).
+    That avoids merge conflicts when merging PRs in story order. If no other story branch
+    exists, uses base_branch (main). Set STORY_CHAIN_FROM_PREVIOUS=false to disable.
+    """
+    use_latest_story = prefer_latest_story_as_base and (
+        os.getenv("STORY_CHAIN_FROM_PREVIOUS", "true").lower() in ("true", "1", "yes")
+    )
     # Clean any uncommitted changes before checkout operations
     clean_working_directory(workdir)
-    
+
     # Fetch to ensure we have latest remote state
     run(["git", "fetch", "--all"], cwd=workdir)
-    
+
+    def _checkout(path: str, branch: str) -> None:
+        try:
+            run(["git", "checkout", branch], cwd=path)
+        except RuntimeError as e:
+            if "would be overwritten by checkout" in str(e) or "Please commit or stash" in str(e):
+                print(f"⚠️  Local changes blocked checkout; forcing checkout to {branch}")
+                clean_working_directory(path)
+                run(["git", "checkout", "-f", branch], cwd=path)
+            else:
+                raise
+
     # Check if branch exists on remote
     try:
         run(["git", "rev-parse", f"origin/{story_branch}"], cwd=workdir)
         # Branch exists on remote, checkout and pull
-        run(["git", "checkout", story_branch], cwd=workdir)
+        _checkout(workdir, story_branch)
         # Explicitly specify remote and branch
         run(["git", "pull", "--ff-only", "origin", story_branch], cwd=workdir)
     except RuntimeError:
-        # Branch doesn't exist on remote, create from base
-        run(["git", "checkout", base_branch], cwd=workdir)
+        # Branch doesn't exist on remote, create from base (or latest story branch)
+        if use_latest_story:
+            latest_story = _get_latest_story_branch_on_remote(workdir, story_branch)
+            if latest_story:
+                try:
+                    _checkout(workdir, latest_story)
+                    run(["git", "pull", "--ff-only", "origin", latest_story], cwd=workdir)
+                    print(f"Creating {story_branch} from latest story branch: {latest_story}")
+                except RuntimeError:
+                    _checkout(workdir, base_branch)
+                    run(["git", "pull", "--ff-only", "origin", base_branch], cwd=workdir)
+            else:
+                _checkout(workdir, base_branch)
+                run(["git", "pull", "--ff-only", "origin", base_branch], cwd=workdir)
+        else:
+            _checkout(workdir, base_branch)
+            run(["git", "pull", "--ff-only", "origin", base_branch], cwd=workdir)
         run(["git", "checkout", "-b", story_branch], cwd=workdir)
 
 

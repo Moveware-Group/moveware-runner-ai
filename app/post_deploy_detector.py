@@ -3,11 +3,13 @@ Post-Deployment Step Detection
 
 Detects when code changes require manual post-deployment steps
 (migrations, env vars, seed data, etc.) and generates instructions.
+Can optionally create a Jira subtask assigned to the user with these steps.
 """
 
+import os
 import re
 from pathlib import Path
-from typing import List, Set, Dict, Any
+from typing import List, Optional, Set, Dict, Any
 
 
 class PostDeployStep:
@@ -69,8 +71,40 @@ def detect_post_deploy_steps(repo_path: Path, changed_files: List[str]) -> List[
         if "migration" in file_path.lower() or "migrations/" in file_path:
             steps.extend(_detect_migration_file(file_path))
     
-    # Deduplicate steps
-    return _deduplicate_steps(steps)
+    steps = _deduplicate_steps(steps)
+
+    # When Prisma/DB work is involved, prepend explicit "Create database" step
+    if _has_database_steps(steps):
+        steps = _prepend_database_creation_step(steps)
+
+    return steps
+
+
+def _has_database_steps(steps: List[PostDeployStep]) -> bool:
+    """True if any step is database-related (migration, Prisma, seed)."""
+    db_categories = ("Database Migration", "Database Seeding", "Prisma Client")
+    return any(s.category in db_categories for s in steps)
+
+
+def _prepend_database_creation_step(steps: List[PostDeployStep]) -> List[PostDeployStep]:
+    """Add an explicit 'Create database' step at the start of required steps."""
+    create_db = PostDeployStep(
+        category="Create Database",
+        command=(
+            "# PostgreSQL example:\n"
+            "createdb myapp_dev\n"
+            "# Or via psql: CREATE DATABASE myapp_dev;\n"
+            "# Then set DATABASE_URL in .env (see step below)"
+        ),
+        description="Create a PostgreSQL database for this app if it does not exist yet.",
+        priority="required",
+    )
+    # Insert before other required steps
+    required = [s for s in steps if s.priority == "required"]
+    if required:
+        idx = steps.index(required[0])
+        return steps[:idx] + [create_db] + steps[idx:]
+    return [create_db] + steps
 
 
 def _detect_prisma_changes(content: str, file_path: str) -> List[PostDeployStep]:
@@ -102,21 +136,32 @@ def _detect_prisma_changes(content: str, file_path: str) -> List[PostDeployStep]
 
 
 def _detect_env_changes(content: str, file_path: str) -> List[PostDeployStep]:
-    """Detect new environment variables."""
+    """Detect new environment variables and produce explicit .env lines."""
     steps = []
-    
-    # Extract all env var names
     env_vars = re.findall(r'^([A-Z_][A-Z0-9_]*)\s*=', content, re.MULTILINE)
-    
+    env_vars = sorted(set(env_vars))
+
     if env_vars:
-        var_list = ", ".join(sorted(set(env_vars)))
+        # Build explicit lines for .env (one per variable with placeholder)
+        placeholders = {
+            "DATABASE_URL": "postgresql://user:password@localhost:5432/myapp_dev",
+            "DIRECT_URL": "postgresql://user:password@localhost:5432/myapp_dev",
+            "NEXTAUTH_SECRET": "generate-with-openssl-rand-hex-32",
+            "NEXTAUTH_URL": "http://localhost:3000",
+            "JWT_SECRET": "your-jwt-secret",
+            "ENCRYPTION_KEY": "32-character-encryption-key!!",
+        }
+        lines = []
+        for var in env_vars:
+            placeholder = placeholders.get(var, "<set-me>")
+            lines.append(f"{var}={placeholder}")
+        command = "# Add to .env (create file if missing):\n" + "\n".join(lines)
         steps.append(PostDeployStep(
             category="Environment Variables",
-            command=f"# Add to .env file:\n# {chr(10).join(env_vars[:5])}{'...' if len(env_vars) > 5 else ''}",
-            description=f"New environment variables detected in {file_path}: {var_list}",
-            priority="required"
+            command=command,
+            description=f"Set these in .env (from {file_path}): " + ", ".join(env_vars),
+            priority="required",
         ))
-    
     return steps
 
 
@@ -197,76 +242,131 @@ def _deduplicate_steps(steps: List[PostDeployStep]) -> List[PostDeployStep]:
 
 def format_post_deploy_comment(steps: List[PostDeployStep]) -> str:
     """
-    Format post-deployment steps as a Jira comment.
-    
-    Args:
-        steps: List of PostDeployStep objects
-        
-    Returns:
-        Formatted comment string
+    Format post-deployment steps as a Jira comment with explicit numbered steps and code blocks.
     """
     if not steps:
         return ""
-    
-    # Group by priority
     required = [s for s in steps if s.priority == "required"]
     recommended = [s for s in steps if s.priority == "recommended"]
     optional = [s for s in steps if s.priority == "optional"]
-    
-    comment_parts = ["## ⚠️ Post-Deployment Steps Required\n"]
-    comment_parts.append("After pulling this code, you must perform the following steps:\n")
-    
+    parts = ["## ⚠️ Post-Deployment Steps Required\n\n", "After pulling this code, perform these steps in order:\n"]
     if required:
-        comment_parts.append("\n### 🔴 Required Steps\n")
+        parts.append("\n### 🔴 Required\n")
         for i, step in enumerate(required, 1):
-            comment_parts.append(f"\n**{i}. {step.category}**\n")
-            comment_parts.append(f"{step.description}\n")
-            comment_parts.append(f"```bash\n{step.command}\n```\n")
-    
+            parts.append(f"\n**{i}. {step.category}**\n")
+            parts.append(f"{step.description}\n")
+            parts.append(f"```bash\n{step.command}\n```\n")
     if recommended:
-        comment_parts.append("\n### 🟡 Recommended Steps\n")
+        parts.append("\n### 🟡 Recommended\n")
         for i, step in enumerate(recommended, 1):
-            comment_parts.append(f"\n**{i}. {step.category}**\n")
-            comment_parts.append(f"{step.description}\n")
-            comment_parts.append(f"```bash\n{step.command}\n```\n")
-    
+            parts.append(f"\n**{len(required) + i}. {step.category}**\n")
+            parts.append(f"{step.description}\n")
+            parts.append(f"```bash\n{step.command}\n```\n")
     if optional:
-        comment_parts.append("\n### 🟢 Optional Steps\n")
+        parts.append("\n### 🟢 Optional\n")
         for i, step in enumerate(optional, 1):
-            comment_parts.append(f"\n**{i}. {step.category}**\n")
-            comment_parts.append(f"{step.description}\n")
-            comment_parts.append(f"```bash\n{step.command}\n```\n")
-    
-    comment_parts.append("\n---\n")
-    comment_parts.append("_This comment was automatically generated by the AI Runner._")
-    
-    return "".join(comment_parts)
+            parts.append(f"\n**{len(required) + len(recommended) + i}. {step.category}**\n")
+            parts.append(f"{step.description}\n")
+            parts.append(f"```bash\n{step.command}\n```\n")
+    parts.append("\n---\n_Generated by AI Runner._")
+    return "".join(parts)
 
 
-def check_and_notify_post_deploy_steps(repo_path: Path, changed_files: List[str], issue_key: str, jira_client) -> bool:
+def format_post_deploy_steps_as_plain_text(steps: List[PostDeployStep]) -> str:
     """
-    Detect post-deployment steps and add comment to Jira if any found.
-    
+    Format steps as a single explicit numbered list (for Jira ticket description).
+    Copy-paste friendly.
+    """
+    if not steps:
+        return ""
+    return _format_steps_document(steps, title="Post-deployment steps", intro="Complete these steps to set up database, .env, and run migrations:\n")
+
+
+def _format_steps_document(
+    steps: List[PostDeployStep],
+    title: str,
+    intro: str,
+) -> str:
+    """Shared formatter: group by priority, then output explicit numbered steps."""
+    required = [s for s in steps if s.priority == "required"]
+    recommended = [s for s in steps if s.priority == "recommended"]
+    optional = [s for s in steps if s.priority == "optional"]
+
+    parts = [f"{title}\n\n", intro]
+
+    if required:
+        parts.append("\n--- Required ---\n")
+        for i, step in enumerate(required, 1):
+            parts.append(f"\n{i}. {step.category}\n")
+            parts.append(f"   {step.description}\n")
+            parts.append(f"   Commands:\n")
+            for line in step.command.strip().split("\n"):
+                parts.append(f"   {line}\n")
+    if recommended:
+        parts.append("\n--- Recommended ---\n")
+        for i, step in enumerate(recommended, 1):
+            parts.append(f"\n{len(required) + i}. {step.category}\n")
+            parts.append(f"   {step.description}\n")
+            for line in step.command.strip().split("\n"):
+                parts.append(f"   {line}\n")
+    if optional:
+        parts.append("\n--- Optional ---\n")
+        for i, step in enumerate(optional, 1):
+            parts.append(f"\n{len(required) + len(recommended) + i}. {step.category}\n")
+            parts.append(f"   {step.description}\n")
+            for line in step.command.strip().split("\n"):
+                parts.append(f"   {line}\n")
+
+    parts.append("\n---\nGenerated by AI Runner.")
+    return "".join(parts)
+
+
+def check_and_notify_post_deploy_steps(
+    repo_path: Path,
+    changed_files: List[str],
+    issue_key: str,
+    jira_client,
+    create_ticket_assigned_to_account_id: Optional[str] = None,
+) -> bool:
+    """
+    Detect post-deployment steps and add comment to Jira. Optionally create a
+    subtask assigned to the user with the full steps (for database, .env, migrations).
+
     Args:
         repo_path: Path to the repository
         changed_files: List of changed file paths
-        issue_key: Jira issue key
+        issue_key: Jira issue key (Story)
         jira_client: JiraClient instance
-        
+        create_ticket_assigned_to_account_id: If set, create a subtask under this issue
+            with the steps as description and assign to this account (e.g. human reviewer).
+
     Returns:
         True if post-deploy steps were detected and comment added, False otherwise
     """
     steps = detect_post_deploy_steps(repo_path, changed_files)
-    
     if not steps:
         return False
-    
+
     comment = format_post_deploy_comment(steps)
-    
     try:
         jira_client.add_comment(issue_key, comment)
         print(f"✅ Added post-deployment steps comment to {issue_key}")
-        return True
     except Exception as e:
         print(f"⚠️  Failed to add post-deployment comment to {issue_key}: {e}")
         return False
+
+    if create_ticket_assigned_to_account_id:
+        try:
+            description = format_post_deploy_steps_as_plain_text(steps)
+            subtask_key = jira_client.create_subtask(
+                parent_key=issue_key,
+                summary="[Post-deploy] Database, .env & migrations setup",
+                description=description.strip(),
+            )
+            if subtask_key:
+                jira_client.assign(subtask_key, create_ticket_assigned_to_account_id)
+                print(f"✅ Created post-deploy subtask {subtask_key} assigned to you")
+        except Exception as e:
+            print(f"⚠️  Failed to create post-deploy subtask: {e}")
+
+    return True
