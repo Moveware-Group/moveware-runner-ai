@@ -244,22 +244,51 @@
         .progress-event.stage-failed {
             border-color: #ff4444;
         }
+
+        .progress-event.stage-fixing {
+            border-color: #ff6600;
+            background: #1a0f00;
+        }
         
         .progress-stage {
             display: inline-block;
             padding: 3px 8px;
-            background: #333;
             border-radius: 3px;
             font-size: 0.75em;
             font-weight: 600;
             text-transform: uppercase;
             margin-right: 8px;
-            color: #00d4ff;
+            letter-spacing: 0.5px;
         }
+
+        .stage-claimed .progress-stage { background: #333; color: #aaa; }
+        .stage-analyzing .progress-stage { background: #332200; color: #ffaa00; }
+        .stage-planning .progress-stage { background: #220033; color: #cc66ff; }
+        .stage-executing .progress-stage { background: #002233; color: #00d4ff; }
+        .stage-committing .progress-stage { background: #001133; color: #4499ff; }
+        .stage-verifying .progress-stage { background: #221100; color: #ff8800; }
+        .stage-fixing .progress-stage { background: #331100; color: #ff6600; }
+        .stage-completed .progress-stage { background: #003311; color: #00ff88; }
+        .stage-failed .progress-stage { background: #330000; color: #ff4444; }
         
         .progress-message {
             color: #ccc;
             font-size: 0.95em;
+        }
+
+        .progress-message .msg-pass { color: #00ff88; }
+        .progress-message .msg-fail { color: #ff4444; }
+        .progress-message .msg-warn { color: #ffaa00; }
+        
+        .progress-meta {
+            display: inline-block;
+            margin-left: 8px;
+            padding: 2px 6px;
+            background: #1a1a1a;
+            border-radius: 3px;
+            font-size: 0.75em;
+            color: #888;
+            font-family: monospace;
         }
         
         .progress-timestamp {
@@ -573,11 +602,33 @@
         let autoRefreshInterval = null;
         const resettingRuns = new Set(); // Run IDs we just reset - show "Running" until complete/fail
         
-        // Format timestamp to readable time
         function formatTime(timestamp) {
             if (!timestamp) return 'N/A';
             const date = new Date(timestamp * 1000);
             return date.toLocaleTimeString();
+        }
+
+        function formatProgressMessage(msg) {
+            if (!msg) return '';
+            return msg
+                .replace(/^✓ /, '<span class="msg-pass">✓</span> ')
+                .replace(/^✗ /, '<span class="msg-fail">✗</span> ')
+                .replace(/^⚠ /, '<span class="msg-warn">⚠</span> ');
+        }
+
+        function formatProgressMeta(meta) {
+            if (!meta || typeof meta !== 'object') return '';
+            const parts = [];
+            if (meta.cost) parts.push(`$${meta.cost}`);
+            if (meta.tokens_in) parts.push(`${(meta.tokens_in/1000).toFixed(0)}k in`);
+            if (meta.tokens_out) parts.push(`${(meta.tokens_out/1000).toFixed(0)}k out`);
+            if (meta.duration_seconds) parts.push(`${(meta.duration_seconds/60).toFixed(1)}m`);
+            if (meta.attempt) parts.push(`attempt ${meta.attempt}`);
+            if (meta.past_fixes_found) parts.push(`${meta.past_fixes_found} past fixes`);
+            if (meta.error_count) parts.push(`${meta.error_count} errors`);
+            if (meta.pr_url) parts.push(`<a href="${meta.pr_url}" target="_blank" style="color:#4499ff">PR</a>`);
+            if (parts.length === 0) return '';
+            return `<span class="progress-meta">${parts.join(' · ')}</span>`;
         }
         
         // Format relative time (e.g., "2 minutes ago")
@@ -821,7 +872,8 @@
                             ${run.progress_events.map(event => `
                                 <div class="progress-event stage-${event.stage}">
                                     <span class="progress-stage">${event.stage}</span>
-                                    <span class="progress-message">${event.message}</span>
+                                    <span class="progress-message">${formatProgressMessage(event.message)}</span>
+                                    ${formatProgressMeta(event.meta)}
                                     <div class="progress-timestamp">${formatTime(event.timestamp)}</div>
                                 </div>
                             `).join('')}

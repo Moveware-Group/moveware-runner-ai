@@ -668,7 +668,7 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
     """Internal implementation of execute_subtask with metrics tracking."""
     
     if run_id:
-        add_progress_event(run_id, "executing", f"Preparing repository for {issue.key}", {})
+        add_progress_event(run_id, "executing", f"Preparing repository for {issue.key}", {"issue_type": issue.issue_type})
 
     # Get repository configuration for this issue (supports multi-repo)
     repo_settings = _get_repo_settings(issue.key)
@@ -677,6 +677,8 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
     is_independent = "independent-pr" in (issue.labels or [])
 
     # 1) Checkout/update repo
+    if run_id:
+        add_progress_event(run_id, "executing", f"Cloning/updating repo ({repo_settings.get('repo_name', 'unknown')})", {"repo": repo_settings.get("repo_name")})
     checkout_repo(repo_settings["repo_workdir"], repo_settings["repo_ssh"], repo_settings["base_branch"])
 
     # 2) Determine branch
@@ -699,7 +701,7 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         branch = story_branch
     
     if run_id:
-        add_progress_event(run_id, "executing", f"Analyzing task and planning implementation", {"branch": branch})
+        add_progress_event(run_id, "executing", f"Checked out branch: {branch}", {"branch": branch})
 
     # 3) Ask Claude to implement the code changes
     client = AnthropicClient(api_key=settings.ANTHROPIC_API_KEY, base_url=settings.ANTHROPIC_BASE_URL)
@@ -708,44 +710,48 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
     repo_path = Path(repo_settings["repo_workdir"])
     context_info = _get_repo_context(repo_path, issue)
     
-    # Load project-specific skills (e.g., Next.js vs Flutter)
     from app.skill_loader import load_skills
-    skills_content = load_skills(repo_settings.get("skills", ["nextjs-fullstack-dev"]))
+    skills_list = repo_settings.get("skills", ["nextjs-fullstack-dev"])
+    if run_id:
+        add_progress_event(run_id, "executing", f"Loading project skills: {', '.join(skills_list)}", {"skills": skills_list})
+    skills_content = load_skills(skills_list)
     
     # Get human comments for additional context/clarifications
     human_comments = _get_human_comments(issue.key)
     
-    # Fetch Figma design context if story/description contains Figma URLs
+    # Fetch external integration context
+    integrations_loaded = []
+
     figma_context = ""
     try:
         from app.integrations.figma import get_design_context_for_issue
         figma_context = get_design_context_for_issue(issue.description or "")
         if figma_context:
+            integrations_loaded.append("Figma")
             print(f"🎨 Figma design context loaded for {issue.key}")
     except Exception as e:
         print(f"Note: Figma integration unavailable: {e}")
 
-    # Fetch Sentry error context if issue references Sentry errors or is a bug fix
     sentry_context = ""
     try:
         from app.integrations.sentry_client import get_error_context_for_issue
         sentry_context = get_error_context_for_issue(issue.description or "")
         if sentry_context:
+            integrations_loaded.append("Sentry")
             print(f"🐛 Sentry error context loaded for {issue.key}")
     except Exception as e:
         print(f"Note: Sentry integration unavailable: {e}")
 
-    # Fetch Stripe account context if issue involves payment functionality
     stripe_context = ""
     try:
         from app.integrations.stripe_client import get_stripe_context_for_issue
         stripe_context = get_stripe_context_for_issue(issue.description or "", issue.summary)
         if stripe_context:
+            integrations_loaded.append("Stripe")
             print(f"💳 Stripe account context loaded for {issue.key}")
     except Exception as e:
         print(f"Note: Stripe integration unavailable: {e}")
 
-    # Inject Vercel Engineering best practices for Next.js/React projects
     vercel_context = ""
     try:
         from app.integrations.vercel_client import get_vercel_context_for_issue
@@ -756,9 +762,13 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             skills=repo_settings.get("skills", []),
         )
         if vercel_context:
+            integrations_loaded.append("Vercel")
             print(f"▲ Vercel best practices injected for {issue.key}")
     except Exception as e:
         print(f"Note: Vercel best practices unavailable: {e}")
+
+    if run_id and integrations_loaded:
+        add_progress_event(run_id, "executing", f"Context loaded: {', '.join(integrations_loaded)}", {"integrations": integrations_loaded})
 
     # Detect if this is a REWORK scenario (fixing issues found in testing)
     is_rework = "REWORK REQUESTED" in (issue.description or "").upper()
@@ -888,6 +898,13 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         )
         print(f"Token usage: {metrics.total_input_tokens} input, {metrics.total_output_tokens} output, {metrics.cached_tokens} cached")
         print(f"Estimated cost: ${metrics.estimated_cost:.4f}")
+        if run_id:
+            add_progress_event(run_id, "executing", f"Claude responded — {metrics.total_input_tokens:,} in / {metrics.total_output_tokens:,} out, cost: ${metrics.estimated_cost:.4f}", {
+                "input_tokens": metrics.total_input_tokens,
+                "output_tokens": metrics.total_output_tokens,
+                "cached_tokens": metrics.cached_tokens,
+                "cost": round(metrics.estimated_cost, 4),
+            })
 
     # Extract assistant text and parse JSON
     text = AnthropicClient.extract_text(raw)
@@ -1167,7 +1184,10 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         check_results = format_proactive_check_results(proactive_fixes, proactive_warnings)
         print(check_results)
         if proactive_fixes:
-            print(f"✓ Applied {len(proactive_fixes)} proactive fixes before build")
+            msg = f"Applied {len(proactive_fixes)} proactive fixes before build"
+            print(f"✓ {msg}")
+            if run_id:
+                add_progress_event(run_id, "verifying", msg, {"fixes": len(proactive_fixes), "warnings": len(proactive_warnings)})
     
     # 5) Pre-commit verification (catch errors early!)
     if run_id:
@@ -1228,11 +1248,18 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                         print(f"npm audit fix: {fix_msg}")
                         audit_report = run_audit(repo_path)
                         if audit_report.has_actionable_issues:
-                            print(f"⚠ npm audit: {audit_report.critical} critical, {audit_report.high} high vulnerabilities remain")
+                            audit_msg = f"npm audit: {audit_report.critical} critical, {audit_report.high} high vulnerabilities"
+                            print(f"⚠ {audit_msg}")
+                            if run_id:
+                                add_progress_event(run_id, "verifying", f"⚠ {audit_msg}", {"critical": audit_report.critical, "high": audit_report.high, "total": audit_report.total})
                         elif audit_report.total > 0:
                             print(f"npm audit: {audit_report.total} low/moderate vulnerabilities (non-blocking)")
+                            if run_id:
+                                add_progress_event(run_id, "verifying", f"npm audit: {audit_report.total} low/moderate vulnerabilities (non-blocking)", {"total": audit_report.total})
                         else:
                             print("✓ npm audit: no vulnerabilities")
+                            if run_id:
+                                add_progress_event(run_id, "verifying", "npm audit: clean — no vulnerabilities", {})
                     except Exception as e:
                         print(f"Warning: npm audit failed: {e}")
             except subprocess.TimeoutExpired:
@@ -1274,8 +1301,12 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                         
                         verification_errors.append(error_message)
                         print(f"tsc failed ({error_count} errors):\n{tsc_output[:500]}")
+                        if run_id:
+                            add_progress_event(run_id, "verifying", f"✗ TypeScript check failed — {error_count} errors", {"error_count": error_count})
                     else:
                         print("✅ TypeScript check passed")
+                        if run_id:
+                            add_progress_event(run_id, "verifying", "✓ TypeScript check passed", {})
                 except subprocess.TimeoutExpired:
                     verification_errors.append("TypeScript check timed out (60s)")
                 except Exception as e:
@@ -1344,8 +1375,12 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                             
                             verification_errors.append(build_message)
                             print(f"Build failed ({error_count} errors):\n{error_output[:500]}")
+                            if run_id:
+                                add_progress_event(run_id, "verifying", f"✗ Build failed — {error_count} errors", {"error_count": error_count})
                         else:
                             print("✅ Build succeeded!")
+                            if run_id:
+                                add_progress_event(run_id, "verifying", "✓ Build succeeded", {})
                             
                 except subprocess.TimeoutExpired:
                     verification_errors.append("Build timed out after 3 minutes")
@@ -1776,11 +1811,17 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         
         if run_id:
             progress_msg = f"Build failed ({error_category}), asking {model_name} to fix (attempt {fix_attempt}/{MAX_FIX_ATTEMPTS})"
-            add_progress_event(run_id, "fixing", progress_msg, {
+            meta = {
                 "attempt": fix_attempt, 
                 "model": model_name,
-                "error_category": error_category
-            })
+                "error_category": error_category,
+            }
+            if similar_patterns:
+                meta["past_fixes_found"] = len(similar_patterns)
+                meta["past_fix_confidence"] = round(similar_patterns[0].confidence * 100)
+            if reflection_guidance:
+                meta["has_self_reflection"] = True
+            add_progress_event(run_id, "fixing", progress_msg, meta)
         
         # Kill any competing Next.js build processes
         try:
@@ -2298,6 +2339,8 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                         previous_fix_attempts.append(attempt_metadata)
                     else:
                         print(f"✅ Build succeeded after {model_name} fixes on attempt {fix_attempt}!")
+                        if run_id:
+                            add_progress_event(run_id, "fixing", f"✓ Build passed after {model_name} fix (attempt {fix_attempt})", {"attempt": fix_attempt, "model": model_name, "success": True})
                         notes += f"\n\n⚠️ *Note: Initial build failed, but {model_name} automatically fixed the errors on attempt {fix_attempt}.*"
                         
                         # Record successful fix to pattern learning database
@@ -2341,6 +2384,8 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         print(f"VERIFICATION STILL FAILING AFTER {fix_attempt} ATTEMPTS")
         print(f"{'='*60}")
         print(error_msg)
+        if run_id:
+            add_progress_event(run_id, "failed", f"Build failed after {fix_attempt} self-healing attempts — requires human review", {"attempts": fix_attempt})
         
         # Post detailed error to Jira with attempt history
         jira_client = JiraClient(
@@ -2437,10 +2482,16 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         if ci_status.overall == "failure":
             ci_comment = f"\n\n⚠️ CI checks failed on `{branch}`:\n{ci_status.to_jira_comment()}"
             print(f"⚠️  CI checks failed on {branch}")
+            if run_id:
+                add_progress_event(run_id, "verifying", f"⚠ GitHub CI checks failed on {branch}", {"ci_status": "failure"})
         elif ci_status.overall == "success":
             print(f"✓ CI checks passed on {branch}")
+            if run_id:
+                add_progress_event(run_id, "verifying", f"✓ GitHub CI checks passed", {"ci_status": "success"})
         elif ci_status.overall == "pending":
             print(f"⏳ CI checks still running on {branch}")
+            if run_id:
+                add_progress_event(run_id, "verifying", f"CI checks pending on {branch}", {"ci_status": "pending"})
     except Exception as e:
         print(f"Note: GitHub CI check skipped: {e}")
 
@@ -2473,12 +2524,18 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             if pw_result.error:
                 notes += f"\n\n⚠️ E2E tests: {pw_result.error}"
                 print(f"⚠️  Playwright: {pw_result.error}")
+                if run_id:
+                    add_progress_event(run_id, "verifying", f"⚠ Playwright E2E: {pw_result.error}", {})
             elif not pw_result.all_passed:
                 notes += f"\n\n{pw_result.to_jira_comment()}"
                 print(f"⚠️  Playwright: {pw_result.failed}/{pw_result.total} tests failed")
+                if run_id:
+                    add_progress_event(run_id, "verifying", f"⚠ Playwright E2E: {pw_result.failed}/{pw_result.total} tests failed", {"passed": pw_result.passed, "failed": pw_result.failed, "total": pw_result.total})
             elif pw_result.total > 0:
                 notes += f"\n\n✅ E2E tests: {pw_result.passed}/{pw_result.total} passed"
                 print(f"✓ Playwright: all {pw_result.total} tests passed")
+                if run_id:
+                    add_progress_event(run_id, "verifying", f"✓ Playwright E2E: {pw_result.total}/{pw_result.total} tests passed", {"total": pw_result.total})
     except Exception as e:
         print(f"Note: Playwright tests skipped: {e}")
 
@@ -2498,9 +2555,13 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             elif sg_result.total > 0:
                 notes += f"\n\n{sg_result.to_jira_comment()}"
                 print(f"⚠️  Semgrep: {sg_result.errors_count} errors, {sg_result.warnings_count} warnings")
+                if run_id:
+                    add_progress_event(run_id, "verifying", f"⚠ Semgrep SAST: {sg_result.errors_count} errors, {sg_result.warnings_count} warnings", {"total": sg_result.total, "files_scanned": sg_result.files_scanned})
             else:
                 notes += f"\n\n✅ Semgrep SAST: no issues ({sg_result.files_scanned} files scanned)"
                 print(f"✓ Semgrep: clean ({sg_result.files_scanned} files)")
+                if run_id:
+                    add_progress_event(run_id, "verifying", f"✓ Semgrep SAST: clean ({sg_result.files_scanned} files)", {"files_scanned": sg_result.files_scanned})
     except Exception as e:
         print(f"Note: Semgrep scan skipped: {e}")
 
@@ -2518,9 +2579,13 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             elif zap_result.total > 0:
                 notes += f"\n\n{zap_result.to_jira_comment()}"
                 print(f"⚠️  ZAP: {zap_result.high_count} high, {zap_result.medium_count} medium")
+                if run_id:
+                    add_progress_event(run_id, "verifying", f"⚠ OWASP ZAP: {zap_result.high_count} high, {zap_result.medium_count} medium alerts", {"high": zap_result.high_count, "medium": zap_result.medium_count})
             else:
                 notes += f"\n\n✅ OWASP ZAP: no vulnerabilities found"
                 print(f"✓ ZAP: no vulnerabilities")
+                if run_id:
+                    add_progress_event(run_id, "verifying", "✓ OWASP ZAP: no vulnerabilities found", {})
     except Exception as e:
         print(f"Note: OWASP ZAP scan skipped: {e}")
 
@@ -2541,8 +2606,9 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                 body=pr_body,
                 base=repo_settings["base_branch"],
             )
+            if run_id and pr_url:
+                add_progress_event(run_id, "committing", f"PR created: {pr_url}", {"pr_url": pr_url})
         except Exception as e:
-            # Don't fail the whole run if PR creation errors
             pr_url = None
             notes += f"\n\nPR creation failed: {e}"
         summary = "Created branch, committed changes, and opened PR." if pr_url else "Created branch and committed changes."
@@ -2572,7 +2638,17 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         metrics.files_changed = len(files_changed)
         metrics.model_used = settings.ANTHROPIC_MODEL
         
-        # Save metrics
+        if run_id:
+            duration_min = metrics.duration_seconds / 60
+            cost_str = f"${metrics.estimated_cost:.4f}" if metrics.estimated_cost else "N/A"
+            add_progress_event(run_id, "completed", f"Done in {duration_min:.1f}m — {len(files_changed)} files, cost {cost_str}", {
+                "duration_seconds": round(metrics.duration_seconds, 1),
+                "files_changed": len(files_changed),
+                "cost": round(metrics.estimated_cost, 4) if metrics.estimated_cost else 0,
+                "tokens_in": metrics.total_input_tokens,
+                "tokens_out": metrics.total_output_tokens,
+            })
+        
         try:
             save_metrics(metrics)
         except Exception as e:

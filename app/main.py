@@ -643,11 +643,9 @@ async def status_api(detail: str = "summary", hours: str = "24") -> Dict[str, An
                     event_data = {
                         "message": event[1],
                         "stage": meta_dict.get("stage", "unknown"),
-                        "timestamp": event[3]
+                        "timestamp": event[3],
+                        "meta": meta_dict,
                     }
-                    
-                    if detail == "detailed":
-                        event_data["meta"] = meta_dict
                     
                     run_data["progress_events"].append(event_data)
                 
