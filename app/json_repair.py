@@ -67,37 +67,92 @@ def repair_json(text: str) -> str:
     return text
 
 
+def _fix_unescaped_control_chars(text: str) -> str:
+    """Fix unescaped control characters inside JSON string values."""
+    result = []
+    in_string = False
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == '"' and (i == 0 or text[i - 1] != '\\'):
+            in_string = not in_string
+            result.append(ch)
+        elif in_string and ch == '\n':
+            result.append('\\n')
+        elif in_string and ch == '\r':
+            result.append('\\r')
+        elif in_string and ch == '\t':
+            result.append('\\t')
+        elif in_string and ord(ch) < 0x20 and ch not in ('\n', '\r', '\t'):
+            result.append(f'\\u{ord(ch):04x}')
+        else:
+            result.append(ch)
+        i += 1
+    return ''.join(result)
+
+
+def _find_balanced_json(text: str) -> Optional[str]:
+    """Find the outermost balanced { ... } in text, respecting string quoting."""
+    start = text.find('{')
+    if start == -1:
+        return None
+    depth = 0
+    in_string = False
+    i = start
+    while i < len(text):
+        ch = text[i]
+        if ch == '\\' and in_string:
+            i += 2
+            continue
+        if ch == '"':
+            in_string = not in_string
+        elif not in_string:
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    return text[start:i + 1]
+        i += 1
+    return text[start:]
+
+
 def try_parse_json(text: str, max_repair_attempts: int = 3) -> Optional[Dict[str, Any]]:
     """
     Try to parse JSON with progressive repair attempts.
-    
-    Args:
-        text: JSON text (potentially malformed)
-        max_repair_attempts: Maximum number of repair attempts
     
     Returns:
         Parsed JSON dict or None if all attempts fail
     """
     attempts = []
-    
+
     # Attempt 1: Parse as-is
     try:
         return json.loads(text)
     except json.JSONDecodeError as e:
         attempts.append(f"Raw parse failed: {e}")
-    
+
     # Attempt 2: Remove markdown and try again
     try:
         cleaned = text.strip()
         if '```' in cleaned:
-            # Extract from code block
             match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', cleaned, re.DOTALL)
             if match:
                 return json.loads(match.group(1))
     except json.JSONDecodeError as e:
         attempts.append(f"Markdown removal failed: {e}")
-    
-    # Attempt 3: Apply repairs
+
+    # Attempt 3: Extract balanced JSON object (handles preamble text)
+    try:
+        balanced = _find_balanced_json(text)
+        if balanced and balanced != text:
+            result = json.loads(balanced)
+            print("✅ JSON parsed after extracting balanced braces")
+            return result
+    except json.JSONDecodeError as e:
+        attempts.append(f"Balanced extract failed: {e}")
+
+    # Attempt 4: Apply standard repairs
     for i in range(max_repair_attempts):
         try:
             repaired = repair_json(text)
@@ -106,22 +161,38 @@ def try_parse_json(text: str, max_repair_attempts: int = 3) -> Optional[Dict[str
             return result
         except json.JSONDecodeError as e:
             attempts.append(f"Repair attempt {i+1} failed: {e}")
-            # Try more aggressive repairs
             if i == 0:
-                # Remove more whitespace
                 text = re.sub(r'\s+', ' ', text)
             elif i == 1:
-                # Try to fix by extracting just the object
                 first_brace = text.find('{')
                 last_brace = text.rfind('}')
                 if first_brace >= 0 and last_brace > first_brace:
-                    text = text[first_brace:last_brace+1]
-    
-    # All attempts failed
+                    text = text[first_brace:last_brace + 1]
+
+    # Attempt 5: Fix unescaped control characters (common with code in JSON)
+    try:
+        balanced = _find_balanced_json(text) or text
+        fixed = _fix_unescaped_control_chars(balanced)
+        fixed = repair_json(fixed)
+        result = json.loads(fixed)
+        print("✅ JSON parsed after fixing unescaped control characters")
+        return result
+    except json.JSONDecodeError as e:
+        attempts.append(f"Control char fix failed: {e}")
+
+    # Attempt 6: Last resort — try python's json with strict=False
+    try:
+        balanced = _find_balanced_json(text) or text
+        result = json.loads(balanced, strict=False)
+        print("✅ JSON parsed with strict=False")
+        return result
+    except json.JSONDecodeError as e:
+        attempts.append(f"strict=False failed: {e}")
+
     print(f"❌ JSON parsing failed after {len(attempts)} attempts:")
     for attempt in attempts:
         print(f"  - {attempt}")
-    
+
     return None
 
 

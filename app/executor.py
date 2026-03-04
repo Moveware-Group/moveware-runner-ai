@@ -423,7 +423,9 @@ def _system_prompt() -> str:
         "You are an expert software engineer implementing a Jira sub-task. "
         "You will be given the task requirements and must implement the actual code changes.\n\n"
         "Working directory: The repository is already checked out and you're on the correct branch.\n\n"
-        "Your response MUST be valid JSON with this structure:\n"
+        "**RESPONSE FORMAT:** Your response MUST be ONLY valid JSON. "
+        "Do NOT write any text, explanation, or preamble before the JSON. "
+        "Start your response with the opening brace '{'. Use this structure:\n"
         "{\n"
         '  "implementation_plan": "Brief plan of what you\'ll implement",\n'
         '  "files": [\n'
@@ -452,7 +454,10 @@ def _system_prompt() -> str:
         "  * DO NOT implement it\n"
         "  * Instead, add a question in the 'questions' array asking for clarification\n"
         "- Every file you create or modify MUST be directly mentioned or implied by the task\n"
-        "- When in doubt, implement LESS rather than MORE\n"
+        "- When in doubt, implement LESS rather than MORE\n\n"
+        "**🚫 BANNED PATTERNS — NEVER USE:**\n"
+        "- NEVER create or use `MovewareClient` — it is deprecated. Use Rest API v2 (fetch/axios) instead.\n"
+        "- NEVER import from '@/lib/api/moveware-client' or similar moveware-client paths.\n"
         "- Remember: Adding unauthorized features wastes time and creates bugs\n\n"
         "**CRITICAL BUILD VERIFICATION:**\n"
         "- For Next.js/React projects, your code will be verified with `npm run build`\n"
@@ -977,27 +982,33 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
     # Extract assistant text and parse JSON
     text = AnthropicClient.extract_text(raw)
     
-    # Remove markdown code fence if present
+    # Extract JSON from Claude's response (may include explanatory text)
+    from .json_repair import try_parse_json, extract_json_from_llm_response
     json_text = text.strip()
-    
-    # Handle ```json or ``` at the start
+
+    # Strategy 1: Strip markdown code fences
     lines = json_text.split('\n')
     if lines[0].strip().startswith('```'):
-        # Remove first line (opening fence)
         lines = lines[1:]
-        # Find and remove closing fence
         for i in range(len(lines) - 1, -1, -1):
             if lines[i].strip() == '```':
                 lines = lines[:i]
                 break
         json_text = '\n'.join(lines)
-    
+
+    # Strategy 2: If first non-whitespace char is NOT '{', Claude wrote
+    # explanatory text before JSON — extract from first '{' to last '}'
+    stripped = json_text.lstrip()
+    if stripped and stripped[0] != '{':
+        extracted = extract_json_from_llm_response(json_text)
+        if extracted:
+            print(f"ℹ️  Stripped {len(json_text) - len(extracted)} chars of preamble text before JSON")
+            json_text = extracted
+
     try:
-        from .json_repair import try_parse_json
         payload = try_parse_json(json_text, max_repair_attempts=3)
         
         if payload is None:
-            # JSON repair failed - log and raise
             print(f"❌ Could not parse JSON after repair attempts")
             print(f"Extracted text (first 2000 chars): {json_text[:2000]}")
             raise RuntimeError("Failed to parse Claude response as JSON after repairs")
@@ -2138,7 +2149,8 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             f"- ❌ Assuming export names match (check casing!)\n"
             f"- ❌ Adding imports without verifying the export exists\n"
             f"- ❌ Providing partial file content (must be COMPLETE)\n"
-            f"- ❌ Wrapping JSON in markdown code fences\n\n"
+            f"- ❌ Wrapping JSON in markdown code fences\n"
+            f"- ❌ NEVER create or use MovewareClient — use Rest API v2 (fetch/axios) instead\n\n"
             f"**REMEMBER:** Read → Verify → Fix → Verify again. Focus ONLY on fixing build errors."
         )
         

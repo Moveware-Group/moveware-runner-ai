@@ -83,6 +83,53 @@ def init_knowledge_base_schema() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_kb_type_repo ON kb_type_corrections(repo_name)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_kb_file_repo ON kb_file_patterns(repo_name)")
 
+    _seed_core_rules()
+
+
+_CORE_RULES = [
+    {
+        "repo_name": "*",
+        "category": "architecture",
+        "scope": "global",
+        "severity": "critical",
+        "rule_text": (
+            "NEVER use MovewareClient or create MovewareClient classes/instances. "
+            "Always use Rest API v2 (standard fetch/axios calls to the REST API). "
+            "MovewareClient is a deprecated pattern that MUST NOT appear in any generated code."
+        ),
+    },
+    {
+        "repo_name": "*",
+        "category": "architecture",
+        "scope": "global",
+        "severity": "critical",
+        "rule_text": (
+            "NEVER import from '@/lib/api/moveware-client' or create a file named "
+            "'moveware-client.ts'. Use the existing Rest API v2 service layer instead."
+        ),
+    },
+]
+
+
+def _seed_core_rules() -> None:
+    """Idempotently seed architectural rules that apply to all repos."""
+    ts = now()
+    with connect() as conn:
+        for rule in _CORE_RULES:
+            exists = conn.execute(
+                "SELECT id FROM kb_lessons WHERE repo_name=? AND rule_text=?",
+                (rule["repo_name"], rule["rule_text"]),
+            ).fetchone()
+            if not exists:
+                conn.execute(
+                    """INSERT INTO kb_lessons
+                       (repo_name, category, scope, rule_text, severity, occurrences,
+                        created_at, updated_at)
+                       VALUES (?,?,?,?,?,100,?,?)""",
+                    (rule["repo_name"], rule["category"], rule["scope"],
+                     rule["rule_text"], rule["severity"], ts, ts),
+                )
+
 
 def seed_manual_rules(rules: list) -> int:
     """
@@ -411,18 +458,17 @@ def get_preventive_lessons(
     desc_lower = task_description.lower()
 
     with connect() as conn:
-        # --- Critical lessons (always include) ---
+        # --- Critical lessons (always include, including wildcard '*' rules) ---
         critical = conn.execute(
             """SELECT rule_text, occurrences, prevented, scope
                FROM kb_lessons
-               WHERE repo_name=? AND severity='critical'
+               WHERE (repo_name=? OR repo_name='*') AND severity='critical'
                ORDER BY occurrences DESC
                LIMIT ?""",
             (repo_name, max_rules // 2),
         ).fetchall()
 
         for rule_text, occ, prev, scope in critical:
-            # Include if universal or if scope mentioned in task
             if scope == "global" or scope.lower() in desc_lower:
                 result.rules.append(f"[CRITICAL, seen {occ}x] {rule_text}")
                 result.total_lessons += 1
@@ -434,7 +480,7 @@ def get_preventive_lessons(
             warnings = conn.execute(
                 """SELECT rule_text, occurrences, prevented, scope
                    FROM kb_lessons
-                   WHERE repo_name=? AND severity='warn'
+                   WHERE (repo_name=? OR repo_name='*') AND severity='warn'
                    ORDER BY occurrences DESC
                    LIMIT ?""",
                 (repo_name, remaining),
