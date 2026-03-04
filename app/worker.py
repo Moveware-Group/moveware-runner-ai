@@ -817,7 +817,9 @@ def _handle_execute_subtask(ctx: Context, subtask: JiraIssue, run_id: Optional[i
     next_key = _pick_next_subtask_to_start(ctx, subtask.parent_key)
     if next_key:
         ctx.jira.transition_to_status(next_key, settings.JIRA_STATUS_IN_PROGRESS)
+        ctx.jira.assign_issue(next_key, settings.JIRA_AI_ACCOUNT_ID)
         ctx.jira.add_comment(subtask.parent_key, f"AI moving to next sub-task {next_key}.")
+        enqueue_run(issue_key=next_key, payload={"issue_key": next_key})
 
 
 def _check_story_completion(ctx: Context, story: JiraIssue) -> None:
