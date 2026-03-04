@@ -84,6 +84,35 @@ def init_knowledge_base_schema() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_kb_file_repo ON kb_file_patterns(repo_name)")
 
 
+def seed_manual_rules(rules: list) -> int:
+    """
+    Seed manually-created rules into the knowledge base.
+    Each rule is a dict with: repo_name, category, rule_text, severity, scope (all required).
+    Skips rules that already exist (idempotent).
+    Returns number of new rules added.
+    """
+    added = 0
+    for rule in rules:
+        repo = rule["repo_name"]
+        text = rule["rule_text"]
+        ts = now()
+        with connect() as conn:
+            existing = conn.execute(
+                "SELECT id FROM kb_lessons WHERE repo_name=? AND rule_text=?",
+                (repo, text),
+            ).fetchone()
+            if not existing:
+                conn.execute(
+                    """INSERT INTO kb_lessons
+                       (repo_name, category, scope, rule_text, severity, occurrences, created_at, updated_at)
+                       VALUES (?,?,?,?,?,100,?,?)""",
+                    (repo, rule["category"], rule.get("scope", "global"), text,
+                     rule.get("severity", "critical"), ts, ts),
+                )
+                added += 1
+    return added
+
+
 # ---------------------------------------------------------------------------
 #  Recording lessons  (called after build success / failure)
 # ---------------------------------------------------------------------------

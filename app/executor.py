@@ -268,7 +268,27 @@ def _get_repo_context(repo_path: Path, issue: JiraIssue, include_all_code: bool 
         except Exception:
             pass
     
-    # 6. Always include DESIGN.md if it exists (design system)
+    # 6a. Always include AI_RULES.md if it exists (project-specific rules)
+    for rules_name in ["AI_RULES.md", "RULES.md", ".ai-rules"]:
+        rules_path = repo_path / rules_name
+        if rules_path.exists():
+            try:
+                content = rules_path.read_text(encoding="utf-8")
+                context.append(f"**PROJECT RULES ({rules_name}) — YOU MUST FOLLOW THESE:**")
+                context.append("```markdown")
+                context.append(content[:8000])
+                if len(content) > 8000:
+                    context.append("... (truncated)")
+                context.append("```")
+                context.append("")
+                context.append("**CRITICAL:** The rules above are MANDATORY for this project. Violating them will cause build failures or rejected PRs.")
+                context.append("")
+                print(f"📋 Loaded project rules from {rules_name}")
+                break
+            except Exception:
+                pass
+
+    # 6b. Always include DESIGN.md if it exists (design system)
     design_md_path = repo_path / "DESIGN.md"
     if design_md_path.exists():
         try:

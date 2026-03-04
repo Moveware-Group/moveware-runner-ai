@@ -298,6 +298,24 @@ async def knowledge_base_stats_api(repo: Optional[str] = None) -> Dict[str, Any]
         return {"error": str(e)}
 
 
+@app.post("/api/knowledge-base/rules")
+async def add_kb_rules_api(request: Request) -> Dict[str, Any]:
+    """
+    Add manual rules to the knowledge base.
+    Body: {"rules": [{"repo_name": "test-repo", "category": "architecture", "rule_text": "...", "severity": "critical"}]}
+    """
+    try:
+        body = await request.json()
+        rules = body.get("rules", [])
+        if not rules:
+            return {"ok": False, "error": "No rules provided"}
+        from app.error_knowledge_base import seed_manual_rules
+        added = seed_manual_rules(rules)
+        return {"ok": True, "added": added, "total_submitted": len(rules)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 @app.post("/api/queue/reset-stale")
 async def reset_stale_runs_api(
     x_admin_secret: Optional[str] = Header(default=None)
