@@ -63,6 +63,10 @@ def init_db() -> None:
     # Initialize story creation tracker schema
     from .story_creation_tracker import init_story_creation_tracker
     init_story_creation_tracker()
+    
+    # Initialize preventive error knowledge base
+    from .error_knowledge_base import init_knowledge_base_schema
+    init_knowledge_base_schema()
 
 
 @contextmanager

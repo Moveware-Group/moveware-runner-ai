@@ -82,27 +82,30 @@ class FixPattern:
 def _hash_error_pattern(error_msg: str) -> str:
     """
     Generate a normalized hash for an error message.
-    Removes line numbers, file paths, and variable names to match similar errors.
+    
+    Normalizes away line numbers and timestamps but PRESERVES type names
+    and property names — these are the most valuable signals for matching.
     """
-    # Normalize the error: remove line numbers, specific paths, variable names
     normalized = error_msg.lower()
     
-    # Remove line numbers (e.g., "src/file.ts:42:17" -> "src/file.ts")
+    # Remove line numbers
     normalized = re.sub(r':\d+:\d+', '', normalized)
     normalized = re.sub(r'line \d+', 'line N', normalized)
     
-    # Remove specific file paths but keep structure (e.g., "src/lib/auth.ts" -> "src/lib/*.ts")
-    # Keep directory structure for pattern matching
-    normalized = re.sub(r'/[a-z0-9_-]+\.', '/*.', normalized)
-    
-    # Remove specific variable/function names in quotes but keep the error type
-    normalized = re.sub(r"['\"]\w+['\"]", "'VAR'", normalized)
+    # Remove file paths but keep the filename
+    normalized = re.sub(r'(?:src|app|lib|components)/[\w/.-]+/', '.../', normalized)
     
     # Remove timestamps
     normalized = re.sub(r'\d{4}-\d{2}-\d{2}', 'DATE', normalized)
     normalized = re.sub(r'\d{2}:\d{2}:\d{2}', 'TIME', normalized)
     
-    # Generate hash
+    # Remove hex/hash strings
+    normalized = re.sub(r'[0-9a-f]{8,}', 'HASH', normalized)
+    
+    # Keep type names and property names in quotes (these are critical for matching)
+    # Only normalize very long strings or file content
+    normalized = re.sub(r"['\"][^'\"]{60,}['\"]", "'LONG_STRING'", normalized)
+    
     return hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:16]
 
 
@@ -155,31 +158,32 @@ def record_successful_fix(
     error_msg: str,
     fix_strategy: str,
     files_changed: List[str],
-    metadata: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None,
+    repo_name: Optional[str] = None,
 ) -> None:
     """
     Record a successful fix to the pattern database.
     This is the key to learning - when a fix works, we store it for reuse.
+    Also feeds the preventive knowledge base so future runs avoid this error.
     
     Args:
         error_msg: The error that was fixed
         fix_strategy: What worked (description of the fix)
         files_changed: Which files were modified
         metadata: Additional context
+        repo_name: Repository name for knowledge base
     """
     error_hash = _hash_error_pattern(error_msg)
     error_category, _, _ = classify_error(error_msg)
     ts = now()
     
     with connect() as conn:
-        # Check if pattern already exists
         existing = conn.execute(
             "SELECT id, success_count FROM error_patterns WHERE error_hash = ?",
             (error_hash,)
         ).fetchone()
         
         if existing:
-            # Update existing pattern (increment success count)
             pattern_id, current_count = existing
             conn.execute("""
                 UPDATE error_patterns 
@@ -189,7 +193,6 @@ def record_successful_fix(
                 WHERE id = ?
             """, (current_count + 1, ts, fix_strategy, pattern_id))
         else:
-            # Create new pattern
             conn.execute("""
                 INSERT INTO error_patterns (
                     error_hash, error_text, error_category, files_involved,
@@ -201,6 +204,14 @@ def record_successful_fix(
                 json.dumps(files_changed), fix_strategy, 1, ts, ts,
                 json.dumps(metadata or {})
             ))
+
+    # Feed into preventive knowledge base
+    if repo_name:
+        try:
+            from .error_knowledge_base import extract_lessons_from_error
+            extract_lessons_from_error(repo_name, error_msg, fix_strategy, files_changed)
+        except Exception:
+            pass
 
 
 def record_failed_fix(

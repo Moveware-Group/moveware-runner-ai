@@ -353,11 +353,17 @@ def _get_human_comments(issue_key: str) -> str:
         return ""
 
 
-def _build_system_with_cache(repo_context: str, skills_content: str = "") -> list:
+def _build_system_with_cache(
+    repo_context: str,
+    skills_content: str = "",
+    knowledge_base_context: str = "",
+    type_definitions_context: str = "",
+) -> list:
     """
     Build system prompt with prompt caching for repository context.
     
-    Includes optional project-specific skills (e.g., Next.js vs Flutter conventions).
+    Includes optional project-specific skills (e.g., Next.js vs Flutter conventions),
+    preventive knowledge base lessons, and auto-detected type definitions.
     
     Returns array of system message blocks with cache_control markers.
     This reduces costs by 90% and speeds up responses 5x for repeated context.
@@ -366,8 +372,10 @@ def _build_system_with_cache(repo_context: str, skills_content: str = "") -> lis
     if skills_content:
         cached_parts.append(skills_content)
     cached_parts.append(f"\n\n**Repository Context (cached for performance):**\n\n{repo_context}")
-    
-    return [
+    if type_definitions_context:
+        cached_parts.append(f"\n\n{type_definitions_context}")
+
+    blocks = [
         {
             "type": "text",
             "text": _system_prompt()
@@ -375,9 +383,19 @@ def _build_system_with_cache(repo_context: str, skills_content: str = "") -> lis
         {
             "type": "text",
             "text": "\n\n".join(cached_parts),
-            "cache_control": {"type": "ephemeral"}  # Cache this expensive part!
-        }
+            "cache_control": {"type": "ephemeral"}
+        },
     ]
+
+    # Knowledge base lessons are NOT cached — they change per-run as the
+    # system learns, and they must always be fresh.
+    if knowledge_base_context:
+        blocks.append({
+            "type": "text",
+            "text": knowledge_base_context,
+        })
+
+    return blocks
 
 
 def _system_prompt() -> str:
@@ -710,6 +728,36 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
     repo_path = Path(repo_settings["repo_workdir"])
     context_info = _get_repo_context(repo_path, issue)
     
+    # PREVENTIVE: Inject lessons learned from past build failures
+    kb_context = ""
+    try:
+        from .error_knowledge_base import get_preventive_lessons, format_preventive_prompt, init_knowledge_base_schema
+        init_knowledge_base_schema()
+        repo_name = repo_settings.get("repo_name", "unknown")
+        task_text = f"{issue.summary} {issue.description or ''}"
+        lessons = get_preventive_lessons(repo_name, task_text)
+        kb_context = format_preventive_prompt(lessons)
+        if kb_context:
+            print(f"📚 Knowledge base: {lessons.total_lessons} lessons loaded ({lessons.total_prevented} errors prevented so far)")
+            if run_id:
+                add_progress_event(run_id, "executing", f"Knowledge base: {lessons.total_lessons} lessons, {len(lessons.type_corrections)} type corrections", {"lessons": lessons.total_lessons, "prevented": lessons.total_prevented})
+    except Exception as e:
+        print(f"Note: Knowledge base unavailable: {e}")
+
+    # PREVENTIVE: Read type definitions mentioned in task description
+    type_context = ""
+    try:
+        from .type_context_extractor import extract_type_context
+        type_context = extract_type_context(
+            repo_path,
+            f"{issue.summary} {issue.description or ''}",
+            max_files=10,
+        )
+        if type_context:
+            print(f"📖 Auto-detected type definitions for task context")
+    except Exception as e:
+        print(f"Note: Type context extraction unavailable: {e}")
+
     from app.skill_loader import load_skills
     skills_list = repo_settings.get("skills", ["nextjs-fullstack-dev"])
     if run_id:
@@ -873,7 +921,7 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
     # Use prompt caching for repository context (90% cost reduction!)
     raw = client.messages_create({
         "model": settings.ANTHROPIC_MODEL,
-        "system": _build_system_with_cache(context_info, skills_content),  # Cached!
+        "system": _build_system_with_cache(context_info, skills_content, kb_context, type_context),
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": 16000,  # Increased for large file contents
         "temperature": 1,  # Required when thinking is enabled
@@ -1393,6 +1441,17 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
     MAX_FIX_ATTEMPTS = settings.MAX_FIX_ATTEMPTS
     fix_attempt = 0
     
+    # LEARNING: Record lessons from initial build failure (before self-healing)
+    if verification_errors:
+        try:
+            from .error_knowledge_base import extract_lessons_from_error
+            _repo_name = repo_settings.get("repo_name", "unknown")
+            _n = extract_lessons_from_error(_repo_name, "\n".join(verification_errors))
+            if _n:
+                print(f"📚 Recorded {_n} lesson(s) from initial build failure")
+        except Exception:
+            pass
+
     # Try all auto-fixes before engaging AI (saves time and cost!)
     if verification_errors:
         from .auto_fixes import try_all_auto_fixes
@@ -2358,6 +2417,17 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                                 success=True
                             )
                         record_successful_fix(error_msg, fix_strategy, fixed_files)
+                        
+                        # LEARNING: Extract preventive lessons from the error+fix
+                        try:
+                            from .error_knowledge_base import extract_lessons_from_error
+                            repo_name = repo_settings.get("repo_name", "unknown")
+                            n_lessons = extract_lessons_from_error(repo_name, error_msg, fix_strategy, fixed_files)
+                            if n_lessons:
+                                print(f"📚 Learned {n_lessons} preventive lesson(s) from this fix")
+                        except Exception as kb_err:
+                            print(f"Note: Could not record KB lessons: {kb_err}")
+                        
                         print(f"✅ Recorded successful fix pattern for future use (category: {error_category})")
                         
                         verification_errors = []  # Clear errors to break the retry loop
@@ -2386,6 +2456,16 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         print(error_msg)
         if run_id:
             add_progress_event(run_id, "failed", f"Build failed after {fix_attempt} self-healing attempts — requires human review", {"attempts": fix_attempt})
+        
+        # LEARNING: Even from total failures — extract lessons so future runs avoid this
+        try:
+            from .error_knowledge_base import extract_lessons_from_error
+            repo_name = repo_settings.get("repo_name", "unknown")
+            n_lessons = extract_lessons_from_error(repo_name, error_msg)
+            if n_lessons:
+                print(f"📚 Learned {n_lessons} preventive lesson(s) from this failure")
+        except Exception:
+            pass
         
         # Post detailed error to Jira with attempt history
         jira_client = JiraClient(

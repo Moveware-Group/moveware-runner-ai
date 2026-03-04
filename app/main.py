@@ -288,6 +288,16 @@ async def queue_stats_api() -> Dict[str, Any]:
         return {"error": str(e)}
 
 
+@app.get("/api/knowledge-base/stats")
+async def knowledge_base_stats_api(repo: Optional[str] = None) -> Dict[str, Any]:
+    """Get statistics about the preventive error knowledge base."""
+    try:
+        from app.error_knowledge_base import get_knowledge_base_stats
+        return get_knowledge_base_stats(repo)
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.post("/api/queue/reset-stale")
 async def reset_stale_runs_api(
     x_admin_secret: Optional[str] = Header(default=None)

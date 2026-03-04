@@ -583,6 +583,12 @@
                 <div class="metric-value" id="totalTokens">--</div>
                 <div class="metric-subtext" id="tokensSubtext">input + output</div>
             </div>
+            
+            <div class="metric-card" style="border-top:2px solid #aa00ff">
+                <div class="metric-label">Knowledge Base</div>
+                <div class="metric-value" id="kbLessons">--</div>
+                <div class="metric-subtext" id="kbSubtext">lessons learned</div>
+            </div>
         </div>
         
         <div id="errorCategoriesSection"></div>
@@ -643,14 +649,25 @@
             return `${Math.floor(diff / 86400)}d ago`;
         }
         
-        // Fetch and render metrics
         async function fetchMetrics() {
             try {
                 const hours = timeFilter === 'all' ? 999999 : timeFilter;
-                const response = await fetch(`/api/metrics/summary?hours=${hours}`);
-                const data = await response.json();
-                
+                const [metricsResp, kbResp] = await Promise.all([
+                    fetch(`/api/metrics/summary?hours=${hours}`),
+                    fetch(`/api/knowledge-base/stats`),
+                ]);
+                const data = await metricsResp.json();
                 renderMetrics(data);
+
+                const kb = await kbResp.json();
+                const el = document.getElementById('kbLessons');
+                const sub = document.getElementById('kbSubtext');
+                if (el && kb && !kb.error) {
+                    el.textContent = kb.total_lessons || 0;
+                    const prev = kb.total_prevented || 0;
+                    const tc = kb.type_corrections || 0;
+                    sub.textContent = `${prev} prevented · ${tc} type fixes`;
+                }
             } catch (error) {
                 console.error('Failed to fetch metrics:', error);
             }
