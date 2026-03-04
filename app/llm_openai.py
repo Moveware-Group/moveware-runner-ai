@@ -68,7 +68,7 @@ class OpenAIClient:
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
             }
-            r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=120)
+            r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=180)
             if r.status_code >= 400:
                 raise RuntimeError(f"OpenAI error {r.status_code}: {r.text}")
             return r.json()
@@ -83,7 +83,7 @@ class OpenAIClient:
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
             }
-            r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=120)
+            r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=180)
             if r.status_code >= 400:
                 raise RuntimeError(f"OpenAI error {r.status_code}: {r.text}")
             return r.json()

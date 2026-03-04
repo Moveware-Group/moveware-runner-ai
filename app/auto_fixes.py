@@ -27,6 +27,8 @@ def try_all_auto_fixes(
         (success, description) - True if fix was applied, with description
     """
     auto_fixes = [
+        auto_fix_missing_export,
+        auto_fix_prisma_schema_mismatch,
         auto_fix_missing_npm_package,
         auto_fix_eslint_config_package,
         auto_fix_prettier_formatting,
@@ -55,6 +57,236 @@ def try_all_auto_fixes(
             print(f"Warning: Auto-fix {auto_fix_func.__name__} failed: {e}")
             continue
     
+    return False, ""
+
+
+def auto_fix_missing_export(
+    error_msg: str,
+    repo_path: Path,
+    is_node_project: bool
+) -> Tuple[bool, str]:
+    """
+    Auto-fix missing export errors by reading the source module and either:
+    1. Adding 'export' to an existing declaration, or
+    2. Fixing the import to use the correct exported name.
+
+    Handles:
+    - "'findSessionByToken' is not exported from '@/lib/db/repositories/session'"
+    - "Module '@/lib/...' has no exported member 'X'"
+    """
+    if not is_node_project:
+        return False, ""
+
+    # Pattern: 'symbolName' is not exported from 'modulePath'
+    match = re.search(
+        r"['\"](\w+)['\"] is not exported from ['\"]([^'\"]+)['\"]",
+        error_msg,
+    )
+    if not match:
+        # Pattern: Module "path" has no exported member "symbol"
+        match = re.search(
+            r"Module ['\"]([^'\"]+)['\"] has no exported member ['\"](\w+)['\"]",
+            error_msg,
+        )
+        if match:
+            # Groups are swapped in this pattern
+            missing_symbol = match.group(2)
+            module_path = match.group(1)
+        else:
+            return False, ""
+    else:
+        missing_symbol = match.group(1)
+        module_path = match.group(2)
+
+    # Skip @prisma/client errors (handled by prisma_generate)
+    if "@prisma/client" in module_path:
+        return False, ""
+
+    # Resolve module path to file
+    # Handle @/ alias → src/ or root
+    resolved_path = module_path
+    if resolved_path.startswith("@/"):
+        resolved_path = resolved_path[2:]  # strip @/
+        # Try src/ prefix first, then root
+        candidates = [
+            repo_path / "src" / resolved_path,
+            repo_path / resolved_path,
+        ]
+    elif resolved_path.startswith("./") or resolved_path.startswith("../"):
+        # Relative path — need the importing file to resolve
+        importing_file_match = re.search(r'\./([^\s:]+\.(?:ts|tsx|js|jsx)):', error_msg)
+        if importing_file_match:
+            importing_dir = (repo_path / importing_file_match.group(1)).parent
+            candidates = [importing_dir / resolved_path]
+        else:
+            return False, ""
+    else:
+        candidates = [repo_path / resolved_path]
+
+    # Try extensions
+    source_file = None
+    for candidate in candidates:
+        for ext in ['', '.ts', '.tsx', '.js', '.jsx', '/index.ts', '/index.tsx']:
+            test_path = Path(str(candidate) + ext)
+            if test_path.exists() and test_path.is_file():
+                source_file = test_path
+                break
+        if source_file:
+            break
+
+    if not source_file:
+        return False, ""
+
+    try:
+        content = source_file.read_text(encoding="utf-8")
+
+        # Strategy 1: Symbol exists but isn't exported — add 'export'
+        # Look for: function symbolName, const symbolName, class symbolName, etc.
+        non_exported = re.search(
+            rf'^(\s*)(?:async\s+)?(?:function|const|let|var|class|interface|type|enum)\s+{re.escape(missing_symbol)}\b',
+            content,
+            re.MULTILINE,
+        )
+        if non_exported:
+            indent = non_exported.group(1)
+            old_line = non_exported.group(0)
+            new_line = old_line.replace(indent, indent + "export ", 1) if indent else "export " + old_line.lstrip()
+            new_content = content.replace(old_line, new_line, 1)
+            source_file.write_text(new_content, encoding="utf-8")
+            rel_path = source_file.relative_to(repo_path)
+            return True, f"Added 'export' to {missing_symbol} in {rel_path}"
+
+        # Strategy 2: Symbol doesn't exist — find similar names (case mismatch)
+        # Extract all exported names
+        exported = re.findall(
+            r'export\s+(?:async\s+)?(?:function|const|let|var|class|interface|type|enum)\s+(\w+)',
+            content,
+        )
+        exported += re.findall(r'export\s*\{\s*([^}]+)\}', content)
+        all_exports = []
+        for e in exported:
+            if ',' in e:
+                all_exports.extend([x.strip().split(' as ')[0].strip() for x in e.split(',')])
+            else:
+                all_exports.append(e.strip())
+
+        # Case-insensitive match
+        for exp_name in all_exports:
+            if exp_name.lower() == missing_symbol.lower() and exp_name != missing_symbol:
+                # Found case mismatch — fix the import in the importing file
+                importing_match = re.search(r'\./([^\s:]+\.(?:ts|tsx|js|jsx)):', error_msg)
+                if importing_match:
+                    imp_file = repo_path / importing_match.group(1)
+                    if imp_file.exists():
+                        imp_content = imp_file.read_text(encoding="utf-8")
+                        new_imp = imp_content.replace(missing_symbol, exp_name)
+                        if new_imp != imp_content:
+                            imp_file.write_text(new_imp, encoding="utf-8")
+                            return True, f"Fixed import: {missing_symbol} → {exp_name} (case mismatch)"
+
+    except Exception as e:
+        print(f"auto_fix_missing_export failed: {e}")
+
+    return False, ""
+
+
+def auto_fix_prisma_schema_mismatch(
+    error_msg: str,
+    repo_path: Path,
+    is_node_project: bool
+) -> Tuple[bool, str]:
+    """
+    Auto-fix Prisma schema mismatch errors by removing invalid
+    relations/fields from include/select/where clauses.
+
+    Handles:
+    - "Object literal may only specify known properties, and 'tenant'
+       does not exist in type 'SessionInclude<DefaultArgs>'"
+    """
+    if not is_node_project:
+        return False, ""
+
+    # Pattern: 'propertyName' does not exist in type 'ModelInclude/Select/Where/Create/Update'
+    match = re.search(
+        r"['\"](\w+)['\"] does not exist in type ['\"](\w+?)(?:Include|Select|Where|CreateInput|UpdateInput)",
+        error_msg,
+    )
+    if not match:
+        # Alternate pattern from "Object literal may only specify known properties"
+        match = re.search(
+            r"Object literal may only specify known properties,? and ['\"](\w+)['\"] does not exist in type ['\"](\w+?)(?:Include|Select|Where|Create|Update)",
+            error_msg,
+        )
+    if not match:
+        return False, ""
+
+    invalid_prop = match.group(1)
+    model_name = match.group(2)
+
+    # Find the file with the error
+    file_match = re.search(r'\./([^\s:]+\.(?:ts|tsx|js|jsx)):(\d+)', error_msg)
+    if not file_match:
+        # Try src/ prefix pattern
+        file_match = re.search(r'(src/[^\s:]+\.(?:ts|tsx|js|jsx)):(\d+)', error_msg)
+    if not file_match:
+        return False, ""
+
+    file_rel = file_match.group(1)
+    error_line = int(file_match.group(2))
+    file_path = repo_path / file_rel
+
+    if not file_path.exists():
+        return False, ""
+
+    try:
+        content = file_path.read_text(encoding="utf-8")
+        lines = content.split("\n")
+
+        if error_line < 1 or error_line > len(lines):
+            return False, ""
+
+        # Find the line with the invalid property and remove it
+        # Look around the error line for the property
+        search_start = max(0, error_line - 3)
+        search_end = min(len(lines), error_line + 3)
+
+        for i in range(search_start, search_end):
+            line = lines[i]
+            stripped = line.strip()
+
+            # Match: "invalid_prop: { ... }" or "invalid_prop: true" or "invalid_prop: { select: ... }"
+            prop_pattern = rf'^\s*{re.escape(invalid_prop)}\s*:\s*'
+            if re.match(prop_pattern, stripped):
+                # Check if this is a multi-line block (e.g., tenant: { select: { ... } })
+                if '{' in stripped:
+                    # Count braces to find the end of the block
+                    brace_count = stripped.count('{') - stripped.count('}')
+                    end_i = i
+                    while brace_count > 0 and end_i + 1 < len(lines):
+                        end_i += 1
+                        brace_count += lines[end_i].count('{') - lines[end_i].count('}')
+                    # Remove lines i through end_i
+                    removed = lines[i:end_i + 1]
+                    del lines[i:end_i + 1]
+                else:
+                    # Single-line property
+                    removed = [lines[i]]
+                    del lines[i]
+
+                # Clean up trailing comma on the preceding line if needed
+                if i > 0 and i <= len(lines):
+                    prev = lines[i - 1].rstrip()
+                    if prev.endswith(',') and (i >= len(lines) or lines[i].strip().startswith('}')):
+                        lines[i - 1] = prev[:-1] + "\n" if prev.endswith(',\n') else prev[:-1]
+
+                new_content = "\n".join(lines)
+                file_path.write_text(new_content, encoding="utf-8")
+                removed_preview = removed[0].strip()[:60]
+                return True, f"Removed invalid '{invalid_prop}' from {model_name} query in {file_rel} ({removed_preview})"
+
+    except Exception as e:
+        print(f"auto_fix_prisma_schema_mismatch failed: {e}")
+
     return False, ""
 
 

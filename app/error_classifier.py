@@ -142,7 +142,7 @@ ERROR_PATTERNS = {
             "- Run `npx prettier --write <file>` to auto-format"
         )
     },
-    "prisma_model_missing": {
+    "prisma_model_not_exported": {
         "patterns": [
             r"@prisma/client['\"].*?has no exported member",
             r"Module ['\"]@prisma/client['\"] has no exported member ['\"](\w+)['\"]"
@@ -263,18 +263,35 @@ ERROR_PATTERNS = {
     "prisma_schema_mismatch": {
         "patterns": [
             r"Object literal may only specify known properties",
-            r"does not exist in type ['\"].*CreateInput['\"]",
-            r"'(\\w+)' does not exist in type ['\"].*(?:CreateInput|UpdateInput)['\"]"
+            r"does not exist in type ['\"].*?(?:CreateInput|UpdateInput|Include|Select|Where|OrderBy)['\"]",
+            r"does not exist in type ['\"].*?(?:CreateInput|UpdateInput)['\"]",
+            r"'(\w+)' does not exist in type ['\"].*?(?:CreateInput|UpdateInput|Include)['\"]",
+            r"does not exist in type ['\"]Session(?:Include|Select|Where)",
+            r"does not exist in type ['\"].*?(?:Include|Select)<",
         ],
         "fix_hint": (
-            "**PRISMA SCHEMA MISMATCH:**\n"
-            "- The property you're passing does NOT exist in the Prisma schema for this model.\n"
-            "- **Fix 1:** Check prisma/schema.prisma - what fields does the model actually have?\n"
-            "- **Fix 2:** Remove the invalid property from the create/update object if the schema doesn't need it.\n"
-            "- **Fix 3:** If the schema uses different names (e.g. first_name vs firstName, is_active vs isActive), "
-            "use the EXACT field names from the schema - Prisma generates TypeScript types from schema.prisma.\n"
-            "- **Fix 4:** To add a new field: add it to schema.prisma, run `npx prisma generate`, then use it.\n"
-            "- **CRITICAL:** Include schema.prisma in your context and match the exact field names."
+            "**PRISMA SCHEMA MISMATCH — CRITICAL:**\n"
+            "You are using a field or relation that does NOT exist on this Prisma model.\n\n"
+            "**COMMON CAUSE: Invalid `include` or `select` relation.**\n"
+            "If the error says `'tenant' does not exist in type 'SessionInclude'`, it means\n"
+            "the Session model has NO relation called `tenant` in prisma/schema.prisma.\n\n"
+            "**MANDATORY STEPS:**\n"
+            "1. **READ prisma/schema.prisma** — find the model mentioned in the error\n"
+            "2. **LIST ITS RELATIONS** — only fields with `@relation` or other model types can be `include`d\n"
+            "3. **REMOVE or REPLACE** the invalid field/relation from your query\n\n"
+            "**EXAMPLE:**\n"
+            "❌ `db.session.findUnique({ include: { tenant: true } })` — 'tenant' not a relation on Session\n"
+            "✅ Read schema → Session has `user User @relation(...)` but NO tenant relation\n"
+            "✅ Fix: `db.session.findUnique({ include: { user: true } })` or remove include entirely\n"
+            "✅ Alt: If you need tenant data, go through user: `include: { user: { include: { tenant: true } } }`\n\n"
+            "**FOR create/update errors:**\n"
+            "- Use ONLY fields defined in the schema model\n"
+            "- Use exact field names (camelCase as in schema)\n"
+            "- Relations use `connect: { id: ... }`, not direct assignment\n\n"
+            "**DO NOT:**\n"
+            "- Guess relation names — read the schema\n"
+            "- Use `include` for fields that are plain scalars (String, Int, etc.)\n"
+            "- Invent relations that don't exist in the schema"
         )
     },
     "eslint_config": {
@@ -526,8 +543,10 @@ def get_comprehensive_hint(error_msg: str) -> str:
     # Prioritize certain error types
     priority_order = [
         "missing_dependency",
-        "eslint_config", 
+        "eslint_config",
+        "prisma_model_not_exported",
         "prisma_model_missing",
+        "prisma_schema_mismatch",
         "import_resolution",
         "missing_export",
         "module_exports_mismatch",

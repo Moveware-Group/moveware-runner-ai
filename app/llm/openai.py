@@ -27,7 +27,7 @@ class OpenAIClient:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        r = requests.post(url, json=payload, headers=headers, timeout=120)
+        r = requests.post(url, json=payload, headers=headers, timeout=180)
         r.raise_for_status()
         return r.json()
     

@@ -234,6 +234,27 @@ def _get_repo_context(repo_path: Path, issue: JiraIssue, include_all_code: bool 
                 except Exception:
                     pass
     
+    # 4b. ALWAYS include prisma/schema.prisma if it exists — prevents
+    # the AI from guessing model names, relations, and field types.
+    prisma_schema = repo_path / "prisma" / "schema.prisma"
+    if prisma_schema.exists() and "prisma/schema.prisma" not in files_to_read:
+        try:
+            schema_content = prisma_schema.read_text(encoding="utf-8")
+            context.append("**Prisma Schema (prisma/schema.prisma) — AUTHORITATIVE source of database models:**")
+            context.append("```prisma")
+            context.append(schema_content[:8000])
+            if len(schema_content) > 8000:
+                context.append("... (truncated)")
+            context.append("```")
+            context.append(
+                "**CRITICAL:** Use ONLY the models, fields, and relations defined above. "
+                "Do NOT invent relations (e.g. `include: { tenant: ... }`) unless the "
+                "relation exists in schema.prisma. Prisma-generated types are strict."
+            )
+            context.append("")
+        except Exception:
+            pass
+
     # 5. Include env example if it exists
     env_example = repo_path / ".env.example"
     if env_example.exists():
@@ -1812,7 +1833,7 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         prisma_schema_path = repo_path / "prisma" / "schema.prisma"
         if prisma_schema_path.exists():
             # Include for specific Prisma error types
-            if error_category in ("prisma_schema_mismatch", "prisma_model_missing"):
+            if error_category in ("prisma_schema_mismatch", "prisma_model_missing", "prisma_model_not_exported"):
                 error_files.add("prisma/schema.prisma")
                 print(f"Including prisma/schema.prisma in context for {error_category} error")
             # Also include if error message mentions @prisma/client or PrismaClient
