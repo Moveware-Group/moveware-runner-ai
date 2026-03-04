@@ -482,15 +482,24 @@ def _create_subtasks_from_story(ctx: Context, story: JiraIssue) -> None:
 
 def _pick_next_subtask_to_start(ctx: Context, parent_key: str) -> Optional[str]:
     subtasks = ctx.jira.get_subtasks(parent_key)
-    # pick first Backlog or Selected for Development assigned to AI
+    # Pick first subtask in Backlog or Selected for Dev that is either
+    # assigned to AI or unassigned (the caller will assign it to AI).
+    # Prefer AI-assigned first, then unassigned.
+    ai_id = settings.JIRA_AI_ACCOUNT_ID
+    human_id = getattr(settings, "JIRA_HUMAN_ACCOUNT_ID", None)
+    fallback = None
     for st in subtasks:
         fields = st.get("fields") or {}
         status = (fields.get("status") or {}).get("name")
+        if status not in (settings.JIRA_STATUS_BACKLOG, settings.JIRA_STATUS_SELECTED_FOR_DEV):
+            continue
         assignee = fields.get("assignee") or {}
         assignee_id = assignee.get("accountId") if isinstance(assignee, dict) else None
-        if status in (settings.JIRA_STATUS_BACKLOG, settings.JIRA_STATUS_SELECTED_FOR_DEV) and assignee_id == settings.JIRA_AI_ACCOUNT_ID:
+        if assignee_id == ai_id:
             return st.get("key")
-    return None
+        if assignee_id != human_id and fallback is None:
+            fallback = st.get("key")
+    return fallback
 
 
 def _all_subtasks_done(ctx: Context, parent_key: str) -> bool:
@@ -816,10 +825,13 @@ def _handle_execute_subtask(ctx: Context, subtask: JiraIssue, run_id: Optional[i
     # Kick off next subtask sequentially
     next_key = _pick_next_subtask_to_start(ctx, subtask.parent_key)
     if next_key:
+        print(f"▶ Starting next subtask {next_key} (after {subtask.key} completed)")
         ctx.jira.transition_to_status(next_key, settings.JIRA_STATUS_IN_PROGRESS)
         ctx.jira.assign_issue(next_key, settings.JIRA_AI_ACCOUNT_ID)
         ctx.jira.add_comment(subtask.parent_key, f"AI moving to next sub-task {next_key}.")
         enqueue_run(issue_key=next_key, payload={"issue_key": next_key})
+    else:
+        print(f"ℹ No more subtasks to start for Story {subtask.parent_key} (all in progress/testing/done)")
 
 
 def _check_story_completion(ctx: Context, story: JiraIssue) -> None:
