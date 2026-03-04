@@ -84,6 +84,10 @@ def init_knowledge_base_schema() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_kb_file_repo ON kb_file_patterns(repo_name)")
 
     _seed_core_rules()
+    try:
+        backfill_lessons_from_fix_history()
+    except Exception:
+        pass
 
 
 _CORE_RULES = [
@@ -573,8 +577,43 @@ def format_preventive_prompt(lessons: PreventiveLessons) -> str:
 #  Statistics / dashboard
 # ---------------------------------------------------------------------------
 
+def backfill_lessons_from_fix_history() -> int:
+    """
+    Retroactively extract KB lessons from historical fix_attempts data.
+    Call once after deploying the KB to seed it with everything the system
+    has already learned via pattern_learner.
+    Returns number of new lessons created.
+    """
+    total_new = 0
+    with connect() as conn:
+        try:
+            rows = conn.execute(
+                """SELECT DISTINCT error_text, fix_strategy, error_category
+                   FROM fix_attempts
+                   WHERE success = 1 AND error_text IS NOT NULL
+                   ORDER BY created_at DESC
+                   LIMIT 500"""
+            ).fetchall()
+        except Exception:
+            return 0
+
+    for error_text, fix_strategy, _category in rows:
+        if not error_text:
+            continue
+        try:
+            n = extract_lessons_from_error("*", error_text, fix_strategy or "")
+            total_new += n
+        except Exception:
+            continue
+
+    if total_new:
+        print(f"📚 Backfilled {total_new} KB lessons from fix history")
+    return total_new
+
+
 def get_knowledge_base_stats(repo_name: Optional[str] = None) -> Dict[str, Any]:
-    """Return stats about the knowledge base."""
+    """Return combined stats from kb_lessons, kb_type_corrections, error_patterns,
+    and fix_attempts to give a complete picture of system learning."""
     with connect() as conn:
         where = "WHERE repo_name=?" if repo_name else ""
         params: tuple = (repo_name,) if repo_name else ()
@@ -599,11 +638,37 @@ def get_knowledge_base_stats(repo_name: Optional[str] = None) -> Dict[str, Any]:
             params,
         ).fetchall()
 
+        # Include pattern_learner stats for a full picture
+        error_patterns_count = 0
+        fix_attempts_total = 0
+        fix_attempts_success = 0
+        try:
+            error_patterns_count = conn.execute(
+                "SELECT COUNT(*) FROM error_patterns"
+            ).fetchone()[0]
+            fix_attempts_total = conn.execute(
+                "SELECT COUNT(*) FROM fix_attempts"
+            ).fetchone()[0]
+            fix_attempts_success = conn.execute(
+                "SELECT COUNT(*) FROM fix_attempts WHERE success=1"
+            ).fetchone()[0]
+        except Exception:
+            pass
+
+        file_patterns = conn.execute(
+            f"SELECT COUNT(*) FROM kb_file_patterns {('WHERE repo_name=?' if repo_name else '')}",
+            params if repo_name else (),
+        ).fetchone()[0]
+
         return {
             "total_lessons": total,
             "critical_lessons": critical,
             "total_prevented": prevented,
             "type_corrections": type_corr,
+            "file_patterns": file_patterns,
+            "error_patterns": error_patterns_count,
+            "fix_attempts_total": fix_attempts_total,
+            "fix_attempts_successful": fix_attempts_success,
             "top_categories": [
                 {"category": c, "lessons": n, "occurrences": o} for c, n, o in top_categories
             ],

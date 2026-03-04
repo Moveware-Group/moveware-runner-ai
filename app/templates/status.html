@@ -663,10 +663,16 @@
                 const el = document.getElementById('kbLessons');
                 const sub = document.getElementById('kbSubtext');
                 if (el && kb && !kb.error) {
-                    el.textContent = kb.total_lessons || 0;
+                    const totalKnowledge = (kb.total_lessons || 0) + (kb.error_patterns || 0) + (kb.type_corrections || 0) + (kb.file_patterns || 0);
+                    el.textContent = totalKnowledge;
                     const prev = kb.total_prevented || 0;
-                    const tc = kb.type_corrections || 0;
-                    sub.textContent = `${prev} prevented · ${tc} type fixes`;
+                    const fixSuccess = kb.fix_attempts_successful || 0;
+                    const fixTotal = kb.fix_attempts_total || 0;
+                    const parts = [];
+                    if (prev > 0) parts.push(`${prev} prevented`);
+                    if (fixTotal > 0) parts.push(`${fixSuccess}/${fixTotal} fixes`);
+                    if (kb.type_corrections > 0) parts.push(`${kb.type_corrections} type fixes`);
+                    sub.textContent = parts.join(' · ') || 'building knowledge...';
                 }
             } catch (error) {
                 console.error('Failed to fetch metrics:', error);

@@ -316,6 +316,17 @@ async def add_kb_rules_api(request: Request) -> Dict[str, Any]:
         return {"ok": False, "error": str(e)}
 
 
+@app.post("/api/knowledge-base/backfill")
+async def backfill_kb_api() -> Dict[str, Any]:
+    """Retroactively extract KB lessons from historical fix_attempts."""
+    try:
+        from app.error_knowledge_base import backfill_lessons_from_fix_history
+        added = backfill_lessons_from_fix_history()
+        return {"ok": True, "new_lessons": added}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 @app.post("/api/queue/reset-stale")
 async def reset_stale_runs_api(
     x_admin_secret: Optional[str] = Header(default=None)
