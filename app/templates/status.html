@@ -549,7 +549,7 @@
             </select>
             <span class="detail-label">Show Details:</span>
             <label class="toggle-switch">
-                <input type="checkbox" id="detailToggle">
+                <input type="checkbox" id="detailToggle" checked>
                 <span class="slider"></span>
             </label>
             <span class="last-updated" id="lastUpdated">Loading...</span>
@@ -602,7 +602,7 @@
     </div>
     
     <script>
-        let detailMode = 'summary';
+        let detailMode = 'detailed';
         let timeFilter = 24; // default to 24 hours
         let boardFilter = 'all'; // default to all boards
         let autoRefreshInterval = null;
