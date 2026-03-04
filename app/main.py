@@ -624,12 +624,12 @@ async def status_api(detail: str = "summary", hours: str = "24") -> Dict[str, An
                 
                 # Get progress events for this run
                 if detail == "detailed":
-                    # Get all progress events
+                    # Get all progress events (newest first, id tiebreaker for same-second events)
                     cursor.execute("""
                         SELECT level, message, meta_json, ts
                         FROM events
                         WHERE run_id = ? AND level = 'progress'
-                        ORDER BY ts DESC
+                        ORDER BY ts DESC, id DESC
                     """, (run_id,))
                 else:
                     # Get only the latest progress event
@@ -637,7 +637,7 @@ async def status_api(detail: str = "summary", hours: str = "24") -> Dict[str, An
                         SELECT level, message, meta_json, ts
                         FROM events
                         WHERE run_id = ? AND level = 'progress'
-                        ORDER BY ts DESC
+                        ORDER BY ts DESC, id DESC
                         LIMIT 1
                     """, (run_id,))
                 
