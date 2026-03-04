@@ -632,26 +632,58 @@ def _handle_story_approved(ctx: Context, story: JiraIssue, skip_rework_detection
     # Check for existing subtasks (including Done and Blocked)
     all_subtasks = ctx.jira.get_subtasks(story.key)
     
-    # Check if this is a REWORK scenario (subtasks exist AND Story was moved back)
-    # Detect by: subtasks exist AND at least one is in "In Testing" or "Done"
-    # Skip this check if called from rework handler to prevent infinite loop
+    # Check if this is a REWORK scenario — requires EXPLICIT human signal,
+    # not just "subtasks are in testing" (that's normal workflow).
+    # Rework is ONLY detected when:
+    #   1. Story is in "Needs Rework" status (set by tester), OR
+    #   2. A recent human comment contains rework-related keywords
+    # Previously this falsely triggered on any subtask being "In Testing".
     if not skip_rework_detection and all_subtasks and len(all_subtasks) > 0:
+        is_rework = False
+
+        # Signal 1: Story explicitly in "Needs Rework"
+        if story.status == settings.JIRA_STATUS_NEEDS_REWORK:
+            is_rework = True
+            print(f"🔄 Rework detected: Story {story.key} is in 'Needs Rework' status")
+
+        # Signal 2: Recent human comment with rework keywords
+        if not is_rework:
+            try:
+                from app.jira_adf import adf_to_plain_text
+                comments = ctx.jira.get_comments(story.key)
+                rework_keywords = ["rework", "fix", "broken", "bug", "issue", "wrong", "doesn't work", "not working", "fail", "redo", "revert", "please change", "needs change"]
+                for comment in reversed(comments[-5:]):
+                    author = comment.get("author", {})
+                    author_id = author.get("accountId") if isinstance(author, dict) else None
+                    if author_id == settings.JIRA_AI_ACCOUNT_ID:
+                        continue
+                    body = comment.get("body")
+                    text = adf_to_plain_text(body) if isinstance(body, dict) else (body if isinstance(body, str) else "")
+                    if any(kw in text.lower() for kw in rework_keywords):
+                        is_rework = True
+                        print(f"🔄 Rework detected: human comment contains rework keywords for {story.key}")
+                        break
+            except Exception:
+                pass
+
+        if is_rework:
+            _handle_rework_story(ctx, story, run_id=None)
+            return
+
+        # If subtasks exist and all are already progressing/testing/done,
+        # there's nothing new to do — delegate to completion check instead.
         statuses = [
             ((st.get("fields") or {}).get("status") or {}).get("name")
             for st in all_subtasks
         ]
-        
-        # If ANY subtask is in In Testing or Done, this is likely a rework
-        is_rework = any(s in [settings.JIRA_STATUS_IN_TESTING, settings.JIRA_STATUS_DONE] for s in statuses)
-        
-        if is_rework:
-            print(f"🔄 REWORK DETECTED for Story {story.key} - subtasks exist and were previously completed")
-            # Delegate to rework handler
-            _handle_rework_story(ctx, story, run_id=None)
+        non_actionable = {settings.JIRA_STATUS_IN_TESTING, settings.JIRA_STATUS_DONE, settings.JIRA_STATUS_BLOCKED}
+        actionable = [s for s in statuses if s not in non_actionable]
+        if not actionable:
+            print(f"Story {story.key} has {len(all_subtasks)} sub-task(s), all in testing/done/blocked — checking completion")
+            _check_story_completion(ctx, story)
             return
-        else:
-            # Subtasks exist but all in Backlog/In Progress - just continue normal flow
-            print(f"Story {story.key} already has {len(all_subtasks)} sub-task(s), checking progress")
+
+        print(f"Story {story.key} has {len(all_subtasks)} sub-task(s), {len(actionable)} still active — continuing")
     
     if not all_subtasks or len(all_subtasks) == 0:
         # No subtasks exist yet - create them from Story breakdown
