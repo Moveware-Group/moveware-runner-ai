@@ -391,6 +391,26 @@ async def list_skills_api() -> Dict[str, Any]:
         return {"error": str(e), "skills": []}
 
 
+@app.get("/api/repos/boards")
+async def get_repos_boards_api() -> Dict[str, Any]:
+    """Get list of boards (Jira project keys) from repos.json for the Board dropdown. Public."""
+    try:
+        from app.repo_setup import get_repos_config_path
+        config_path = get_repos_config_path()
+        if not config_path.exists():
+            return {"boards": []}
+        with open(config_path) as f:
+            data = json.load(f)
+        boards = [
+            p.get("jira_project_key", "").strip().upper()
+            for p in data.get("projects", [])
+            if p.get("jira_project_key")
+        ]
+        return {"boards": sorted(set(boards))}
+    except Exception as e:
+        return {"boards": [], "error": str(e)}
+
+
 @app.get("/api/repos/config")
 async def get_repos_config_api(x_admin_secret: Optional[str] = Header(default=None)) -> Dict[str, Any]:
     """Get current repos.json configuration (read-only)."""

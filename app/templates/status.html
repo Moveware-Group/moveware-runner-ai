@@ -654,6 +654,7 @@
         let detailMode = 'detailed';
         let timeFilter = 24; // default to 24 hours
         let boardFilter = 'all'; // default to all boards
+        let configBoards = []; // boards from repos.json (populated on load)
         let autoRefreshInterval = null;
         const resettingRuns = new Set(); // Run IDs we just reset - show "Running" until complete/fail
         
@@ -845,13 +846,13 @@
                 }
             });
             
-            // Extract unique boards and populate dropdown
-            const boardsSet = new Set();
+            // Use boards from repos.json; merge with boards from runs (legacy projects)
+            const boardsFromRuns = new Set();
             runs.forEach(run => {
                 const board = getBoard(run.issue_key);
-                boardsSet.add(board);
+                if (board !== 'OTHER') boardsFromRuns.add(board);
             });
-            const boards = Array.from(boardsSet).sort();
+            const boards = [...new Set([...configBoards, ...boardsFromRuns])].sort();
             
             // Update board filter dropdown (only if changed)
             const boardFilterEl = document.getElementById('boardFilter');
@@ -861,7 +862,9 @@
                 const currentValue = boardFilter;
                 boardFilterEl.innerHTML = '<option value="all">All Boards</option>' +
                     boards.map(board => `<option value="${board}">${board}</option>`).join('');
-                boardFilterEl.value = currentValue;
+                const validValue = (currentValue === 'all' || boards.includes(currentValue)) ? currentValue : 'all';
+                boardFilterEl.value = validValue;
+                boardFilter = validValue;
             }
             
             // Filter runs by selected board
@@ -1213,8 +1216,20 @@
             fetchMetrics();
         });
         
+        // Fetch boards from repos.json for Board dropdown
+        async function fetchBoards() {
+            try {
+                const resp = await fetch('/api/repos/boards');
+                const data = await resp.json();
+                configBoards = (data.boards || []).filter(Boolean);
+            } catch (e) {
+                console.warn('Could not fetch boards:', e);
+            }
+        }
+        
         // Auto-refresh every 5 seconds
-        function startAutoRefresh() {
+        async function startAutoRefresh() {
+            await fetchBoards(); // Load all repos from JSON before first render
             fetchStatus(); // Initial fetch
             fetchMetrics(); // Initial metrics fetch
             autoRefreshInterval = setInterval(() => {
