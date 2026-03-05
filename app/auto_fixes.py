@@ -27,6 +27,8 @@ def try_all_auto_fixes(
         (success, description) - True if fix was applied, with description
     """
     auto_fixes = [
+        auto_fix_zod_query_param_coerce,
+        auto_fix_duplicate_module_declaration,
         auto_fix_missing_export,
         auto_fix_prisma_schema_mismatch,
         auto_fix_missing_npm_package,
@@ -971,3 +973,126 @@ def auto_fix_cors_configuration(
     print("Add: res.setHeader('Access-Control-Allow-Origin', 'YOUR_DOMAIN')")
     
     return False, ""  # Can't auto-fix without knowing allowed origins
+
+
+def auto_fix_zod_query_param_coerce(
+    error_msg: str,
+    repo_path: Path,
+    is_node_project: bool
+) -> Tuple[bool, str]:
+    """
+    Fix Zod schema in API routes: query params are strings, so use z.coerce.number()
+    for numeric fields to fix TS2345 'string | undefined' is not assignable to 'number'.
+    """
+    if not is_node_project:
+        return False, ""
+    if "TS2345" not in error_msg or "is not assignable" not in error_msg:
+        return False, ""
+    if "ZodType" not in error_msg and "ZodObject" not in error_msg:
+        return False, ""
+    if "number" not in error_msg and "limit" not in error_msg:
+        return False, ""
+
+    # Find route files mentioned in the error (e.g. route.ts(15,24))
+    route_files = list(set(re.findall(r"(src/[^\s(]+route\.ts)", error_msg)))
+    if not route_files:
+        return False, ""
+
+    fixed_any = False
+    for rel_path in route_files:
+        fp = repo_path / rel_path
+        if not fp.exists():
+            continue
+        try:
+            content = fp.read_text(encoding="utf-8")
+            # Replace z.number() with z.coerce.number() for query params (URL params are strings)
+            new_content, n = re.subn(r"\bz\.number\(\)", "z.coerce.number()", content)
+            if n > 0:
+                fp.write_text(new_content, encoding="utf-8")
+                print(f"Fixed Zod number coercion in {rel_path} ({n} replacement(s))")
+                fixed_any = True
+        except Exception as e:
+            print(f"Zod coerce fix failed for {rel_path}: {e}")
+    return fixed_any, "Zod query param: use z.coerce.number() for numeric fields" if fixed_any else (False, "")
+
+
+def auto_fix_duplicate_module_declaration(
+    error_msg: str,
+    repo_path: Path,
+    is_node_project: bool
+) -> Tuple[bool, str]:
+    """
+    Fix 'Duplicate module-level declaration' in validate.ts by renaming
+    the 2nd and later declarations to unique names (result2, response2, etc.)
+    and updating usages after each renamed declaration.
+    """
+    if not is_node_project:
+        return False, ""
+    if "Duplicate module-level declaration" not in error_msg:
+        return False, ""
+    if "validate.ts" not in error_msg:
+        return False, ""
+
+    match = re.search(r"(src/[^\s]+validate\.ts)", error_msg)
+    path_candidates = [match.group(1)] if match else []
+    for m in re.findall(r"src/[^\s(]+\.ts", error_msg):
+        if "validate" in m:
+            path_candidates.append(m)
+    path_candidates = list(set(path_candidates))
+
+    for rel_path in path_candidates:
+        fp = repo_path / rel_path
+        if not fp.exists():
+            continue
+        try:
+            content = fp.read_text(encoding="utf-8")
+            lines = content.split("\n")
+            # Variables that often get duplicated
+            for var_name in ["result", "response", "parsed", "validated"]:
+                decl_pattern = re.compile(
+                    r"^\s*(const|let)\s+" + re.escape(var_name) + r"\s*[=:]",
+                    re.MULTILINE,
+                )
+                decl_matches = list(decl_pattern.finditer(content))
+                if len(decl_matches) < 2:
+                    continue
+                # Map character offset to line number
+                def offset_to_line(offset: int) -> int:
+                    return content[:offset].count("\n")
+
+                new_lines = lines[:]
+                changed = False
+                for i, decl in enumerate(decl_matches):
+                    if i == 0:
+                        continue
+                    new_name = f"{var_name}{i + 1}"
+                    decl_line = offset_to_line(decl.start())
+                    # Replace declaration on that line
+                    line_content = new_lines[decl_line]
+                    new_line, n = re.subn(
+                        r"\b(const|let)\s+" + re.escape(var_name) + r"(\s*[=:])",
+                        r"\1 " + new_name + r"\2",
+                        line_content,
+                        count=1,
+                    )
+                    if n > 0:
+                        new_lines[decl_line] = new_line
+                        changed = True
+                        # Replace usages of var_name on subsequent lines until next declaration of var_name
+                        usage_pattern = re.compile(
+                            r"\b" + re.escape(var_name) + r"\b(?!\d)"
+                        )
+                        for j in range(decl_line + 1, len(new_lines)):
+                            if decl_pattern.search(new_lines[j]):
+                                break
+                            new_lines[j], cnt = usage_pattern.subn(new_name, new_lines[j], count=0)
+                            if cnt > 0:
+                                changed = True
+                if changed:
+                    fp.write_text("\n".join(new_lines), encoding="utf-8")
+                    print(f"Fixed duplicate declarations in {rel_path}")
+                    return True, "Renamed duplicate module-level declarations in validate.ts"
+        except Exception as e:
+            print(f"Duplicate declaration fix failed for {rel_path}: {e}")
+
+    return False, ""

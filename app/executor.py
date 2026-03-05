@@ -1625,7 +1625,60 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
     
     # Build error text for downstream checks
     error_text = "\n".join(verification_errors)
-    
+
+    # Auto-fix common AI-generated issues (Zod query param types, duplicate declarations in validate.ts)
+    if verification_errors and is_node_project:
+        try:
+            from .auto_fixes import try_all_auto_fixes
+            applied, desc = try_all_auto_fixes(error_text, repo_path, is_node_project)
+            if applied:
+                if run_id:
+                    add_progress_event(run_id, "verifying", f"Re-running checks after auto-fix: {desc}", {})
+                # Re-run tsc
+                if (repo_path / "tsconfig.json").exists():
+                    tsc_result = subprocess.run(
+                        ["npx", "tsc", "--noEmit", "--pretty", "false"],
+                        cwd=repo_path,
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                    )
+                    if tsc_result.returncode == 0:
+                        # Re-run build if Next.js
+                        package_json_path = repo_path / "package.json"
+                        if package_json_path.exists():
+                            pj = package_json_path.read_text(encoding="utf-8")
+                            if '"next"' in pj or "'next'" in pj:
+                                build_result = subprocess.run(
+                                    ["npm", "run", "build"],
+                                    cwd=repo_path,
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=180,
+                                    env=_get_nextjs_build_env(),
+                                )
+                                if build_result.returncode == 0:
+                                    print("✅ Build succeeded after auto-fix!")
+                                    verification_errors = []
+                                    error_text = ""
+                                else:
+                                    verification_errors = [
+                                        f"Build still failing after auto-fix:\n{(build_result.stderr or build_result.stdout)[:2000]}"
+                                    ]
+                                    error_text = "\n".join(verification_errors)
+                            else:
+                                verification_errors = []
+                                error_text = ""
+                        else:
+                            verification_errors = []
+                            error_text = ""
+                    else:
+                        tsc_out = tsc_result.stdout or tsc_result.stderr
+                        verification_errors = [f"TypeScript check failed after auto-fix:\n{tsc_out[:2000]}"]
+                        error_text = "\n".join(verification_errors)
+        except Exception as e:
+            print(f"Auto-fix step failed (non-fatal): {e}")
+
     # Auto-run prisma generate when @prisma/client has no exported member (schema may have been updated)
     _prisma_member = re.search(r"Module ['\"]@prisma/client['\"] has no exported member ['\"](\w+)['\"]", error_text)
     if _prisma_member and is_node_project and (repo_path / "prisma" / "schema.prisma").exists():
