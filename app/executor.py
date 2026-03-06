@@ -2102,6 +2102,30 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         print(f"\nVERIFICATION FAILED - Attempt {fix_attempt}/{MAX_FIX_ATTEMPTS} using {model_name}")
         print(f"Error summary: {error_msg[:200]}...")
         
+        # Try auto-fixes FIRST before calling the LLM (cheaper, faster, more reliable)
+        try:
+            from .auto_fixes import try_all_auto_fixes
+            auto_success, auto_desc = try_all_auto_fixes(error_msg, repo_path, is_node_project)
+            if auto_success:
+                print(f"✅ Auto-fix applied in fix loop: {auto_desc}")
+                # Re-run build to check if auto-fix resolved it
+                _af_result = subprocess.run(
+                    ["npm", "run", "build"],
+                    cwd=repo_path, capture_output=True, text=True,
+                    timeout=180, env=_get_nextjs_build_env(),
+                )
+                if _af_result.returncode == 0:
+                    print(f"✅ Build passed after auto-fix!")
+                    verification_errors = []
+                    break
+                else:
+                    _af_err = _af_result.stderr if _af_result.stderr else _af_result.stdout
+                    print(f"Auto-fix applied but build still failing, continuing to LLM fix...")
+                    verification_errors = [f"Build still failing after auto-fix ({auto_desc}):\n{_af_err[:1000]}"]
+                    error_msg = "\n\n".join(verification_errors)
+        except Exception as e:
+            print(f"Auto-fix in loop failed: {e}")
+        
         # Classify errors and get targeted hints
         error_category, specific_hint, _ = classify_error(error_msg)
         comprehensive_hint = get_comprehensive_hint(error_msg)

@@ -249,9 +249,10 @@ def auto_fix_component_props_mismatch(
 ) -> Tuple[bool, str]:
     """
     When page.tsx passes props that don't exist on a component's Props interface,
-    add the missing props to the interface with appropriate types.
+    add ALL missing props to the interface in one pass.
     
-    Handles: "Property 'initialJobs' does not exist on type 'CustomerDetailShellProps'"
+    Extracts the full object type from the error to find all extra props,
+    not just the first one reported.
     """
     if not is_node_project:
         return False, ""
@@ -263,9 +264,28 @@ def auto_fix_component_props_mismatch(
     if not match:
         return False, ""
 
-    missing_prop = match.group(1)
     props_type = match.group(2)
-    component_name = props_type.replace("Props", "")
+
+    # Extract ALL props from the object type in the error message
+    # e.g. "Type '{ customer: any; activeTab: string; initialJobs: unknown[]; }' is not assignable"
+    type_obj_match = re.search(
+        r"Type '\{([^}]+)\}' is not assignable to type '(?:IntrinsicAttributes & )?" + re.escape(props_type) + "'",
+        error_msg,
+    )
+    
+    all_passed_props: dict = {}
+    if type_obj_match:
+        # Parse all props from the type object: "customer: any; activeTab: string; ..."
+        for prop_match in re.finditer(r'(\w+)\s*:\s*([^;]+)', type_obj_match.group(1)):
+            all_passed_props[prop_match.group(1)] = prop_match.group(2).strip()
+    
+    # Also find explicitly named missing props (may appear in multiple error lines)
+    explicit_missing = set()
+    for m in re.finditer(
+        r"Property '(\w+)' does not exist on type '(?:IntrinsicAttributes & )?" + re.escape(props_type) + "'",
+        error_msg,
+    ):
+        explicit_missing.add(m.group(1))
 
     # Find the file that defines this Props type
     props_file = None
@@ -290,31 +310,7 @@ def auto_fix_component_props_mismatch(
     if not props_file or not props_content:
         return False, ""
 
-    # Also find the page.tsx that has the error to infer the prop's type
-    error_file_match = re.search(r"\./([^\s:]+\.tsx?):(\d+)", error_msg)
-    prop_value_type = "any"
-    if error_file_match:
-        error_file = repo_path / error_file_match.group(1)
-        if error_file.exists():
-            try:
-                page_content = error_file.read_text(encoding="utf-8", errors="ignore")
-                # Try to infer the type from how the prop is used
-                # e.g. initialJobs={jobsResult.data} — look for the variable type
-                value_match = re.search(
-                    rf"{re.escape(missing_prop)}=\{{([^}}]+)\}}",
-                    page_content,
-                )
-                if value_match:
-                    value_expr = value_match.group(1).strip()
-                    # Common patterns for type inference
-                    if "hasMore" in missing_prop.lower():
-                        prop_value_type = "boolean"
-                    elif missing_prop.startswith("initial"):
-                        prop_value_type = "any[]"
-            except Exception:
-                pass
-
-    # Insert the missing prop into the interface
+    # Find the interface/type definition
     interface_match = re.search(
         rf"((?:interface|type)\s+{re.escape(props_type)}\s*(?:=\s*)?\{{[^}}]*?)(}})",
         props_content,
@@ -324,17 +320,49 @@ def auto_fix_component_props_mismatch(
         return False, ""
 
     interface_body = interface_match.group(1)
-    # Check if the prop already exists (shouldn't if we got this error)
-    if re.search(rf"\b{re.escape(missing_prop)}\s*[?:]", interface_body):
+    
+    # Determine which props need to be added
+    props_to_add = []
+    
+    # First, check all props from the type object
+    for prop_name, prop_type in all_passed_props.items():
+        if not re.search(rf"\b{re.escape(prop_name)}\s*[?:]", interface_body):
+            props_to_add.append((prop_name, prop_type))
+    
+    # Also add any explicitly listed missing props not yet covered
+    for prop_name in explicit_missing:
+        if not any(p[0] == prop_name for p in props_to_add):
+            if not re.search(rf"\b{re.escape(prop_name)}\s*[?:]", interface_body):
+                # Infer type from name
+                if "hasmore" in prop_name.lower():
+                    inferred = "boolean"
+                elif prop_name.startswith("initial"):
+                    inferred = "any[]"
+                else:
+                    inferred = "any"
+                props_to_add.append((prop_name, inferred))
+    
+    if not props_to_add:
         return False, ""
 
-    new_prop_line = f"  {missing_prop}?: {prop_value_type};\n"
-    new_content = props_content[:interface_match.end(1)] + new_prop_line + props_content[interface_match.start(2):]
+    # Build new prop lines and insert them all at once
+    new_lines = ""
+    added_names = []
+    for prop_name, prop_type in props_to_add:
+        new_lines += f"  {prop_name}?: {prop_type};\n"
+        added_names.append(prop_name)
+
+    new_content = (
+        props_content[:interface_match.end(1)]
+        + new_lines
+        + props_content[interface_match.start(2):]
+    )
 
     props_file.write_text(new_content, encoding="utf-8")
     rel_path = str(props_file.relative_to(repo_path)).replace("\\", "/")
+    names_str = ", ".join(added_names)
 
-    return True, f"Added '{missing_prop}?: {prop_value_type}' to {props_type} in {rel_path}"
+    return True, f"Added {len(added_names)} props ({names_str}) to {props_type} in {rel_path}"
 
 
 def auto_fix_import_path_leading_slash(
