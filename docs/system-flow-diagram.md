@@ -250,7 +250,13 @@ flowchart TB
         APPLY_FIX --> REBUILD_OK{Build<br/>passed?}
         REBUILD_OK -->|Yes| POST_BUILD
         REBUILD_OK -->|No, attempts left| SELF_HEAL
-        REBUILD_OK -->|No, exhausted| FAIL_COMMENT["Post failure<br/>to Jira"]
+        REBUILD_OK -->|No, exhausted| POST_MORTEM["🔬 Post-Mortem Analysis"]
+        POST_MORTEM --> PM_LEARN["Extract KB rules<br/>from full error chain"]
+        PM_LEARN --> PM_ISSUE["Create GitHub Issue<br/>on runner repo"]
+        PM_ISSUE --> PM_REQUEUE{First<br/>post-mortem?}
+        PM_REQUEUE -->|Yes| REQUEUE["Re-queue run<br/>with new knowledge"]
+        PM_REQUEUE -->|No| FAIL_COMMENT["Post failure<br/>to Jira"]
+        REQUEUE --> SELF_HEAL
     end
 
     subgraph POSTBUILD["8. Post-Build Checks"]

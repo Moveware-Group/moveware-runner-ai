@@ -2532,7 +2532,7 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             verification_errors.append(f"Auto-fix attempt {fix_attempt} with {model_name} failed: {e}")
             # Continue to next attempt
     
-    # If still failing after all fix attempts, FAIL THE TASK
+    # If still failing after all fix attempts, run post-mortem then fail the task
     if verification_errors:
         error_msg = "\n\n".join(verification_errors)
         print(f"\n{'='*60}")
@@ -2540,43 +2540,68 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         print(f"{'='*60}")
         print(error_msg)
         if run_id:
-            add_progress_event(run_id, "failed", f"Build failed after {fix_attempt} self-healing attempts — requires human review", {"attempts": fix_attempt})
-        
-        # LEARNING: Even from total failures — extract lessons so future runs avoid this
+            add_progress_event(run_id, "failed", f"Build failed after {fix_attempt} self-healing attempts", {"attempts": fix_attempt})
+
+        # POST-MORTEM: Deep analysis, KB learning, GitHub Issue, and optional re-queue
+        pm_result = None
         try:
-            from .error_knowledge_base import extract_lessons_from_error
+            from .post_mortem import run_post_mortem
             repo_name = repo_settings.get("repo_name", "unknown")
-            n_lessons = extract_lessons_from_error(repo_name, error_msg)
-            if n_lessons:
-                print(f"📚 Learned {n_lessons} preventive lesson(s) from this failure")
-        except Exception:
-            pass
-        
+            pm_result = run_post_mortem(
+                run_id=run_id,
+                repo_name=repo_name,
+                final_errors=error_msg,
+                fix_attempt_count=fix_attempt,
+            )
+            if pm_result.get("lessons_added"):
+                print(f"📚 Post-mortem learned {pm_result['lessons_added']} preventive lesson(s)")
+            if pm_result.get("github_issue_url"):
+                print(f"📋 GitHub Issue: {pm_result['github_issue_url']}")
+        except Exception as pm_err:
+            print(f"[post_mortem] Error: {pm_err}")
+            import traceback
+            traceback.print_exc()
+
         # Post detailed error to Jira with attempt history
         jira_client = JiraClient(
             base_url=settings.JIRA_BASE_URL,
             email=settings.JIRA_EMAIL,
             api_token=settings.JIRA_API_TOKEN
         )
-        
-        # Build attempt summary (alternating models)
+
         attempt_summary = []
         for i in range(1, fix_attempt + 1):
             model = "Claude (Anthropic)" if i % 2 == 1 else f"OpenAI ({settings.OPENAI_MODEL})"
             attempt_summary.append(f"- Attempt {i}: {model}")
-        
+
+        pm_note = ""
+        if pm_result:
+            pm_note = "\n\n🔬 *Post-mortem analysis completed:*\n"
+            pm_note += f"- Pattern: {pm_result.get('analysis', {}).get('pattern', 'unknown')}\n"
+            pm_note += f"- New KB rules added: {pm_result.get('lessons_added', 0)}\n"
+            if pm_result.get("github_issue_url"):
+                pm_note += f"- GitHub Issue: {pm_result['github_issue_url']}\n"
+            if pm_result.get("requeued"):
+                pm_note += "- *Run has been re-queued with new knowledge — retrying automatically.*\n"
+            else:
+                pm_note += "- *Max post-mortem retries reached. Requires human intervention.*\n"
+
         jira_comment = (
             "❌ **Build Verification Failed After Multiple Attempts**\n\n"
             f"Tried {fix_attempt} times with alternating AI models for diverse fix approaches:\n"
             f"{chr(10).join(attempt_summary)}\n\n"
-            "**All attempts failed. This issue requires human intervention.**\n\n"
-            f"**Final Errors:**\n```\n{error_msg[:2000]}\n```\n\n"
+            f"**Final Errors:**\n```\n{error_msg[:2000]}\n```"
+            f"{pm_note}\n"
             "---\n"
-            "*Code was not committed. This appears to be a complex issue that needs manual review.*"
+            "*Code was not committed.*"
         )
         jira_client.add_comment(issue.key, jira_comment)
-        
-        # Raise error to fail the task
+
+        # If re-queued, return gracefully instead of raising (the run will be retried)
+        if pm_result and pm_result.get("requeued"):
+            print(f"[post_mortem] Run re-queued — returning without raising error")
+            return {"status": "requeued_by_post_mortem", "run_id": run_id}
+
         raise RuntimeError(f"Build verification failed after {fix_attempt} attempts (Claude + OpenAI):\n{error_msg}")
     
     if run_id:

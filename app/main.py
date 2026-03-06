@@ -612,6 +612,34 @@ async def get_run_detail(run_id: int) -> Dict[str, Any]:
         return {"error": str(e)}
 
 
+@app.post("/api/runs/{run_id}/post-mortem")
+async def trigger_post_mortem(run_id: int) -> Dict[str, Any]:
+    """Manually trigger post-mortem analysis on a failed run."""
+    try:
+        with connect() as conn:
+            row = conn.execute(
+                "SELECT issue_key, status, payload_json, last_error FROM runs WHERE id=?",
+                (run_id,),
+            ).fetchone()
+        if not row:
+            return {"error": "Run not found"}
+        issue_key, status, payload_raw, last_error = row
+        if status not in ("failed",):
+            return {"error": f"Post-mortem only applies to failed runs (current: {status})"}
+        payload = json.loads(payload_raw or "{}")
+        repo_name = payload.get("repo_name", "unknown")
+        from app.post_mortem import run_post_mortem
+        result = run_post_mortem(
+            run_id=run_id,
+            repo_name=repo_name,
+            final_errors=last_error or "No error recorded",
+            fix_attempt_count=0,
+        )
+        return {"ok": True, **result}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 @app.post("/api/runs/{run_id}/retry")
 async def retry_run(run_id: int) -> Dict[str, Any]:
     """Retry a failed run, or reset a stuck run (claimed/running) to queued."""
