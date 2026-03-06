@@ -13,31 +13,103 @@
             padding: 20px;
             line-height: 1.6;
         }
+
+        /* Header — matches dashboard */
         .header {
+            position: sticky;
+            top: 0;
+            z-index: 100;
             display: flex;
-            justify-content: space-between;
             align-items: center;
+            gap: 12px;
             margin-bottom: 30px;
-            padding-bottom: 20px;
+            padding: 12px 0;
             border-bottom: 2px solid #333;
+            background: #0a0a0a;
+            flex-wrap: wrap;
         }
-        h1 { color: #00d4ff; font-size: 1.8em; font-weight: 600; }
-        .nav { display: flex; gap: 16px; }
-        .nav a {
+        h1 {
             color: #00d4ff;
-            text-decoration: none;
-            font-size: 0.85em;
-            padding: 5px 12px;
-            border: 1px solid #333;
+            font-size: 1.4em;
+            font-weight: 600;
+            white-space: nowrap;
+            margin-right: 4px;
+        }
+        .header select, .header input[type="text"] {
+            background: #111;
+            color: #e0e0e0;
+            border: 1px solid #444;
+            padding: 5px 10px;
             border-radius: 4px;
+            font-size: 0.82em;
+            cursor: pointer;
+        }
+        .header input[type="text"] {
+            width: 200px;
+            cursor: text;
+        }
+        .header input[type="text"]:focus {
+            outline: none;
+            border-color: #00d4ff;
+        }
+        .header input[type="text"]::placeholder { color: #555; }
+        .header-spacer { flex: 1; }
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        /* Dropdown menu */
+        .menu-wrapper { position: relative; }
+        .menu-btn {
+            background: none;
+            border: 1px solid #444;
+            color: #e0e0e0;
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-size: 0.82em;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 6px;
             transition: border-color 0.2s;
         }
-        .nav a:hover { border-color: #00d4ff; }
-
-        .repo-grid {
-            display: grid;
-            gap: 16px;
+        .menu-btn:hover { border-color: #00d4ff; color: #00d4ff; }
+        .menu-btn svg { width: 14px; height: 14px; fill: currentColor; }
+        .menu-dropdown {
+            display: none;
+            position: absolute;
+            right: 0;
+            top: calc(100% + 6px);
+            background: #1a1a1a;
+            border: 1px solid #444;
+            border-radius: 6px;
+            min-width: 180px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+            z-index: 200;
+            overflow: hidden;
         }
+        .menu-dropdown.open { display: block; }
+        .menu-dropdown a {
+            display: block;
+            padding: 10px 14px;
+            color: #e0e0e0;
+            text-decoration: none;
+            font-size: 0.85em;
+            transition: background 0.15s;
+        }
+        .menu-dropdown a:hover { background: #252525; color: #00d4ff; }
+        .menu-dropdown .menu-sep { height: 1px; background: #333; }
+
+        .repo-count {
+            color: #666;
+            font-size: 0.82em;
+            white-space: nowrap;
+        }
+
+        /* Repo cards */
+        .repo-grid { display: grid; gap: 16px; }
         .repo-card {
             background: #1a1a1a;
             border: 1px solid #333;
@@ -46,6 +118,7 @@
             transition: border-color 0.2s;
         }
         .repo-card:hover { border-color: #444; }
+        .repo-card.hidden { display: none; }
         .repo-card-header {
             display: flex;
             justify-content: space-between;
@@ -86,9 +159,7 @@
             gap: 12px;
             margin-bottom: 16px;
         }
-        .field {
-            font-size: 0.85em;
-        }
+        .field { font-size: 0.85em; }
         .field-label {
             color: #666;
             font-size: 0.8em;
@@ -96,14 +167,8 @@
             letter-spacing: 0.3px;
             margin-bottom: 2px;
         }
-        .field-value {
-            color: #ccc;
-            word-break: break-all;
-        }
-        .field-value.readonly {
-            color: #888;
-        }
-
+        .field-value { color: #ccc; word-break: break-all; }
+        .field-value.readonly { color: #888; }
         .field-input {
             width: 100%;
             padding: 6px 8px;
@@ -113,21 +178,9 @@
             color: #fff;
             font-size: 0.9em;
         }
-        .field-input:focus {
-            outline: none;
-            border-color: #00d4ff;
-        }
-        .field-input[readonly] {
-            color: #666;
-            cursor: not-allowed;
-            border-color: #222;
-        }
-
-        .skills-display {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 6px;
-        }
+        .field-input:focus { outline: none; border-color: #00d4ff; }
+        .field-input[readonly] { color: #666; cursor: not-allowed; border-color: #222; }
+        .skills-display { display: flex; flex-wrap: wrap; gap: 6px; }
         .skill-tag {
             background: #1a1a2e;
             border: 1px solid #333;
@@ -136,12 +189,7 @@
             border-radius: 3px;
             font-size: 0.75em;
         }
-
-        .repo-card-actions {
-            display: flex;
-            gap: 8px;
-            align-items: center;
-        }
+        .repo-card-actions { display: flex; gap: 8px; align-items: center; }
         .edit-btn, .save-btn, .cancel-btn {
             padding: 5px 12px;
             border-radius: 4px;
@@ -150,28 +198,12 @@
             border: 1px solid;
             transition: all 0.2s;
         }
-        .edit-btn {
-            background: none;
-            border-color: #444;
-            color: #aaa;
-        }
+        .edit-btn { background: none; border-color: #444; color: #aaa; }
         .edit-btn:hover { border-color: #00d4ff; color: #00d4ff; }
-        .save-btn {
-            background: #00d4ff;
-            border-color: #00d4ff;
-            color: #000;
-            font-weight: 600;
-            display: none;
-        }
+        .save-btn { background: #00d4ff; border-color: #00d4ff; color: #000; font-weight: 600; display: none; }
         .save-btn:hover { background: #00a8cc; }
-        .cancel-btn {
-            background: none;
-            border-color: #555;
-            color: #888;
-            display: none;
-        }
+        .cancel-btn { background: none; border-color: #555; color: #888; display: none; }
         .cancel-btn:hover { border-color: #ff4444; color: #ff4444; }
-
         .toast {
             position: fixed;
             bottom: 20px;
@@ -188,12 +220,7 @@
         .toast.show { opacity: 1; transform: translateY(0); }
         .toast.success { background: #0a2a1a; border: 1px solid #00ff88; color: #00ff88; }
         .toast.error { background: #2a1a1a; border: 1px solid #ff4444; color: #ff4444; }
-
-        .empty-state {
-            text-align: center;
-            padding: 60px 20px;
-            color: #555;
-        }
+        .empty-state { text-align: center; padding: 60px 20px; color: #555; }
         .empty-state p { margin-bottom: 16px; }
         .empty-state a {
             color: #00d4ff;
@@ -207,10 +234,26 @@
 <body>
     <div class="header">
         <h1>Repositories</h1>
-        <nav class="nav">
-            <a href="/repos">+ Add Repository</a>
-            <a href="/status">Dashboard</a>
-        </nav>
+        <input type="text" id="searchFilter" placeholder="Search repos..." />
+        <select id="skillFilter">
+            <option value="all">All Skills</option>
+        </select>
+        <span class="repo-count" id="repoCount"></span>
+        <div class="header-spacer"></div>
+        <div class="header-right">
+            <div class="menu-wrapper">
+                <button class="menu-btn" onclick="document.getElementById('menuDropdown').classList.toggle('open')">
+                    <svg viewBox="0 0 20 20"><rect y="3" width="20" height="2" rx="1"/><rect y="9" width="20" height="2" rx="1"/><rect y="15" width="20" height="2" rx="1"/></svg>
+                    Menu
+                </button>
+                <div class="menu-dropdown" id="menuDropdown">
+                    <a href="/repos">+ Add Repository</a>
+                    <a href="/repos/list">View Repositories</a>
+                    <div class="menu-sep"></div>
+                    <a href="/status">Dashboard</a>
+                </div>
+            </div>
+        </div>
     </div>
 
     <div class="repo-grid" id="repoGrid">
@@ -221,6 +264,8 @@
 
     <script>
         let allSkills = [];
+        let allProjects = [];
+        let defaultKey = null;
 
         function showToast(msg, type) {
             const t = document.getElementById('toast');
@@ -229,22 +274,40 @@
             setTimeout(() => t.classList.remove('show'), 3000);
         }
 
-        function renderRepos(projects, defaultKey) {
+        function applyFilters() {
+            const q = document.getElementById('searchFilter').value.toLowerCase().trim();
+            const skill = document.getElementById('skillFilter').value;
+            let visible = 0;
+            document.querySelectorAll('.repo-card').forEach(card => {
+                const key = (card.dataset.key || '').toLowerCase();
+                const text = card.textContent.toLowerCase();
+                const matchSearch = !q || key.includes(q) || text.includes(q);
+                const matchSkill = skill === 'all' || (card.dataset.skills || '').includes(skill);
+                const show = matchSearch && matchSkill;
+                card.classList.toggle('hidden', !show);
+                if (show) visible++;
+            });
+            document.getElementById('repoCount').textContent = `${visible} of ${allProjects.length} repos`;
+        }
+
+        function renderRepos(projects, defKey) {
             const grid = document.getElementById('repoGrid');
             if (!projects || projects.length === 0) {
                 grid.innerHTML = '<div class="empty-state"><p>No repositories configured yet.</p><a href="/repos">Add your first repository</a></div>';
+                document.getElementById('repoCount').textContent = '0 repos';
                 return;
             }
             grid.innerHTML = projects.map((p, idx) => {
-                const isDefault = p.jira_project_key === defaultKey;
+                const isDefault = p.jira_project_key === defKey;
                 const skillsHtml = (p.skills || []).map(s => `<span class="skill-tag">${s}</span>`).join('');
                 const owner = p.repo_owner_slug || '';
+                const skillsData = (p.skills || []).join(',');
                 return `
-                <div class="repo-card" data-idx="${idx}" data-key="${p.jira_project_key}">
+                <div class="repo-card" data-idx="${idx}" data-key="${p.jira_project_key}" data-skills="${skillsData}">
                     <div class="repo-card-header">
                         <div class="repo-card-title">
                             <span class="repo-key">${p.jira_project_key}</span>
-                            <span class="repo-name">${p.repo_owner_slug}/${p.repo_name}</span>
+                            <span class="repo-name">${owner}/${p.repo_name}</span>
                             ${isDefault ? '<span class="default-badge">Default</span>' : ''}
                         </div>
                         <div class="repo-card-actions">
@@ -296,6 +359,24 @@
                     </div>
                 </div>`;
             }).join('');
+
+            document.getElementById('repoCount').textContent = `${projects.length} repos`;
+            applyFilters();
+        }
+
+        function populateSkillFilter(projects) {
+            const skills = new Set();
+            projects.forEach(p => (p.skills || []).forEach(s => skills.add(s)));
+            const sel = document.getElementById('skillFilter');
+            const current = sel.value;
+            sel.innerHTML = '<option value="all">All Skills</option>';
+            [...skills].sort().forEach(s => {
+                const opt = document.createElement('option');
+                opt.value = s;
+                opt.textContent = s;
+                sel.appendChild(opt);
+            });
+            if ([...sel.options].some(o => o.value === current)) sel.value = current;
         }
 
         function startEdit(key) {
@@ -307,9 +388,7 @@
             document.getElementById('cancel-' + key).style.display = '';
         }
 
-        function cancelEdit(key) {
-            fetchRepos();
-        }
+        function cancelEdit(key) { fetchRepos(); }
 
         async function saveEdit(key) {
             const body = {
@@ -340,7 +419,10 @@
             try {
                 const res = await fetch('/api/repos/list');
                 const data = await res.json();
-                renderRepos(data.projects, data.default_project_key);
+                allProjects = data.projects || [];
+                defaultKey = data.default_project_key;
+                populateSkillFilter(allProjects);
+                renderRepos(allProjects, defaultKey);
             } catch (e) {
                 document.getElementById('repoGrid').innerHTML = '<div class="empty-state"><p>Failed to load repositories.</p></div>';
             }
@@ -355,6 +437,18 @@
                 allSkills = [];
             }
         }
+
+        // Event listeners
+        let searchDebounce = null;
+        document.getElementById('searchFilter').addEventListener('input', () => {
+            clearTimeout(searchDebounce);
+            searchDebounce = setTimeout(applyFilters, 200);
+        });
+        document.getElementById('skillFilter').addEventListener('change', applyFilters);
+        document.addEventListener('click', (e) => {
+            const menu = document.getElementById('menuDropdown');
+            if (menu && !e.target.closest('.menu-wrapper')) menu.classList.remove('open');
+        });
 
         (async () => {
             await fetchSkills();
