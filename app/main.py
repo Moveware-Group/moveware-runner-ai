@@ -380,6 +380,12 @@ async def repos_page(request: Request):
     return templates.TemplateResponse("repos.html", {"request": request})
 
 
+@app.get("/repos/list", response_class=HTMLResponse)
+async def repos_list_page(request: Request):
+    """View all repositories."""
+    return templates.TemplateResponse("repos_list.html", {"request": request})
+
+
 @app.get("/api/repos/skills")
 async def list_skills_api() -> Dict[str, Any]:
     """List available skills for repository setup."""
@@ -426,6 +432,50 @@ async def get_repos_config_api(x_admin_secret: Optional[str] = Header(default=No
         return data
     except Exception as e:
         return {"error": str(e)}
+
+
+@app.get("/api/repos/list")
+async def list_repos_api() -> Dict[str, Any]:
+    """Public listing of repositories (safe fields only, no secrets)."""
+    try:
+        from app.repo_setup import get_repos_config_path
+        config_path = get_repos_config_path()
+        if not config_path.exists():
+            return {"projects": []}
+        with open(config_path) as f:
+            data = json.load(f)
+        return {"projects": data.get("projects", []), "default_project_key": data.get("default_project_key")}
+    except Exception as e:
+        return {"projects": [], "error": str(e)}
+
+
+@app.put("/api/repos/{jira_key}")
+async def update_repo_api(jira_key: str, request: Request) -> Dict[str, Any]:
+    """Update safe/editable fields of a repository config entry."""
+    try:
+        from app.repo_setup import get_repos_config_path
+        body = await request.json()
+        config_path = get_repos_config_path()
+        if not config_path.exists():
+            return {"ok": False, "error": "repos.json not found"}
+        with open(config_path) as f:
+            data = json.load(f)
+        editable_fields = {"jira_project_name", "skills", "port", "base_branch"}
+        found = False
+        for project in data.get("projects", []):
+            if project.get("jira_project_key", "").upper() == jira_key.upper():
+                for field in editable_fields:
+                    if field in body:
+                        project[field] = body[field]
+                found = True
+                break
+        if not found:
+            return {"ok": False, "error": f"Project {jira_key} not found"}
+        with open(config_path, "w") as f:
+            json.dump(data, f, indent=2)
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 @app.post("/api/repos/add")
