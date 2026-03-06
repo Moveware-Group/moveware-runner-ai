@@ -29,6 +29,7 @@ def try_all_auto_fixes(
     auto_fixes = [
         auto_fix_zod_query_param_coerce,
         auto_fix_duplicate_module_declaration,
+        auto_fix_eslint_rule_not_found,
         auto_fix_missing_export,
         auto_fix_prisma_schema_mismatch,
         auto_fix_missing_npm_package,
@@ -1099,24 +1100,29 @@ def auto_fix_duplicate_module_declaration(
     is_node_project: bool
 ) -> Tuple[bool, str]:
     """
-    Fix 'Duplicate module-level declaration' in validate.ts by renaming
-    the 2nd and later declarations to unique names (result2, response2, etc.)
+    Fix 'Duplicate module-level declaration' by renaming the 2nd and later
+    declarations to unique names (result2, response2, body2, etc.)
     and updating usages after each renamed declaration.
+    Works on any .ts/.tsx file (test files, validate files, route files, etc.)
     """
     if not is_node_project:
         return False, ""
     if "Duplicate module-level declaration" not in error_msg:
         return False, ""
-    if "validate.ts" not in error_msg:
-        return False, ""
 
-    match = re.search(r"(src/[^\s]+validate\.ts)", error_msg)
-    path_candidates = [match.group(1)] if match else []
-    for m in re.findall(r"src/[^\s(]+\.ts", error_msg):
-        if "validate" in m:
-            path_candidates.append(m)
-    path_candidates = list(set(path_candidates))
+    # Extract ALL .ts/.tsx files mentioned in the error
+    path_candidates = list(set(re.findall(r'(src/[^\s:(]+\.(?:ts|tsx))', error_msg)))
+    if not path_candidates:
+        # Also try paths without src/ prefix
+        path_candidates = list(set(re.findall(r'([^\s:(]+\.(?:ts|tsx))', error_msg)))
 
+    # Extract the duplicate variable names from the error
+    dup_names = set(re.findall(r"Duplicate module-level declaration of ['\"](\w+)['\"]", error_msg))
+    # Fallback common names if we couldn't parse them
+    if not dup_names:
+        dup_names = {"result", "response", "parsed", "validated", "body", "data", "error", "req", "res"}
+
+    fixed_files = []
     for rel_path in path_candidates:
         fp = repo_path / rel_path
         if not fp.exists():
@@ -1124,8 +1130,9 @@ def auto_fix_duplicate_module_declaration(
         try:
             content = fp.read_text(encoding="utf-8")
             lines = content.split("\n")
-            # Variables that often get duplicated
-            for var_name in ["result", "response", "parsed", "validated"]:
+            file_changed = False
+
+            for var_name in dup_names:
                 decl_pattern = re.compile(
                     r"^\s*(const|let)\s+" + re.escape(var_name) + r"\s*[=:]",
                     re.MULTILINE,
@@ -1133,18 +1140,16 @@ def auto_fix_duplicate_module_declaration(
                 decl_matches = list(decl_pattern.finditer(content))
                 if len(decl_matches) < 2:
                     continue
-                # Map character offset to line number
+
                 def offset_to_line(offset: int) -> int:
                     return content[:offset].count("\n")
 
                 new_lines = lines[:]
-                changed = False
                 for i, decl in enumerate(decl_matches):
                     if i == 0:
                         continue
                     new_name = f"{var_name}{i + 1}"
                     decl_line = offset_to_line(decl.start())
-                    # Replace declaration on that line
                     line_content = new_lines[decl_line]
                     new_line, n = re.subn(
                         r"\b(const|let)\s+" + re.escape(var_name) + r"(\s*[=:])",
@@ -1154,8 +1159,7 @@ def auto_fix_duplicate_module_declaration(
                     )
                     if n > 0:
                         new_lines[decl_line] = new_line
-                        changed = True
-                        # Replace usages of var_name on subsequent lines until next declaration of var_name
+                        file_changed = True
                         usage_pattern = re.compile(
                             r"\b" + re.escape(var_name) + r"\b(?!\d)"
                         )
@@ -1163,13 +1167,81 @@ def auto_fix_duplicate_module_declaration(
                             if decl_pattern.search(new_lines[j]):
                                 break
                             new_lines[j], cnt = usage_pattern.subn(new_name, new_lines[j], count=0)
-                            if cnt > 0:
-                                changed = True
-                if changed:
-                    fp.write_text("\n".join(new_lines), encoding="utf-8")
-                    print(f"Fixed duplicate declarations in {rel_path}")
-                    return True, "Renamed duplicate module-level declarations in validate.ts"
+
+                if file_changed:
+                    lines = new_lines
+                    content = "\n".join(lines)
+
+            if file_changed:
+                fp.write_text("\n".join(lines), encoding="utf-8")
+                fixed_files.append(rel_path)
+                print(f"Fixed duplicate declarations in {rel_path}")
+
         except Exception as e:
             print(f"Duplicate declaration fix failed for {rel_path}: {e}")
+
+    if fixed_files:
+        return True, f"Renamed duplicate module-level declarations in {', '.join(fixed_files)}"
+    return False, ""
+
+
+def auto_fix_eslint_rule_not_found(
+    error_msg: str,
+    repo_path: Path,
+    is_node_project: bool
+) -> Tuple[bool, str]:
+    """
+    Fix 'Definition for rule X was not found' by disabling the rule
+    in the ESLint config or adding an inline disable comment.
+    """
+    if not is_node_project:
+        return False, ""
+
+    m = re.search(r"Definition for rule ['\"]([^'\"]+)['\"] was not found", error_msg)
+    if not m:
+        return False, ""
+
+    missing_rule = m.group(1)
+
+    # Try to add rule to ESLint config as "off"
+    eslint_configs = [
+        ".eslintrc.json", ".eslintrc.js", ".eslintrc.cjs", ".eslintrc.yml",
+        ".eslintrc.yaml", ".eslintrc",
+    ]
+    for config_name in eslint_configs:
+        config_path = repo_path / config_name
+        if not config_path.exists():
+            continue
+
+        try:
+            content = config_path.read_text(encoding="utf-8")
+
+            if config_name.endswith(".json") or config_name == ".eslintrc":
+                import json
+                try:
+                    cfg = json.loads(content)
+                except json.JSONDecodeError:
+                    continue
+                if "rules" not in cfg:
+                    cfg["rules"] = {}
+                cfg["rules"][missing_rule] = "off"
+                config_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+                return True, f"Disabled missing ESLint rule '{missing_rule}' in {config_name}"
+
+            elif config_name.endswith((".js", ".cjs")):
+                # JS config — inject into rules object
+                if '"rules"' in content or "'rules'" in content or "rules:" in content:
+                    new_content = re.sub(
+                        r'(rules\s*:\s*\{)',
+                        rf'\1\n    "{missing_rule}": "off",',
+                        content,
+                        count=1,
+                    )
+                    if new_content != content:
+                        config_path.write_text(new_content, encoding="utf-8")
+                        return True, f"Disabled missing ESLint rule '{missing_rule}' in {config_name}"
+        except Exception as e:
+            print(f"ESLint rule fix failed for {config_name}: {e}")
+            continue
 
     return False, ""

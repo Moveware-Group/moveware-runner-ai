@@ -315,6 +315,20 @@ ERROR_PATTERNS = {
             "- Invent relations that don't exist in the schema"
         )
     },
+    "eslint_rule_not_found": {
+        "patterns": [
+            r"Definition for rule ['\"].*?['\"] was not found",
+        ],
+        "fix_hint": (
+            "**ESLINT RULE NOT FOUND:**\n"
+            "The ESLint config references a rule that isn't available.\n\n"
+            "**FIX:** Disable the rule in .eslintrc.json:\n"
+            "```json\n"
+            "{ \"rules\": { \"<rule-name>\": \"off\" } }\n"
+            "```\n"
+            "Or install the plugin that provides it (e.g. @typescript-eslint/eslint-plugin)."
+        )
+    },
     "eslint_config": {
         "patterns": [
             r"eslint-config-[^\s]+",
@@ -379,14 +393,18 @@ ERROR_PATTERNS = {
         "patterns": [
             r"Duplicate identifier ['\"](\w+)['\"]",
             r"Cannot redeclare block-scoped variable",
-            r"'(\w+)' has already been declared"
+            r"'(\w+)' has already been declared",
+            r"Duplicate module-level declaration of ['\"](\w+)['\"]"
         ],
         "fix_hint": (
             "**DUPLICATE DECLARATION:**\n"
-            "- Variable, function, or type declared multiple times\n"
-            "- Check for duplicate exports or imports\n"
-            "- Rename one of the declarations or remove duplicate\n"
-            "- Check if variable is imported AND declared locally"
+            "Variables like 'body', 'response', 'result' are declared multiple times in the same scope.\n\n"
+            "**FIX for test files:** Each test case (describe/it block) that declares `const body = ...` "
+            "or `const response = ...` at the module level creates a conflict. Solutions:\n"
+            "1. **Wrap in describe/it blocks** — Move declarations inside test functions (best practice)\n"
+            "2. **Use unique names** — body1, body2 or getBody, postBody\n"
+            "3. **Use a single let** — Declare `let body;` once at module level, reassign in each test\n\n"
+            "**DO NOT** just keep the same variable name declared twice at the top level."
         )
     },
     "async_import": {
