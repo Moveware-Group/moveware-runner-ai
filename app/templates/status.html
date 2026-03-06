@@ -23,19 +23,80 @@
             position: sticky;
             top: 0;
             z-index: 100;
+            margin-bottom: 30px;
+            padding: 14px 0;
+            border-bottom: 2px solid #333;
+            background: #0a0a0a;
+        }
+
+        .header-top {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 30px;
-            padding: 20px 0;
-            border-bottom: 2px solid #333;
-            background: #0a0a0a;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 16px;
         }
         
         h1 {
             color: #00d4ff;
-            font-size: 2em;
+            font-size: 1.6em;
             font-weight: 600;
+            white-space: nowrap;
+        }
+
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .header-actions a {
+            color: #00d4ff;
+            text-decoration: none;
+            font-size: 0.85em;
+            padding: 5px 10px;
+            border: 1px solid #333;
+            border-radius: 4px;
+            transition: border-color 0.2s;
+        }
+        .header-actions a:hover { border-color: #00d4ff; }
+
+        .filter-bar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 10px;
+            flex-wrap: wrap;
+        }
+
+        .filter-bar select, .filter-bar input[type="text"] {
+            background: #111;
+            color: #e0e0e0;
+            border: 1px solid #444;
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-size: 0.85em;
+            cursor: pointer;
+        }
+
+        .filter-bar input[type="text"] {
+            width: 180px;
+            cursor: text;
+        }
+        .filter-bar input[type="text"]:focus {
+            outline: none;
+            border-color: #00d4ff;
+        }
+        .filter-bar input[type="text"]::placeholder { color: #555; }
+
+        .filter-sep {
+            width: 1px;
+            height: 20px;
+            background: #333;
         }
         
         .controls {
@@ -95,7 +156,7 @@
         }
         
         .last-updated {
-            color: #888;
+            color: #00d4ff;
             font-size: 0.85em;
         }
         
@@ -577,26 +638,36 @@
 </head>
 <body>
     <div class="header">
-        <h1>AI Runner Status Dashboard</h1>
-        <div class="controls">
-            <button id="resetStuckBtn" class="reset-all-btn" onclick="resetAllStuckRuns()" style="display:none;">
-                ⚠️ Reset All Stuck Runs
-            </button>
-            <a href="/repos" style="color:#00d4ff;text-decoration:none;margin-right:20px">Add Repository</a>
-            <span class="detail-label">Board:</span>
-            <select id="boardFilter" style="background:#1a1a1a;color:#e0e0e0;border:1px solid #555;padding:5px 10px;border-radius:4px;margin-right:20px;cursor:pointer">
+        <div class="header-top">
+            <div class="header-left">
+                <h1>AI Runner Status Dashboard</h1>
+                <button id="resetStuckBtn" class="reset-all-btn" onclick="resetAllStuckRuns()" style="display:none;">
+                    ⚠️ Reset Stuck Runs
+                </button>
+            </div>
+            <div class="header-actions">
+                <a href="/repos">+ Repository</a>
+                <span class="detail-label">Details</span>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="detailToggle" checked>
+                    <span class="slider"></span>
+                </label>
+            </div>
+        </div>
+        <div class="filter-bar">
+            <input type="text" id="searchFilter" placeholder="Search runs (e.g. TB-88)..." />
+            <div class="filter-sep"></div>
+            <select id="boardFilter">
                 <option value="all" selected>All Boards</option>
             </select>
-            <span class="detail-label">Status:</span>
-            <select id="statusFilter" style="background:#1a1a1a;color:#e0e0e0;border:1px solid #555;padding:5px 10px;border-radius:4px;margin-right:20px;cursor:pointer">
-                <option value="all" selected>All</option>
-                <option value="active">Active (Running)</option>
+            <select id="statusFilter">
+                <option value="all" selected>All Status</option>
+                <option value="active">Active</option>
                 <option value="failed">Failed / Stuck</option>
                 <option value="completed">Completed</option>
                 <option value="queued">Queued</option>
             </select>
-            <span class="detail-label">Time Range:</span>
-            <select id="timeFilter" style="background:#1a1a1a;color:#e0e0e0;border:1px solid #555;padding:5px 10px;border-radius:4px;margin-right:20px;cursor:pointer">
+            <select id="timeFilter">
                 <option value="1">Last Hour</option>
                 <option value="6">Last 6 Hours</option>
                 <option value="12">Last 12 Hours</option>
@@ -604,18 +675,15 @@
                 <option value="168">Last Week</option>
                 <option value="all">All Time</option>
             </select>
-            <span class="detail-label">Show Details:</span>
-            <label class="toggle-switch">
-                <input type="checkbox" id="detailToggle" checked>
-                <span class="slider"></span>
-            </label>
-            <span class="last-updated" id="lastUpdated">Loading...</span>
         </div>
     </div>
     
     <!-- Metrics Section -->
     <div class="metrics-section" id="metricsSection">
-        <div class="metrics-title">📊 Performance Metrics (Last 24h)</div>
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:20px">
+            <div class="metrics-title" style="margin-bottom:0">📊 Performance Metrics (Last 24h)</div>
+            <span class="last-updated" id="lastUpdated">Loading...</span>
+        </div>
         <div class="metrics-grid">
             <div class="metric-card success">
                 <div class="metric-label">Success Rate</div>
@@ -660,10 +728,11 @@
     
     <script>
         let detailMode = 'detailed';
-        let timeFilter = 24; // default to 24 hours
-        let boardFilter = 'all'; // default to all boards
-        let statusFilter = 'all'; // default to all statuses
-        let configBoards = []; // boards from repos.json (populated on load)
+        let timeFilter = 24;
+        let boardFilter = 'all';
+        let statusFilter = 'all';
+        let searchQuery = '';
+        let configBoards = [];
         let autoRefreshInterval = null;
         const resettingRuns = new Set(); // Run IDs we just reset - show "Running" until complete/fail
         
@@ -821,8 +890,10 @@
             }
         }
         
-        // Render runs in the UI
+        let _lastRuns = [];
         function renderRuns(runs) {
+            if (runs !== undefined) _lastRuns = runs;
+            else runs = _lastRuns;
             const container = document.getElementById('runsContainer');
             
             if (!runs || runs.length === 0) {
@@ -876,12 +947,10 @@
                 boardFilter = validValue;
             }
             
-            // Filter runs by board
-            let filteredRuns = boardFilter === 'all' 
-                ? runs 
+            let filteredRuns = boardFilter === 'all'
+                ? runs
                 : runs.filter(run => getBoard(run.issue_key) === boardFilter);
 
-            // Filter by status
             if (statusFilter === 'active') {
                 filteredRuns = filteredRuns.filter(r => ['running', 'claimed'].includes(r.status));
             } else if (statusFilter === 'failed') {
@@ -894,8 +963,22 @@
                 filteredRuns = filteredRuns.filter(r => r.status === 'queued');
             }
 
+            if (searchQuery) {
+                const q = searchQuery.toLowerCase();
+                filteredRuns = filteredRuns.filter(r => {
+                    const key = (r.issue_key || '').toLowerCase();
+                    const summary = (r.summary || '').toLowerCase();
+                    const worker = (r.worker_id || '').toLowerCase();
+                    const id = String(r.id || '');
+                    return key.includes(q) || summary.includes(q) || worker.includes(q) || id.includes(q);
+                });
+            }
+
             if (filteredRuns.length === 0) {
-                const label = statusFilter !== 'all' ? `status: ${statusFilter}` : `board: ${boardFilter}`;
+                let label = 'current filters';
+                if (searchQuery) label = `"${searchQuery}"`;
+                else if (statusFilter !== 'all') label = `status: ${statusFilter}`;
+                else if (boardFilter !== 'all') label = `board: ${boardFilter}`;
                 container.innerHTML = `<div class="no-data">No runs found for ${label}</div>`;
                 document.getElementById('resetStuckBtn').style.display = 'none';
                 return;
@@ -1231,22 +1314,28 @@
             fetchStatus();
         }
         
-        // Toggle detail mode
         document.getElementById('detailToggle').addEventListener('change', (e) => {
             detailMode = e.target.checked ? 'detailed' : 'summary';
             fetchStatus();
         });
-        
-        // Board filter change
+
         document.getElementById('boardFilter').addEventListener('change', (e) => {
             boardFilter = e.target.value;
             fetchStatus();
         });
 
-        // Status filter change
         document.getElementById('statusFilter').addEventListener('change', (e) => {
             statusFilter = e.target.value;
             fetchStatus();
+        });
+
+        let searchDebounce = null;
+        document.getElementById('searchFilter').addEventListener('input', (e) => {
+            clearTimeout(searchDebounce);
+            searchDebounce = setTimeout(() => {
+                searchQuery = e.target.value.trim();
+                renderRuns();
+            }, 250);
         });
         
         // Time filter change
