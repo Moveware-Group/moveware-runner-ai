@@ -2222,6 +2222,37 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                     except Exception:
                         pass
         
+        # For type errors referencing a component Props type, find and include the component file
+        # e.g. "does not exist on type 'IntrinsicAttributes & CustomerDetailShellProps'"
+        props_type_match = re.search(
+            r"(?:does not exist on type|is not assignable to type)\s+['\"](?:IntrinsicAttributes & )?(\w+Props)['\"]",
+            error_msg,
+        )
+        if props_type_match:
+            props_type = props_type_match.group(1)  # e.g. CustomerDetailShellProps
+            # Derive likely component name from props type (remove "Props" suffix)
+            component_name = props_type.replace("Props", "")
+            print(f"🔍 Searching for component '{component_name}' (type: {props_type})")
+            # Search for files that define or export this type/component
+            try:
+                for root, dirs, files in os.walk(repo_path):
+                    # Skip node_modules, .next, .git
+                    dirs[:] = [d for d in dirs if d not in ("node_modules", ".next", ".git", "dist", "build")]
+                    for f in files:
+                        if f.endswith((".ts", ".tsx")):
+                            full = Path(root) / f
+                            try:
+                                content = full.read_text(encoding="utf-8", errors="ignore")
+                                if props_type in content or f"interface {props_type}" in content or f"type {props_type}" in content:
+                                    rel = str(full.relative_to(repo_path)).replace("\\", "/")
+                                    if rel not in error_files:
+                                        error_files.add(rel)
+                                        print(f"  ✅ Found {props_type} in {rel}")
+                            except Exception:
+                                pass
+            except Exception as e:
+                print(f"  ⚠ Props type search failed: {e}")
+
         # Build comprehensive error context with actual file contents
         error_file_contents = []
         
@@ -2266,7 +2297,7 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         except Exception:
             pass
         
-        error_context = "\n".join(error_file_contents) if error_file_contents else ""
+        error_file_context = "\n".join(error_file_contents) if error_file_contents else ""
         
         # Get comprehensive repository context for fixing (includes ALL code)
         comprehensive_context = _get_repo_context(repo_path, issue, include_all_code=True)
@@ -2321,7 +2352,7 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             f"   - Missing package? Add to package.json dependencies\n"
             f"   - Type error? Check interface and add missing properties\n"
             f"   - Function signature mismatch? Check actual function definition\n\n"
-            f"**Key Error Context:**\n{chr(10).join(error_context) if error_context else 'See full errors above'}\n\n"
+            f"**Key Error Context:**\n{error_file_context if error_file_context else chr(10).join(error_context) if error_context else 'See full errors above'}\n\n"
             f"**Full Repository Context:**\n{comprehensive_context}\n\n"
             f"**RESPONSE FORMAT - CRITICAL:**\n"
             f"Your response MUST be ONLY valid JSON. No markdown code fences, no explanation, JUST JSON.\n\n"

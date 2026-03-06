@@ -206,14 +206,17 @@ _CORE_RULES = [
         "severity": "critical",
         "rule_text": (
             "When passing props to a React component, you MUST check the component's Props "
-            "interface/type FIRST. If the component expects CustomerDetailShellProps, read "
-            "that type definition before adding props. If a prop like 'initialActivities' "
-            "doesn't exist on the type, you must EITHER:\n"
-            "1. Add the prop to the component's Props type definition AND handle it in the "
-            "component, OR\n"
-            "2. Remove the prop from the parent and restructure (e.g. fetch data in the "
-            "child component instead).\n"
-            "NEVER pass props that don't exist on the target component's type."
+            "interface/type FIRST. The component file IS provided in context — READ IT.\n\n"
+            "If the error says 'Property X does not exist on type SomeComponentProps':\n"
+            "1. Find the component file in the context (e.g. CustomerDetailShell.tsx)\n"
+            "2. Read its Props interface to see what it ACTUALLY accepts\n"
+            "3. You MUST update BOTH files in your response:\n"
+            "   a) The component file — add the new prop to its Props interface AND use it\n"
+            "   b) The page.tsx — ensure props passed match the updated interface\n"
+            "4. Make the new prop optional (e.g. 'initialJobs?: JobSummary[]') to avoid "
+            "breaking other callers.\n\n"
+            "NEVER pass props that don't exist on the target component's Props type.\n"
+            "NEVER fix only page.tsx — you MUST also update the component's Props interface."
         ),
     },
 ]

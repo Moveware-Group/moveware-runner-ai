@@ -51,6 +51,7 @@ def try_all_auto_fixes(
         auto_fix_cors_configuration,
         auto_fix_nextjs_route_export,
         auto_fix_import_path_leading_slash,
+        auto_fix_component_props_mismatch,
     ]
     
     for auto_fix_func in auto_fixes:
@@ -194,6 +195,101 @@ def auto_fix_missing_export(
         print(f"auto_fix_missing_export failed: {e}")
 
     return False, ""
+
+
+def auto_fix_component_props_mismatch(
+    error_msg: str,
+    repo_path: Path,
+    is_node_project: bool
+) -> Tuple[bool, str]:
+    """
+    When page.tsx passes props that don't exist on a component's Props interface,
+    add the missing props to the interface with appropriate types.
+    
+    Handles: "Property 'initialJobs' does not exist on type 'CustomerDetailShellProps'"
+    """
+    if not is_node_project:
+        return False, ""
+
+    match = re.search(
+        r"Property '(\w+)' does not exist on type '(?:IntrinsicAttributes & )?(\w+Props)'",
+        error_msg,
+    )
+    if not match:
+        return False, ""
+
+    missing_prop = match.group(1)
+    props_type = match.group(2)
+    component_name = props_type.replace("Props", "")
+
+    # Find the file that defines this Props type
+    props_file = None
+    props_content = None
+    import os
+    for root, dirs, files in os.walk(repo_path):
+        dirs[:] = [d for d in dirs if d not in ("node_modules", ".next", ".git", "dist", "build")]
+        for f in files:
+            if f.endswith((".ts", ".tsx")):
+                full = Path(root) / f
+                try:
+                    content = full.read_text(encoding="utf-8", errors="ignore")
+                    if re.search(rf"(?:interface|type)\s+{re.escape(props_type)}\s*[{{=]", content):
+                        props_file = full
+                        props_content = content
+                        break
+                except Exception:
+                    continue
+        if props_file:
+            break
+
+    if not props_file or not props_content:
+        return False, ""
+
+    # Also find the page.tsx that has the error to infer the prop's type
+    error_file_match = re.search(r"\./([^\s:]+\.tsx?):(\d+)", error_msg)
+    prop_value_type = "any"
+    if error_file_match:
+        error_file = repo_path / error_file_match.group(1)
+        if error_file.exists():
+            try:
+                page_content = error_file.read_text(encoding="utf-8", errors="ignore")
+                # Try to infer the type from how the prop is used
+                # e.g. initialJobs={jobsResult.data} — look for the variable type
+                value_match = re.search(
+                    rf"{re.escape(missing_prop)}=\{{([^}}]+)\}}",
+                    page_content,
+                )
+                if value_match:
+                    value_expr = value_match.group(1).strip()
+                    # Common patterns for type inference
+                    if "hasMore" in missing_prop.lower():
+                        prop_value_type = "boolean"
+                    elif missing_prop.startswith("initial"):
+                        prop_value_type = "any[]"
+            except Exception:
+                pass
+
+    # Insert the missing prop into the interface
+    interface_match = re.search(
+        rf"((?:interface|type)\s+{re.escape(props_type)}\s*(?:=\s*)?\{{[^}}]*?)(}})",
+        props_content,
+        re.DOTALL,
+    )
+    if not interface_match:
+        return False, ""
+
+    interface_body = interface_match.group(1)
+    # Check if the prop already exists (shouldn't if we got this error)
+    if re.search(rf"\b{re.escape(missing_prop)}\s*[?:]", interface_body):
+        return False, ""
+
+    new_prop_line = f"  {missing_prop}?: {prop_value_type};\n"
+    new_content = props_content[:interface_match.end(1)] + new_prop_line + props_content[interface_match.start(2):]
+
+    props_file.write_text(new_content, encoding="utf-8")
+    rel_path = str(props_file.relative_to(repo_path)).replace("\\", "/")
+
+    return True, f"Added '{missing_prop}?: {prop_value_type}' to {props_type} in {rel_path}"
 
 
 def auto_fix_import_path_leading_slash(
