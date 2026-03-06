@@ -155,6 +155,18 @@ _CORE_RULES = [
     },
     {
         "repo_name": "*",
+        "category": "import_resolution",
+        "scope": "global",
+        "severity": "critical",
+        "rule_text": (
+            "NEVER use leading-slash imports like '/lib/api/tenant-credentials'. "
+            "Webpack/Next.js treat / as filesystem root. Use '@/lib/...' (project alias) "
+            "or relative paths like '../../lib/api/tenant-credentials'. "
+            "Correct: import { x } from '@/lib/api/tenant-credentials'"
+        ),
+    },
+    {
+        "repo_name": "*",
         "category": "test_structure",
         "scope": "global",
         "severity": "critical",

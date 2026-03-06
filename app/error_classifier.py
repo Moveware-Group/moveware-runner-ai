@@ -45,10 +45,11 @@ ERROR_PATTERNS = {
         ],
         "fix_hint": (
             "**IMPORT RESOLUTION ERROR:**\n"
-            "- If the module is an npm package (e.g. autoprefixer, postcss, tailwindcss): add it to package.json "
-            "dependencies or devDependencies, then run npm install\n"
+            "- **Leading slash /lib/...** — NEVER use '/lib/...' or \"/lib/...\". Webpack treats it as absolute "
+            "filesystem path. Use '@/lib/...' (project alias) or relative paths instead.\n"
+            "- If the module is an npm package: add to package.json, run npm install\n"
             "- If it's a local file: verify path exists, check extension (.ts/.tsx/.js/.jsx)\n"
-            "- Use relative paths correctly (../ for parent directory)\n"
+            "- Use relative paths (../ for parent) or @/ alias for project root\n"
             "- Check tsconfig.json paths alias configuration"
         )
     },

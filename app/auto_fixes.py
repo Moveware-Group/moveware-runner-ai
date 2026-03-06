@@ -50,6 +50,7 @@ def try_all_auto_fixes(
         auto_fix_nextjs_image_domains,
         auto_fix_cors_configuration,
         auto_fix_nextjs_route_export,
+        auto_fix_import_path_leading_slash,
     ]
     
     for auto_fix_func in auto_fixes:
@@ -193,6 +194,56 @@ def auto_fix_missing_export(
         print(f"auto_fix_missing_export failed: {e}")
 
     return False, ""
+
+
+def auto_fix_import_path_leading_slash(
+    error_msg: str,
+    repo_path: Path,
+    is_node_project: bool
+) -> Tuple[bool, str]:
+    """
+    Fix 'Module not found: Can't resolve \'/lib/...\'' by replacing leading-slash
+    imports with @/lib/... (Next.js/Webpack treat /lib as absolute filesystem path).
+    """
+    if not is_node_project:
+        return False, ""
+    match = re.search(
+        r"Module not found(?::\s*Error)?:?\s*Can't resolve\s+['\"](/lib/[^'\"\s]+)['\"]",
+        error_msg,
+        re.IGNORECASE,
+    )
+    if not match:
+        return False, ""
+    bad_path = match.group(1)  # e.g. /lib/api/tenant-credentials
+    correct_path = "@" + bad_path  # @/lib/api/tenant-credentials
+
+    # Find the file with the bad import (./app/..., /app/..., or app/...)
+    file_match = re.search(
+        r'(?:\./|/)((?:app|src|lib|components)/[^\s:]+\.(?:ts|tsx|js|jsx))(?::\d|$|\s)',
+        error_msg,
+    )
+    if not file_match:
+        return False, ""
+    rel_path = file_match.group(1)
+    fp = repo_path / rel_path
+    if not fp.exists():
+        return False, ""
+
+    content = fp.read_text(encoding="utf-8")
+    # Replace both quoted forms
+    old1 = f"'{bad_path}'"
+    old2 = f'"{bad_path}"'
+    new1 = f"'{correct_path}'"
+    new2 = f'"{correct_path}"'
+    if old1 in content:
+        content = content.replace(old1, new1, 1)
+    elif old2 in content:
+        content = content.replace(old2, new2, 1)
+    else:
+        return False, ""
+
+    fp.write_text(content, encoding="utf-8")
+    return True, f"Fixed import path {bad_path} → {correct_path} in {rel_path}"
 
 
 def auto_fix_prisma_schema_mismatch(
