@@ -39,6 +39,7 @@ def try_all_auto_fixes(
         auto_fix_prisma_import_type,
         auto_fix_env_type_missing,
         auto_fix_type_conversion,
+        auto_fix_index_signature_mismatch,
         auto_fix_missing_typescript_types,
         auto_fix_outdated_lockfile,
         auto_fix_port_in_use,
@@ -712,6 +713,82 @@ def auto_fix_type_conversion(
     except Exception as e:
         print(f"Type conversion auto-fix failed: {e}")
     
+    return False, ""
+
+
+def auto_fix_index_signature_mismatch(
+    error_msg: str,
+    repo_path: Path,
+    is_node_project: bool
+) -> Tuple[bool, str]:
+    """
+    Fix 'Index signature for type string is missing in type X'
+    or 'Type X is not assignable to type Record<string, unknown>'.
+
+    These happen when a typed object is passed to a function expecting
+    Record<string, unknown>. Fix by casting at the call site.
+    """
+    if not is_node_project:
+        return False, ""
+
+    # Match the index-signature variant
+    m = re.search(
+        r"Argument of type ['\"](\w+)['\"] is not assignable to parameter of type ['\"]Record<string,\s*unknown>['\"]",
+        error_msg,
+    )
+    if not m:
+        m = re.search(
+            r"Index signature for type ['\"]string['\"] is missing in type ['\"](\w+)['\"]",
+            error_msg,
+        )
+    if not m:
+        return False, ""
+
+    offending_type = m.group(1)
+
+    # Find file and line
+    file_match = re.search(r'\./([^\s:]+\.(?:ts|tsx)):(\d+):(\d+)', error_msg)
+    if not file_match:
+        file_match = re.search(r'(src/[^\s:]+\.(?:ts|tsx)):(\d+):(\d+)', error_msg)
+    if not file_match:
+        return False, ""
+
+    file_rel = file_match.group(1)
+    line_num = int(file_match.group(2))
+    col_num = int(file_match.group(3))
+    file_path = repo_path / file_rel
+
+    if not file_path.exists():
+        return False, ""
+
+    try:
+        content = file_path.read_text(encoding="utf-8")
+        lines = content.splitlines(keepends=True)
+        if line_num < 1 or line_num > len(lines):
+            return False, ""
+
+        error_line = lines[line_num - 1]
+
+        # Find the identifier at or near the column — the argument being passed
+        # Common pattern: someFunction(customer, ctx) where 'customer' is the problem
+        # col_num points to the start of the offending argument
+        before_col = error_line[:col_num - 1] if col_num > 1 else ""
+        from_col = error_line[col_num - 1:]
+        ident_match = re.match(r'(\w+)', from_col)
+        if not ident_match:
+            return False, ""
+
+        var_name = ident_match.group(1)
+        cast_expr = f"{var_name} as Record<string, unknown>"
+
+        # Replace: only the bare identifier at that position
+        new_line = before_col + cast_expr + from_col[len(var_name):]
+        lines[line_num - 1] = new_line
+        file_path.write_text("".join(lines), encoding="utf-8")
+        return True, f"Cast {var_name} as Record<string, unknown> in {file_rel}:{line_num} (was {offending_type})"
+    except Exception as e:
+        print(f"auto_fix_index_signature_mismatch failed: {e}")
+
     return False, ""
 
 

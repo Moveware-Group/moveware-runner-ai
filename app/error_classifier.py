@@ -52,6 +52,26 @@ ERROR_PATTERNS = {
             "- Check tsconfig.json paths alias configuration"
         )
     },
+    "index_signature_mismatch": {
+        "patterns": [
+            r"Index signature for type ['\"]string['\"] is missing in type",
+            r"is not assignable to parameter of type ['\"]Record<string,\s*unknown>['\"]",
+        ],
+        "fix_hint": (
+            "**INDEX SIGNATURE / Record<string, unknown> MISMATCH:**\n"
+            "A typed object (interface/type) is being passed to a function that expects\n"
+            "`Record<string, unknown>`. TypeScript interfaces lack the `[key: string]` index\n"
+            "signature that `Record` requires.\n\n"
+            "**FIX OPTIONS (pick one):**\n"
+            "1. **Cast at call site** (safest, minimal change):\n"
+            "   `myFunction(customer as Record<string, unknown>)`\n"
+            "2. **Widen the function parameter** to accept the specific type:\n"
+            "   `function myFunction(data: CustomerDetail | Record<string, unknown>)`\n"
+            "3. **Add index signature** to the interface:\n"
+            "   `interface CustomerDetail { [key: string]: unknown; id: string; ... }`\n\n"
+            "**DO NOT** repeatedly change unrelated code — the fix is a one-line cast."
+        )
+    },
     "type_error": {
         "patterns": [
             r"Type '(.*)' is not assignable to type '(.*)'",
@@ -69,7 +89,8 @@ ERROR_PATTERNS = {
             "- number → string: Use String(value) or value.toString() or `${value}`\n"
             "- string → number: Use Number(value) or parseInt(value) or parseFloat(value)\n"
             "- undefined/null → required: Add null check or use ?? default operator\n"
-            "- union types: Narrow with typeof or instanceof checks"
+            "- union types: Narrow with typeof or instanceof checks\n"
+            "- Record<string, unknown> mismatch: Cast with `value as Record<string, unknown>`"
         )
     },
     "react_hook_error": {

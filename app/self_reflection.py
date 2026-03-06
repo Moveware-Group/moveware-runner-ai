@@ -138,6 +138,14 @@ def analyze_fix_failure(
             "Read env schema file to see type definition"
         )
     
+    # Detect if the SAME error text keeps repeating (stuck in a loop)
+    same_error_count = 0
+    error_signature = new_error[:200].strip()
+    for prev in previous_attempts:
+        prev_sig = (prev.get("error", "") or "")[:200].strip()
+        if prev_sig == error_signature:
+            same_error_count += 1
+
     # Progressive escalation recommendations
     if attempt_num == 2:
         analysis["recommendations"].append(
@@ -149,9 +157,34 @@ def analyze_fix_failure(
         )
     elif attempt_num >= 4:
         analysis["recommendations"].append(
-            "⚠️ Multiple failures - the root cause may be architectural, not just a simple fix"
+            "🚨 CRITICAL: Multiple failures on the same error. Your previous approaches are NOT working. "
+            "You MUST try something fundamentally different."
         )
-    
+
+    # Stuck-loop escalation: if the same error has appeared 3+ times, give a direct fix
+    if same_error_count >= 2:
+        analysis["recommendations"].insert(0,
+            "🔴 SAME ERROR {n}x IN A ROW. Stop trying the same approach. "
+            "Apply the SIMPLEST possible fix: type cast, 'as any', "
+            "or remove the problematic line entirely.".format(n=same_error_count + 1)
+        )
+
+        # Inject specific direct fixes for known stuck patterns
+        if "Index signature" in new_error or "Record<string, unknown>" in new_error:
+            analysis["recommendations"].insert(1,
+                "DIRECT FIX: Add 'as Record<string, unknown>' cast to the argument. "
+                "Example: change `myFn(obj)` to `myFn(obj as Record<string, unknown>)`"
+            )
+        if "is not assignable to parameter of type" in new_error:
+            analysis["recommendations"].insert(1,
+                "DIRECT FIX: Cast the argument with 'as <ExpectedType>' or 'as any' to break the type deadlock."
+            )
+        if "does not exist on type" in new_error:
+            analysis["recommendations"].insert(1,
+                "DIRECT FIX: Either add the property to the type/interface definition, "
+                "or cast with 'as any' to suppress the error."
+            )
+
     return analysis
 
 
