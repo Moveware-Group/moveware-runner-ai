@@ -204,8 +204,10 @@ class FixValidator:
         ranges = []
 
         # Named function declarations: function name(...) {
+        # Handles: function, async function, export function, export default function,
+        # export default async function
         for m in re.finditer(
-            r'(?:export\s+)?(?:async\s+)?function\s+\w+\s*\([^)]*\)\s*(?::\s*[^{]+)?\s*\{',
+            r'(?:export\s+(?:default\s+)?)?(?:async\s+)?function\s+\w+\s*\([^)]*\)\s*(?::\s*[^{]+)?\s*\{',
             content,
         ):
             end = FixValidator._find_matching_brace(content, m.end() - 1)

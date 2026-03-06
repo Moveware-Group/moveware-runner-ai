@@ -199,6 +199,23 @@ _CORE_RULES = [
             "'export'). If another file needs the constant, move it to a shared utils file."
         ),
     },
+    {
+        "repo_name": "*",
+        "category": "type_error",
+        "scope": "global",
+        "severity": "critical",
+        "rule_text": (
+            "When passing props to a React component, you MUST check the component's Props "
+            "interface/type FIRST. If the component expects CustomerDetailShellProps, read "
+            "that type definition before adding props. If a prop like 'initialActivities' "
+            "doesn't exist on the type, you must EITHER:\n"
+            "1. Add the prop to the component's Props type definition AND handle it in the "
+            "component, OR\n"
+            "2. Remove the prop from the parent and restructure (e.g. fetch data in the "
+            "child component instead).\n"
+            "NEVER pass props that don't exist on the target component's type."
+        ),
+    },
 ]
 
 
