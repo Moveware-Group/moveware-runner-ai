@@ -2065,6 +2065,21 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             except Exception as e:
                 print(f"Failed to auto-fix env type: {e}")
     
+    # Save git checkpoint before fix loop — allows rollback on cascading errors
+    _checkpoint_hash = None
+    try:
+        _cp = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_path, capture_output=True, text=True, timeout=5,
+        )
+        if _cp.returncode == 0:
+            _checkpoint_hash = _cp.stdout.strip()
+    except Exception:
+        pass
+    
+    # Track the original error signature to detect cascading (new) errors
+    _original_error_files = set(re.findall(r'[./\w-]+\.(?:ts|tsx|js|jsx)', "\n".join(verification_errors)))
+    
     while verification_errors and fix_attempt < MAX_FIX_ATTEMPTS:
         fix_attempt += 1
         error_msg = "\n\n".join(verification_errors)
@@ -2704,6 +2719,36 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                         attempt_metadata = extract_fix_metadata(fix_payload, fixed_files)
                         attempt_metadata["error"] = error_msg
                         previous_fix_attempts.append(attempt_metadata)
+                        
+                        # CASCADING ERROR DETECTION + ROLLBACK
+                        # If the new error is in a DIFFERENT file than the original,
+                        # the fix made things worse. Rollback to checkpoint.
+                        new_error_files = set(re.findall(
+                            r'[./\w-]+\.(?:ts|tsx|js|jsx)',
+                            error_output[:2000]
+                        ))
+                        new_files_introduced = new_error_files - _original_error_files
+                        if new_files_introduced and _checkpoint_hash:
+                            print(f"⚠️  CASCADING ERROR DETECTED: fix introduced errors in new files: {new_files_introduced}")
+                            print(f"🔄 Rolling back to checkpoint {_checkpoint_hash[:8]} to prevent snowball...")
+                            try:
+                                subprocess.run(
+                                    ["git", "checkout", "."],
+                                    cwd=repo_path,
+                                    capture_output=True, text=True, timeout=10,
+                                )
+                                # Also clean any newly created files
+                                subprocess.run(
+                                    ["git", "clean", "-fd"],
+                                    cwd=repo_path,
+                                    capture_output=True, text=True, timeout=10,
+                                )
+                                print(f"✅ Rolled back successfully. Next attempt starts from clean state.")
+                                # Reset verification errors to the original error
+                                # so the next attempt focuses on the ORIGINAL problem
+                                verification_errors = list(verification_errors[:1]) if verification_errors else verification_errors
+                            except Exception as e:
+                                print(f"⚠️  Rollback failed: {e}")
                     else:
                         print(f"✅ Build succeeded after {model_name} fixes on attempt {fix_attempt}!")
                         if run_id:

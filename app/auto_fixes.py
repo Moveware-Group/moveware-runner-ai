@@ -52,6 +52,7 @@ def try_all_auto_fixes(
         auto_fix_nextjs_route_export,
         auto_fix_import_path_leading_slash,
         auto_fix_component_props_mismatch,
+        auto_fix_double_prefix_import,
     ]
     
     for auto_fix_func in auto_fixes:
@@ -195,6 +196,50 @@ def auto_fix_missing_export(
         print(f"auto_fix_missing_export failed: {e}")
 
     return False, ""
+
+
+def auto_fix_double_prefix_import(
+    error_msg: str,
+    repo_path: Path,
+    is_node_project: bool
+) -> Tuple[bool, str]:
+    """
+    Fix '@/src/...' double-prefix imports.
+    When tsconfig maps @ to src/, '@/src/foo' resolves to 'src/src/foo' which doesn't exist.
+    Fix: replace '@/src/' with '@/'.
+    """
+    if not is_node_project:
+        return False, ""
+
+    match = re.search(
+        r"(?:Cannot find module|Module not found: Can't resolve)\s+['\"](@/src/[^'\"\s]+)['\"]",
+        error_msg,
+        re.IGNORECASE,
+    )
+    if not match:
+        return False, ""
+
+    bad_import = match.group(1)  # e.g. @/src/components/customers/Foo
+    good_import = bad_import.replace("@/src/", "@/", 1)
+
+    # Find which file has this import
+    file_match = re.search(r'\./([^\s:]+\.tsx?)', error_msg)
+    if not file_match:
+        return False, ""
+
+    error_file = repo_path / file_match.group(1)
+    if not error_file.exists():
+        return False, ""
+
+    try:
+        content = error_file.read_text(encoding="utf-8")
+        if bad_import not in content:
+            return False, ""
+        new_content = content.replace(bad_import, good_import)
+        error_file.write_text(new_content, encoding="utf-8")
+        return True, f"Fixed double-prefix import: '{bad_import}' → '{good_import}' in {file_match.group(1)}"
+    except Exception:
+        return False, ""
 
 
 def auto_fix_component_props_mismatch(

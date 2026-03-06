@@ -146,6 +146,15 @@ class FixValidator:
         
         # Check 3: Missing semicolons/braces
         self._check_balanced_braces(path, content)
+        
+        # Check 4: @/src/ double-prefix imports (always wrong)
+        for m in re.finditer(r"from\s+['\"](@/src/[^'\"]+)['\"]", content):
+            bad_import = m.group(1)
+            self.validation_errors.append(
+                f"{path}: Double-prefix import '{bad_import}' — "
+                f"'@/' already maps to src/, so '@/src/' resolves to 'src/src/'. "
+                f"Use '{bad_import.replace('@/src/', '@/', 1)}' instead."
+            )
     
     def _check_duplicate_declarations(self, path: str, content: str) -> None:
         """Check for duplicate const/let/var/function/class declarations at same scope."""
@@ -206,13 +215,40 @@ class FixValidator:
         # Named function declarations: function name(...) {
         # Handles: function, async function, export function, export default function,
         # export default async function
+        # We match 'function' keyword then scan forward to the opening brace,
+        # handling nested parens in parameters (e.g. destructured TS types).
         for m in re.finditer(
-            r'(?:export\s+(?:default\s+)?)?(?:async\s+)?function\s+\w+\s*\([^)]*\)\s*(?::\s*[^{]+)?\s*\{',
+            r'(?:export\s+(?:default\s+)?)?(?:async\s+)?function\s+\w*\s*\(',
             content,
         ):
-            end = FixValidator._find_matching_brace(content, m.end() - 1)
-            if end > m.start():
-                ranges.append((m.start(), end))
+            # Find the opening brace after the function keyword by scanning
+            # past the parameter list (which may contain nested parens)
+            pos = m.end() - 1  # at the '('
+            depth = 0
+            while pos < len(content):
+                if content[pos] == '(':
+                    depth += 1
+                elif content[pos] == ')':
+                    depth -= 1
+                    if depth == 0:
+                        break
+                pos += 1
+            # Now skip past return type annotation and whitespace to find '{'
+            # e.g. ): Promise<CustomerDetail> {   or  ): void {  or just ) {
+            pos += 1
+            brace_found = False
+            scan_limit = min(pos + 200, len(content))
+            while pos < scan_limit:
+                if content[pos] == '{':
+                    brace_found = True
+                    break
+                if content[pos] in (';', '\n') and ':' not in content[m.end():pos]:
+                    break
+                pos += 1
+            if brace_found:
+                end = FixValidator._find_matching_brace(content, pos)
+                if end > m.start():
+                    ranges.append((m.start(), end))
 
         # Arrow function bodies: (...) => { or arg => {
         # Covers describe(() => {, it(() => {, test(() => {, beforeEach(() => {, etc.
