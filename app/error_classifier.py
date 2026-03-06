@@ -281,9 +281,23 @@ ERROR_PATTERNS = {
             "**CRITICAL:** Always read prisma/schema.prisma first - don't guess model names!"
         )
     },
+    "property_type_mismatch": {
+        "patterns": [
+            r"Object literal may only specify known properties.*does not exist in type",
+            r"'(\w+)' does not exist in type ['\"](\w+)['\"]",
+        ],
+        "fix_hint": (
+            "**PROPERTY TYPE MISMATCH (TS2353):**\n"
+            "An object literal has a property that doesn't exist on the target type.\n"
+            "**FIX:** Check the type definition for which properties are allowed. "
+            "Either remove the extra property, add it to the type definition, or "
+            "use a type assertion if intentional.\n"
+            "If you need pagination (page, limit) but the type doesn't support it, "
+            "extract those params separately before calling the typed function."
+        )
+    },
     "prisma_schema_mismatch": {
         "patterns": [
-            r"Object literal may only specify known properties",
             r"does not exist in type ['\"].*?(?:CreateInput|UpdateInput|Include|Select|Where|OrderBy)['\"]",
             r"does not exist in type ['\"].*?(?:CreateInput|UpdateInput)['\"]",
             r"'(\w+)' does not exist in type ['\"].*?(?:CreateInput|UpdateInput|Include)['\"]",
@@ -389,6 +403,23 @@ ERROR_PATTERNS = {
             "- Validate experimental features are properly formatted"
         )
     },
+    "nextjs_route_export": {
+        "patterns": [
+            r"OmitWithTag.*does not satisfy the constraint",
+            r"route\.ts.*TS2344",
+            r"Property '(\w+)' is incompatible with index signature.*route\.ts",
+        ],
+        "fix_hint": (
+            "**NEXT.JS ROUTE EXPORT ERROR (TS2344):**\n"
+            "A route.ts file exports a constant that is NOT a valid route handler.\n"
+            "Next.js App Router route files may ONLY export: GET, HEAD, OPTIONS, POST, "
+            "PUT, DELETE, PATCH, config, generateStaticParams, revalidate, dynamic, "
+            "dynamicParams, fetchCache, runtime, preferredRegion, maxDuration.\n\n"
+            "**FIX:** Remove the 'export' keyword from any non-handler constant. "
+            "Change `export const VALID_STATUSES = ...` to `const VALID_STATUSES = ...`. "
+            "If needed elsewhere, move the constant to a shared utils/constants file."
+        )
+    },
     "duplicate_declaration": {
         "patterns": [
             r"Duplicate identifier ['\"](\w+)['\"]",
@@ -397,14 +428,30 @@ ERROR_PATTERNS = {
             r"Duplicate module-level declaration of ['\"](\w+)['\"]"
         ],
         "fix_hint": (
-            "**DUPLICATE DECLARATION:**\n"
-            "Variables like 'body', 'response', 'result' are declared multiple times in the same scope.\n\n"
-            "**FIX for test files:** Each test case (describe/it block) that declares `const body = ...` "
-            "or `const response = ...` at the module level creates a conflict. Solutions:\n"
-            "1. **Wrap in describe/it blocks** — Move declarations inside test functions (best practice)\n"
-            "2. **Use unique names** — body1, body2 or getBody, postBody\n"
-            "3. **Use a single let** — Declare `let body;` once at module level, reassign in each test\n\n"
-            "**DO NOT** just keep the same variable name declared twice at the top level."
+            "**DUPLICATE DECLARATION — MUST FIX:**\n"
+            "Variables (req, res, body, result, response, etc.) are declared multiple times.\n\n"
+            "**FOR TEST FILES (*.test.ts):** The ONLY correct pattern is to declare ALL "
+            "variables INSIDE each it()/test() callback. Example:\n"
+            "```\n"
+            "describe('GET /api/resource', () => {\n"
+            "  it('returns 200', async () => {\n"
+            "    const req = new NextRequest(url);\n"
+            "    const res = await GET(req, { params: ... });\n"
+            "    const body = await res.json();\n"
+            "    expect(res.status).toBe(200);\n"
+            "  });\n"
+            "  it('returns 404', async () => {\n"
+            "    const req = new NextRequest(url);\n"  
+            "    const res = await GET(req, { params: ... });\n"
+            "    const body = await res.json();\n"
+            "    expect(res.status).toBe(404);\n"
+            "  });\n"
+            "});\n"
+            "```\n"
+            "NEVER declare const req/res/body at describe-level or module-level. "
+            "Each it() block must be fully self-contained.\n\n"
+            "**FOR NON-TEST FILES:** Use unique variable names (result1, result2) or "
+            "restructure into separate functions."
         )
     },
     "async_import": {

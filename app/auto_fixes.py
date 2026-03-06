@@ -49,6 +49,7 @@ def try_all_auto_fixes(
         auto_fix_missing_tailwind_config,
         auto_fix_nextjs_image_domains,
         auto_fix_cors_configuration,
+        auto_fix_nextjs_route_export,
     ]
     
     for auto_fix_func in auto_fixes:
@@ -1100,25 +1101,25 @@ def auto_fix_duplicate_module_declaration(
     is_node_project: bool
 ) -> Tuple[bool, str]:
     """
-    Fix 'Duplicate module-level declaration' by renaming the 2nd and later
-    declarations to unique names (result2, response2, body2, etc.)
-    and updating usages after each renamed declaration.
-    Works on any .ts/.tsx file (test files, validate files, route files, etc.)
+    Fix 'Duplicate module-level declaration' in two ways:
+    1. For test files: if declarations are inside describe/it/test callbacks,
+       the code is actually correct — skip (the validator was wrong).
+    2. For genuine module-level duplicates: rename 2nd+ to unique names.
     """
     if not is_node_project:
         return False, ""
     if "Duplicate module-level declaration" not in error_msg:
         return False, ""
 
-    # Extract ALL .ts/.tsx files mentioned in the error
-    path_candidates = list(set(re.findall(r'(src/[^\s:(]+\.(?:ts|tsx))', error_msg)))
+    # Extract ALL .ts/.tsx files mentioned — support src/, app/, and bare paths
+    path_candidates = list(set(re.findall(
+        r'((?:src|app|lib|components|pages|utils|hooks|services|types|config)[/\\][^\s:(]+\.(?:ts|tsx))',
+        error_msg,
+    )))
     if not path_candidates:
-        # Also try paths without src/ prefix
         path_candidates = list(set(re.findall(r'([^\s:(]+\.(?:ts|tsx))', error_msg)))
 
-    # Extract the duplicate variable names from the error
     dup_names = set(re.findall(r"Duplicate module-level declaration of ['\"](\w+)['\"]", error_msg))
-    # Fallback common names if we couldn't parse them
     if not dup_names:
         dup_names = {"result", "response", "parsed", "validated", "body", "data", "error", "req", "res"}
 
@@ -1129,6 +1130,34 @@ def auto_fix_duplicate_module_declaration(
             continue
         try:
             content = fp.read_text(encoding="utf-8")
+            is_test_file = any(p in rel_path for p in ("__tests__", ".test.", ".spec."))
+
+            # For test files, check if duplicates are inside arrow function callbacks
+            # (describe/it/test/beforeEach). If so, they're properly scoped and this
+            # is a validator false-positive — skip the file.
+            if is_test_file:
+                from .fix_validator import FixValidator
+                scope_ranges = FixValidator._build_scope_ranges(content)
+                all_inside_scope = True
+                for var_name in dup_names:
+                    decl_pattern = re.compile(
+                        r"^\s*(const|let)\s+" + re.escape(var_name) + r"\s*[=:]",
+                        re.MULTILINE,
+                    )
+                    decl_matches = list(decl_pattern.finditer(content))
+                    if len(decl_matches) < 2:
+                        continue
+                    # Check if ALL declarations (except possibly the first) are inside scopes
+                    for dm in decl_matches[1:]:
+                        if not FixValidator._is_inside_scope(dm.start(), scope_ranges):
+                            all_inside_scope = False
+                            break
+                    if not all_inside_scope:
+                        break
+                if all_inside_scope:
+                    print(f"  Skipping {rel_path}: declarations are properly scoped inside test callbacks")
+                    continue
+
             lines = content.split("\n")
             file_changed = False
 
@@ -1243,5 +1272,74 @@ def auto_fix_eslint_rule_not_found(
         except Exception as e:
             print(f"ESLint rule fix failed for {config_name}: {e}")
             continue
+
+    return False, ""
+
+
+def auto_fix_nextjs_route_export(
+    error_msg: str,
+    repo_path: Path,
+    is_node_project: bool
+) -> Tuple[bool, str]:
+    """
+    Fix Next.js route files that export non-handler constants (like VALID_JOB_STATUSES).
+    Next.js App Router route files may only export: GET, HEAD, OPTIONS, POST, PUT, DELETE,
+    PATCH, config, generateStaticParams, revalidate, dynamic, dynamicParams,
+    fetchCache, runtime, preferredRegion, maxDuration.
+    Any other exported const triggers TS2344.
+    """
+    if not is_node_project:
+        return False, ""
+    if "does not satisfy the constraint" not in error_msg or "index signature" not in error_msg.lower():
+        return False, ""
+
+    route_match = re.search(
+        r"(?:types/|app/)([^\s:(]+route\.ts)",
+        error_msg,
+    )
+    if not route_match:
+        return False, ""
+
+    raw_path = route_match.group(0)
+    if "types/app/" in raw_path:
+        rel_path = raw_path.split("types/")[1]
+    elif raw_path.startswith("app/"):
+        rel_path = raw_path
+    else:
+        rel_path = "app/" + raw_path
+
+    fp = repo_path / rel_path
+    if not fp.exists():
+        return False, ""
+
+    VALID_HANDLER_EXPORTS = {
+        "GET", "HEAD", "OPTIONS", "POST", "PUT", "DELETE", "PATCH",
+        "config", "generateStaticParams", "revalidate", "dynamic",
+        "dynamicParams", "fetchCache", "runtime", "preferredRegion", "maxDuration",
+    }
+
+    try:
+        content = fp.read_text(encoding="utf-8")
+        lines = content.split("\n")
+        changed = False
+
+        new_lines = []
+        for line in lines:
+            m = re.match(r'^(export\s+)(const|let|var)\s+(\w+)', line)
+            if m:
+                name = m.group(3)
+                if name not in VALID_HANDLER_EXPORTS:
+                    new_line = line.replace(m.group(1), "", 1)
+                    new_lines.append(new_line)
+                    changed = True
+                    print(f"  Removed export from '{name}' in {rel_path}")
+                    continue
+            new_lines.append(line)
+
+        if changed:
+            fp.write_text("\n".join(new_lines), encoding="utf-8")
+            return True, f"Removed non-handler exports from Next.js route file {rel_path}"
+    except Exception as e:
+        print(f"Next.js route export fix failed for {rel_path}: {e}")
 
     return False, ""

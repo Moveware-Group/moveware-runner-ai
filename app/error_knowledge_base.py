@@ -137,6 +137,40 @@ _CORE_RULES = [
             "for utilities). Do NOT return a 'questions' array requesting file contents."
         ),
     },
+    {
+        "repo_name": "*",
+        "category": "test_structure",
+        "scope": "global",
+        "severity": "critical",
+        "rule_text": (
+            "In test files (*.test.ts, *.spec.ts), ALWAYS declare variables like req, res, "
+            "body, result, response INSIDE the it()/test() callback, never at describe-level "
+            "or module-level. Each test must be self-contained. Correct pattern:\n"
+            "  describe('GET /api/resource', () => {\n"
+            "    it('returns 200', async () => {\n"
+            "      const req = new NextRequest(...);\n"
+            "      const res = await GET(req, ...);\n"
+            "      const body = await res.json();\n"
+            "      expect(res.status).toBe(200);\n"
+            "    });\n"
+            "  });\n"
+            "NEVER declare const req/res/body at the top level of the file or describe block."
+        ),
+    },
+    {
+        "repo_name": "*",
+        "category": "nextjs_routing",
+        "scope": "global",
+        "severity": "critical",
+        "rule_text": (
+            "Next.js App Router route files (route.ts) may ONLY export these names: "
+            "GET, HEAD, OPTIONS, POST, PUT, DELETE, PATCH, config, generateStaticParams, "
+            "revalidate, dynamic, dynamicParams, fetchCache, runtime, preferredRegion, "
+            "maxDuration. Any other exported constant (e.g. export const VALID_STATUSES) "
+            "will cause TS2344. Keep helper constants as non-exported (just 'const', no "
+            "'export'). If another file needs the constant, move it to a shared utils file."
+        ),
+    },
 ]
 
 

@@ -2086,7 +2086,7 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         
         # Get similar successful fixes from pattern learning database
         from .pattern_learner import get_similar_successful_fixes, format_fix_suggestions
-        similar_patterns = get_similar_successful_fixes(error_msg, limit=3)
+        similar_patterns = get_similar_successful_fixes(error_msg, limit=10)
         pattern_guidance = format_fix_suggestions(similar_patterns)
         
         if similar_patterns:

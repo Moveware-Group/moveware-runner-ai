@@ -149,70 +149,128 @@ class FixValidator:
     
     def _check_duplicate_declarations(self, path: str, content: str) -> None:
         """Check for duplicate const/let/var/function/class declarations at same scope."""
-        
-        # Extract function/class boundaries to understand scope
-        function_ranges = []
-        for match in re.finditer(r'(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\([^)]*\)\s*(?::\s*[^{]+)?\s*\{', content):
-            start = match.end()
-            # Find matching closing brace (simplified - doesn't handle nested functions perfectly)
-            brace_count = 1
-            pos = start
-            while pos < len(content) and brace_count > 0:
-                if content[pos] == '{':
-                    brace_count += 1
-                elif content[pos] == '}':
-                    brace_count -= 1
-                pos += 1
-            function_ranges.append((match.start(), pos, match.group(1)))
-        
-        # Check declarations at module level (outside functions) and top-level exports
-        # These MUST be unique
-        module_level_declarations = {}
-        
-        # const/let/var declarations
+
+        # Build a list of ALL scope boundaries (named functions, arrow callbacks,
+        # describe/it/test/beforeEach blocks, etc.)
+        scope_ranges = self._build_scope_ranges(content)
+
+        module_level_declarations: dict = {}
+
         for match in re.finditer(r'(?:export\s+)?(?:const|let|var)\s+(\w+)\s*[:=]', content):
             name = match.group(1)
             pos = match.start()
-            
-            # Check if this is inside a function
-            in_function = False
-            for func_start, func_end, func_name in function_ranges:
-                if func_start < pos < func_end:
-                    in_function = True
-                    break
-            
-            # Only check module-level declarations for duplicates
-            # (same variable name is OK in different function scopes)
-            if not in_function:
-                if name in module_level_declarations:
-                    self.validation_errors.append(
-                        f"{path}: Duplicate module-level declaration of '{name}' "
-                        f"(lines ~{content[:match.start()].count(chr(10))+1} and "
-                        f"~{content[:module_level_declarations[name]].count(chr(10))+1})"
-                    )
-                else:
-                    module_level_declarations[name] = match.start()
-        
-        # function declarations (always module-level)
+
+            if self._is_inside_scope(pos, scope_ranges):
+                continue
+
+            if name in module_level_declarations:
+                self.validation_errors.append(
+                    f"{path}: Duplicate module-level declaration of '{name}' "
+                    f"(lines ~{content[:match.start()].count(chr(10))+1} and "
+                    f"~{content[:module_level_declarations[name]].count(chr(10))+1})"
+                )
+            else:
+                module_level_declarations[name] = match.start()
+
         for match in re.finditer(r'(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(', content):
             name = match.group(1)
+            if self._is_inside_scope(match.start(), scope_ranges):
+                continue
             if name in module_level_declarations:
                 self.validation_errors.append(
                     f"{path}: Duplicate declaration of function '{name}'"
                 )
             else:
                 module_level_declarations[name] = match.start()
-        
-        # class declarations (always module-level)
+
         for match in re.finditer(r'(?:export\s+)?class\s+(\w+)', content):
             name = match.group(1)
+            if self._is_inside_scope(match.start(), scope_ranges):
+                continue
             if name in module_level_declarations:
                 self.validation_errors.append(
                     f"{path}: Duplicate declaration of class '{name}'"
                 )
             else:
                 module_level_declarations[name] = match.start()
-    
+
+    @staticmethod
+    def _build_scope_ranges(content: str) -> list:
+        """
+        Build a list of (start, end) ranges for ALL scope-creating constructs:
+        named functions, arrow function callbacks (describe/it/test/beforeEach etc.),
+        and any `=> {` arrow function body.
+        """
+        ranges = []
+
+        # Named function declarations: function name(...) {
+        for m in re.finditer(
+            r'(?:export\s+)?(?:async\s+)?function\s+\w+\s*\([^)]*\)\s*(?::\s*[^{]+)?\s*\{',
+            content,
+        ):
+            end = FixValidator._find_matching_brace(content, m.end() - 1)
+            if end > m.start():
+                ranges.append((m.start(), end))
+
+        # Arrow function bodies: (...) => { or arg => {
+        # Covers describe(() => {, it(() => {, test(() => {, beforeEach(() => {, etc.
+        for m in re.finditer(r'=>\s*\{', content):
+            brace_pos = content.index('{', m.start())
+            end = FixValidator._find_matching_brace(content, brace_pos)
+            if end > m.start():
+                ranges.append((m.start(), end))
+
+        ranges.sort(key=lambda r: r[0])
+        return ranges
+
+    @staticmethod
+    def _find_matching_brace(content: str, open_pos: int) -> int:
+        """Find the position of the matching closing brace, skipping strings and comments."""
+        if open_pos >= len(content) or content[open_pos] != '{':
+            return open_pos
+        depth = 1
+        i = open_pos + 1
+        in_string = False
+        string_char = None
+        while i < len(content) and depth > 0:
+            ch = content[i]
+            if in_string:
+                if ch == string_char and content[i - 1] != '\\':
+                    in_string = False
+                i += 1
+                continue
+            if ch in ('"', "'", '`'):
+                in_string = True
+                string_char = ch
+                i += 1
+                continue
+            if content[i:i + 2] == '//':
+                while i < len(content) and content[i] != '\n':
+                    i += 1
+                continue
+            if content[i:i + 2] == '/*':
+                i += 2
+                while i < len(content) - 1 and content[i:i + 2] != '*/':
+                    i += 1
+                i += 2
+                continue
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+            i += 1
+        return i
+
+    @staticmethod
+    def _is_inside_scope(pos: int, ranges: list) -> bool:
+        """Check if a position falls inside any of the scope ranges."""
+        for start, end in ranges:
+            if start < pos < end:
+                return True
+            if start > pos:
+                break
+        return False
+
     def _check_basic_syntax(self, path: str, content: str) -> None:
         """Check for basic syntax errors."""
         
