@@ -200,9 +200,9 @@
         }
         .edit-btn { background: none; border-color: #444; color: #aaa; }
         .edit-btn:hover { border-color: #00d4ff; color: #00d4ff; }
-        .save-btn { background: #00d4ff; border-color: #00d4ff; color: #000; font-weight: 600; display: none; }
+        .save-btn { background: #00d4ff; border-color: #00d4ff; color: #000; font-weight: 600; }
         .save-btn:hover { background: #00a8cc; }
-        .cancel-btn { background: none; border-color: #555; color: #888; display: none; }
+        .cancel-btn { background: none; border-color: #555; color: #888; }
         .cancel-btn:hover { border-color: #ff4444; color: #ff4444; }
         .toast {
             position: fixed;
@@ -312,8 +312,8 @@
                         </div>
                         <div class="repo-card-actions">
                             <button class="edit-btn" onclick="startEdit('${p.jira_project_key}')">Edit</button>
-                            <button class="save-btn" id="save-${p.jira_project_key}" onclick="saveEdit('${p.jira_project_key}')">Save</button>
-                            <button class="cancel-btn" id="cancel-${p.jira_project_key}" onclick="cancelEdit('${p.jira_project_key}')">Cancel</button>
+                            <button class="save-btn" id="save-${p.jira_project_key}" onclick="saveEdit('${p.jira_project_key}')" style="display:none">Save</button>
+                            <button class="cancel-btn" id="cancel-${p.jira_project_key}" onclick="cancelEdit('${p.jira_project_key}')" style="display:none">Cancel</button>
                         </div>
                     </div>
                     <div class="repo-fields">
@@ -384,8 +384,8 @@
             card.querySelectorAll('.view-mode').forEach(el => el.style.display = 'none');
             card.querySelectorAll('.edit-mode').forEach(el => el.style.display = '');
             card.querySelector('.edit-btn').style.display = 'none';
-            document.getElementById('save-' + key).style.display = '';
-            document.getElementById('cancel-' + key).style.display = '';
+            document.getElementById('save-' + key).style.display = 'inline-block';
+            document.getElementById('cancel-' + key).style.display = 'inline-block';
         }
 
         function cancelEdit(key) { fetchRepos(); }
