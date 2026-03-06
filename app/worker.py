@@ -773,8 +773,14 @@ def _handle_execute_subtask(ctx: Context, subtask: JiraIssue, run_id: Optional[i
     # Execute
     result: ExecutionResult = execute_subtask(subtask, run_id)
 
+    # If post-mortem re-queued the run, don't transition or comment — it will retry
+    if result.summary and "re-queued by post-mortem" in result.summary.lower():
+        print(f"Post-mortem re-queued {subtask.key} — skipping Jira transition")
+        return
+
     # Comment + transition + assign
-    ctx.jira.add_comment(subtask.key, result.jira_comment)
+    if result.jira_comment:
+        ctx.jira.add_comment(subtask.key, result.jira_comment)
     ctx.jira.transition_to_status(subtask.key, settings.JIRA_STATUS_IN_TESTING)
     ctx.jira.assign_issue(subtask.key, settings.JIRA_HUMAN_ACCOUNT_ID)
 

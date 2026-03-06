@@ -126,6 +126,22 @@ _CORE_RULES = [
     },
     {
         "repo_name": "*",
+        "category": "type_error",
+        "scope": "global",
+        "severity": "critical",
+        "rule_text": (
+            "When you get 'Type X is not assignable to type Y' where both are interfaces "
+            "(not primitives), ALWAYS check the existing codebase for the correct type to use. "
+            "Look at imports and function signatures in the existing code to find what type "
+            "the function actually expects. Common pattern: if a function expects "
+            "MovewareRequestContext but you have TenantCredentials, find how existing code "
+            "constructs a MovewareRequestContext from TenantCredentials (usually by spreading "
+            "or adding the missing properties like companyId). NEVER just cast with 'as any' — "
+            "find the correct construction pattern from existing code."
+        ),
+    },
+    {
+        "repo_name": "*",
         "category": "implementation",
         "scope": "global",
         "severity": "critical",
