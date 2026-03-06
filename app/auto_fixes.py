@@ -54,18 +54,22 @@ def try_all_auto_fixes(
         auto_fix_component_props_mismatch,
         auto_fix_double_prefix_import,
         auto_fix_phantom_import,
+        auto_fix_jsx_no_undef,
     ]
     
+    all_applied = []
     for auto_fix_func in auto_fixes:
         try:
             success, description = auto_fix_func(error_msg, repo_path, is_node_project)
             if success:
                 print(f"✅ Auto-fix applied: {description}")
-                return True, description
+                all_applied.append(description)
         except Exception as e:
             print(f"Warning: Auto-fix {auto_fix_func.__name__} failed: {e}")
             continue
     
+    if all_applied:
+        return True, "; ".join(all_applied)
     return False, ""
 
 
@@ -403,6 +407,28 @@ def auto_fix_component_props_mismatch(
     return True, f"Added {total_modified} props ({names_str}) to {props_type} in {files_str}"
 
 
+def _resolve_local_import(repo_path: Path, import_path: str) -> bool:
+    """Check if a local import (@/ or ./) resolves to an existing file."""
+    if import_path.startswith("@/"):
+        rel = import_path[2:]  # strip @/
+        base = repo_path / rel
+    elif import_path.startswith("./") or import_path.startswith("../"):
+        return True  # relative imports are harder to check, skip
+    else:
+        return True  # not a local import
+
+    extensions = ["", ".ts", ".tsx", ".js", ".jsx", "/index.ts", "/index.tsx", "/index.js", "/index.jsx"]
+    for ext in extensions:
+        if (base.parent / (base.name + ext)).exists():
+            return True
+    # Also check src/ prefix since @/ can map to src/
+    src_base = repo_path / "src" / rel
+    for ext in extensions:
+        if (src_base.parent / (src_base.name + ext)).exists():
+            return True
+    return False
+
+
 def auto_fix_phantom_import(
     error_msg: str,
     repo_path: Path,
@@ -410,10 +436,8 @@ def auto_fix_phantom_import(
 ) -> Tuple[bool, str]:
     """
     Remove import lines that reference non-existent local modules.
-    Handles: "Cannot find module '@/components/customers/JobHistoryList'"
-    
-    Instead of creating the missing module (which causes cascading errors),
-    remove the import and any usage of the imported names.
+    When triggered, proactively scans ALL imports in the affected file(s)
+    and removes any that don't resolve — prevents cascading Module not found errors.
     """
     if not is_node_project:
         return False, ""
@@ -427,8 +451,6 @@ def auto_fix_phantom_import(
     if not match:
         return False, ""
 
-    phantom_module = match.group(1)
-
     # Find which file has this import
     file_match = re.search(r'\./([^\s:]+\.tsx?)', error_msg)
     if not file_match:
@@ -438,26 +460,77 @@ def auto_fix_phantom_import(
     if not error_file.exists():
         return False, ""
 
-    try:
-        content = error_file.read_text(encoding="utf-8")
-        lines = content.split('\n')
-        new_lines = []
-        removed_imports = []
+    all_removed = []
+    files_fixed = []
 
-        for line in lines:
-            # Check if this line imports from the phantom module
-            if re.search(rf"""from\s+['"]{re.escape(phantom_module)}['"]""", line):
-                removed_imports.append(line.strip())
-                continue
-            new_lines.append(line)
+    # Also check the same filename under src/ (duplicate file issue)
+    candidate_files = [error_file]
+    src_variant = repo_path / "src" / file_match.group(1)
+    if src_variant.exists() and src_variant != error_file:
+        candidate_files.append(src_variant)
+    nosrc_variant = repo_path / file_match.group(1).replace("src/", "", 1) if "src/" in file_match.group(1) else None
+    if nosrc_variant and nosrc_variant.exists() and nosrc_variant not in candidate_files:
+        candidate_files.append(nosrc_variant)
 
-        if not removed_imports:
-            return False, ""
+    for target_file in candidate_files:
+        try:
+            content = target_file.read_text(encoding="utf-8")
+            lines = content.split('\n')
+            new_lines = []
+            removed_in_file = []
 
-        error_file.write_text('\n'.join(new_lines), encoding="utf-8")
-        return True, f"Removed phantom import '{phantom_module}' from {file_match.group(1)}"
-    except Exception:
-        return False, ""
+            removed_symbols = set()
+            for line in lines:
+                # Extract import path from this line
+                imp_match = re.search(r"""(?:from|import)\s+['"](@/[^'"]+|\.{1,2}/[^'"]+)['"]""", line)
+                if imp_match:
+                    imp_path = imp_match.group(1)
+                    if not _resolve_local_import(repo_path, imp_path):
+                        removed_in_file.append(imp_path)
+                        # Extract imported symbol names to remove JSX usage
+                        sym_match = re.search(r'import\s+\{([^}]+)\}', line)
+                        if sym_match:
+                            for sym in sym_match.group(1).split(','):
+                                removed_symbols.add(sym.strip().split(' as ')[-1].strip())
+                        # Default import
+                        def_match = re.search(r'import\s+(\w+)\s+from', line)
+                        if def_match:
+                            removed_symbols.add(def_match.group(1))
+                        continue
+                new_lines.append(line)
+
+            # Remove JSX usage of removed components: <ComponentName ...> and </ComponentName>
+            if removed_symbols:
+                filtered = []
+                for line in new_lines:
+                    skip = False
+                    for sym in removed_symbols:
+                        if re.search(rf'</?{re.escape(sym)}[\s/>]', line):
+                            skip = True
+                            break
+                    if not skip:
+                        filtered.append(line)
+                    else:
+                        # Replace with empty fragment to preserve structure
+                        stripped = line.lstrip()
+                        if stripped.startswith('</'):
+                            continue  # closing tag, just remove
+                        indent = line[:len(line) - len(stripped)]
+                        filtered.append(f"{indent}{{/* removed: {stripped.strip()} */}}")
+                new_lines = filtered
+
+            if removed_in_file:
+                target_file.write_text('\n'.join(new_lines), encoding="utf-8")
+                rel_path = target_file.relative_to(repo_path)
+                files_fixed.append(str(rel_path))
+                all_removed.extend(removed_in_file)
+        except Exception:
+            continue
+
+    if all_removed:
+        summary = f"Removed {len(all_removed)} phantom import(s) ({', '.join(all_removed[:3])}) from {', '.join(files_fixed)}"
+        return True, summary
+    return False, ""
 
 
 def auto_fix_import_path_leading_slash(
@@ -1671,5 +1744,76 @@ def auto_fix_nextjs_route_export(
             return True, f"Removed non-handler exports from Next.js route file {rel_path}"
     except Exception as e:
         print(f"Next.js route export fix failed for {rel_path}: {e}")
+
+    return False, ""
+
+
+def auto_fix_jsx_no_undef(
+    error_msg: str,
+    repo_path: Path,
+    is_node_project: bool
+) -> Tuple[bool, str]:
+    """
+    Fix 'X' is not defined. react/jsx-no-undef by replacing the undefined
+    component usage with a placeholder div or removing the JSX entirely.
+    This prevents cascading errors when a component import was removed
+    (phantom import) but JSX usage remains.
+    """
+    if not is_node_project:
+        return False, ""
+
+    match = re.search(
+        r'\./([^\s:]+\.tsx?)\s*\n\s*\d+:\d+\s+Error:\s+[\'"]?(\w+)[\'"]?\s+is not defined',
+        error_msg,
+    )
+    if not match:
+        # Simpler inline pattern
+        match = re.search(
+            r'\./([^\s:]+\.tsx?).*?[\'"](\w+)[\'"]\s+is not defined',
+            error_msg,
+        )
+    if not match:
+        return False, ""
+
+    file_path = repo_path / match.group(1)
+    undef_component = match.group(2)
+
+    if not file_path.exists():
+        return False, ""
+
+    try:
+        content = file_path.read_text(encoding="utf-8")
+        lines = content.split('\n')
+        new_lines = []
+        removed = False
+
+        in_undef_block = 0
+        for line in lines:
+            # Self-closing: <Component ... />
+            if re.search(rf'<{re.escape(undef_component)}\b[^>]*/>', line):
+                indent = line[:len(line) - len(line.lstrip())]
+                new_lines.append(f"{indent}{{/* removed undefined: {undef_component} */}}")
+                removed = True
+                continue
+            # Opening tag: <Component ...>  (not a self-closing or line with closing tag)
+            if re.search(rf'<{re.escape(undef_component)}[\s>]', line) and not re.search(rf'</{re.escape(undef_component)}>', line):
+                in_undef_block += 1
+                removed = True
+                continue
+            # Closing tag: </Component>
+            if re.search(rf'</{re.escape(undef_component)}>', line):
+                if in_undef_block > 0:
+                    in_undef_block -= 1
+                removed = True
+                continue
+            if in_undef_block > 0:
+                continue
+            new_lines.append(line)
+
+        if removed:
+            file_path.write_text('\n'.join(new_lines), encoding="utf-8")
+            return True, f"Removed undefined component '{undef_component}' usage from {match.group(1)}"
+    except Exception:
+        pass
 
     return False, ""

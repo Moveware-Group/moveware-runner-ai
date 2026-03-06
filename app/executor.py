@@ -2078,7 +2078,16 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         pass
     
     # Track the original error signature to detect cascading (new) errors
-    _original_error_files = set(re.findall(r'[./\w-]+\.(?:ts|tsx|js|jsx)', "\n".join(verification_errors)))
+    # Use a regex that handles Next.js dynamic route segments like [id], [slug], etc.
+    def _extract_error_basenames(text: str) -> set:
+        """Extract unique file basenames from error text (handles [id] in paths)."""
+        # Match filenames like page.tsx, route.ts, CustomerDetailShell.tsx etc.
+        basenames = set()
+        for m in re.finditer(r'([\w.-]+\.(?:ts|tsx|js|jsx))\b', text):
+            basenames.add(m.group(1))
+        return basenames
+    
+    _original_error_basenames = _extract_error_basenames("\n".join(verification_errors))
     
     while verification_errors and fix_attempt < MAX_FIX_ATTEMPTS:
         fix_attempt += 1
@@ -2103,26 +2112,33 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         print(f"Error summary: {error_msg[:200]}...")
         
         # Try auto-fixes FIRST before calling the LLM (cheaper, faster, more reliable)
+        # Run in a loop — one auto-fix may expose another (e.g. phantom import -> jsx-no-undef)
+        _autofix_rounds = 0
+        _max_autofix_rounds = 5
         try:
             from .auto_fixes import try_all_auto_fixes
-            auto_success, auto_desc = try_all_auto_fixes(error_msg, repo_path, is_node_project)
-            if auto_success:
-                print(f"✅ Auto-fix applied in fix loop: {auto_desc}")
-                # Re-run build to check if auto-fix resolved it
+            while _autofix_rounds < _max_autofix_rounds:
+                _autofix_rounds += 1
+                auto_success, auto_desc = try_all_auto_fixes(error_msg, repo_path, is_node_project)
+                if not auto_success:
+                    break
+                print(f"✅ Auto-fix round {_autofix_rounds}: {auto_desc}")
                 _af_result = subprocess.run(
                     ["npm", "run", "build"],
                     cwd=repo_path, capture_output=True, text=True,
                     timeout=180, env=_get_nextjs_build_env(),
                 )
                 if _af_result.returncode == 0:
-                    print(f"✅ Build passed after auto-fix!")
+                    print(f"✅ Build passed after auto-fix round {_autofix_rounds}!")
                     verification_errors = []
                     break
                 else:
                     _af_err = _af_result.stderr if _af_result.stderr else _af_result.stdout
-                    print(f"Auto-fix applied but build still failing, continuing to LLM fix...")
+                    print(f"Auto-fix round {_autofix_rounds} applied but build still failing, trying more auto-fixes...")
                     verification_errors = [f"Build still failing after auto-fix ({auto_desc}):\n{_af_err[:1000]}"]
                     error_msg = "\n\n".join(verification_errors)
+            if not verification_errors:
+                break
         except Exception as e:
             print(f"Auto-fix in loop failed: {e}")
         
@@ -2429,10 +2445,24 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             f"   1. Read the User interface definition\n"
             f"   2. Check what properties it HAS (maybe it's 'id' not 'userId'?)\n"
             f"   3. Either add 'userId' to interface OR change code to use existing property\n\n"
+            f"❌ Error: \"Property 'X' does not exist on type 'IntrinsicAttributes & SomeProps'\"\n"
+            f"✅ MINIMAL FIX — DO NOT REWRITE THE WHOLE FILE:\n"
+            f"   1. Find the SomeProps interface/type definition in the component file\n"
+            f"   2. Add the missing property as OPTIONAL (e.g. X?: Type)\n"
+            f"   3. ONLY change the interface — do NOT rewrite the rest of the component\n"
+            f"   4. NEVER add new imports — the fix is ONLY adding a property to an interface\n"
+            f"   5. Alternatively, remove the prop from the caller (page.tsx) if it shouldn't be passed\n\n"
             f"❌ Error: \"Type string is not assignable to type number\"\n"
             f"✅ Fix: Convert the type: parseInt(value) or value.toString() depending on direction\n\n"
             f"❌ Error: \"Unexpected token\"\n"
             f"✅ Fix: Check for missing brackets, quotes, commas, or semicolons\n\n"
+            f"**🎯 MINIMAL FIX PRINCIPLE — MOST IMPORTANT RULE:**\n"
+            f"Make the SMALLEST possible change to fix the error. Do NOT:\n"
+            f"- Rewrite entire files when only one line needs to change\n"
+            f"- Add new imports unless absolutely necessary for the specific fix\n"
+            f"- Refactor or restructure code that isn't related to the error\n"
+            f"- Create new components or modules — fix what exists\n"
+            f"- Replace the existing file with a newly written version — preserve existing code\n\n"
             f"**DO NOT MAKE THESE MISTAKES:**\n"
             f"- ❌ Guessing what's in a file without reading it\n"
             f"- ❌ Assuming export names match (check casing!)\n"
@@ -2747,11 +2777,8 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                         # CASCADING ERROR DETECTION + ROLLBACK
                         # If the new error is in a DIFFERENT file than the original,
                         # the fix made things worse. Rollback to checkpoint.
-                        new_error_files = set(re.findall(
-                            r'[./\w-]+\.(?:ts|tsx|js|jsx)',
-                            error_output[:2000]
-                        ))
-                        new_files_introduced = new_error_files - _original_error_files
+                        new_error_basenames = _extract_error_basenames(error_output[:2000])
+                        new_files_introduced = new_error_basenames - _original_error_basenames
                         if new_files_introduced and _checkpoint_hash:
                             print(f"⚠️  CASCADING ERROR DETECTED: fix introduced errors in new files: {new_files_introduced}")
                             print(f"🔄 Rolling back to checkpoint {_checkpoint_hash[:8]} to prevent snowball...")
@@ -2771,6 +2798,9 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                                 # Reset verification errors to the original error
                                 # so the next attempt focuses on the ORIGINAL problem
                                 verification_errors = list(verification_errors[:1]) if verification_errors else verification_errors
+                                # Update baseline to include current error files —
+                                # prevents false cascade detection on subsequent attempts
+                                _original_error_basenames = _original_error_basenames | new_error_basenames
                             except Exception as e:
                                 print(f"⚠️  Rollback failed: {e}")
                     else:
