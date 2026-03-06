@@ -112,6 +112,18 @@ _CORE_RULES = [
             "'moveware-client.ts'. Use the existing Rest API v2 service layer instead."
         ),
     },
+    {
+        "repo_name": "*",
+        "category": "type_error",
+        "scope": "global",
+        "severity": "warn",
+        "rule_text": (
+            "When passing a typed object (interface/class) to a function expecting "
+            "Record<string, unknown>, cast it: `obj as Record<string, unknown>`. "
+            "TypeScript interfaces lack index signatures that Record requires. "
+            "Do NOT try to modify the interface — cast at the call site."
+        ),
+    },
 ]
 
 
@@ -387,6 +399,22 @@ def extract_lessons_from_error(
             f"Function call had {got} args but expected {expected}. "
             "Always read function signatures before calling them.",
             severity="warn",
+        )
+        count += 1
+
+    # 8. Index signature / Record<string, unknown> mismatches
+    for m in re.finditer(
+        r"Index signature for type ['\"]string['\"] is missing in type ['\"](\w+)['\"]",
+        error_text,
+    ):
+        type_name = m.group(1)
+        record_lesson(
+            repo_name,
+            "index_signature",
+            f"Type '{type_name}' cannot be passed where Record<string, unknown> is expected. "
+            f"Cast with `obj as Record<string, unknown>` at the call site.",
+            severity="critical",
+            scope=type_name,
         )
         count += 1
 
