@@ -444,7 +444,7 @@ def _get_post_mortem_count(run_id: int) -> int:
     try:
         with connect() as conn:
             row = conn.execute(
-                "SELECT COUNT(*) FROM events WHERE run_id=? AND message LIKE '%post-mortem%'",
+                "SELECT COUNT(*) FROM events WHERE run_id=? AND message LIKE '%re-queued by post-mortem%'",
                 (run_id,),
             ).fetchone()
         return row[0] if row else 0
