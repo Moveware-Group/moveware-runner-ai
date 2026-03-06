@@ -513,6 +513,19 @@ def _all_subtasks_done(ctx: Context, parent_key: str) -> bool:
     return True
 
 
+def _all_subtasks_in_testing_or_done(ctx: Context, parent_key: str) -> bool:
+    """Check if every subtask is in 'In Testing' or 'Done' (nothing still in progress)."""
+    subtasks = ctx.jira.get_subtasks(parent_key)
+    if not subtasks:
+        return False
+    ready_statuses = {settings.JIRA_STATUS_IN_TESTING, settings.JIRA_STATUS_DONE}
+    for st in subtasks:
+        status = ((st.get("fields") or {}).get("status") or {}).get("name")
+        if status not in ready_statuses:
+            return False
+    return True
+
+
 def _handle_plan_parent(ctx: Context, issue: JiraIssue, run_id: Optional[int] = None) -> None:
     if not _is_parent(issue):
         return
@@ -832,18 +845,35 @@ def _handle_execute_subtask(ctx: Context, subtask: JiraIssue, run_id: Optional[i
         enqueue_run(issue_key=next_key, payload={"issue_key": next_key})
     else:
         print(f"ℹ No more subtasks to start for Story {subtask.parent_key} (all in progress/testing/done)")
+        # All subtasks processed — check if Story should move to In Testing
+        if parent and parent.issue_type == "Story":
+            _check_story_completion(ctx, parent)
 
 
 def _check_story_completion(ctx: Context, story: JiraIssue) -> None:
     """
-    Check if all sub-tasks are done and mark Story PR as ready.
-    If Story is part of an Epic, automatically start next Story in sequence.
+    Check sub-task progress and update Story status accordingly:
+    - All subtasks in Testing/Done → move Story to In Testing
+    - All subtasks Done → mark Story PR as ready + start next Story
     """
     if story.issue_type != "Story":
         return
-    
+
+    # If all subtasks are at least in testing, move Story to In Testing
+    # (only if Story isn't already there or further along)
+    if story.status not in (settings.JIRA_STATUS_IN_TESTING, settings.JIRA_STATUS_DONE):
+        if _all_subtasks_in_testing_or_done(ctx, story.key):
+            subtasks = ctx.jira.get_subtasks(story.key)
+            total = len(subtasks) if subtasks else 0
+            ctx.jira.add_comment(
+                story.key,
+                f"📋 All {total} sub-task(s) are now in testing. Moving Story to In Testing for review."
+            )
+            ctx.jira.transition_to_status(story.key, settings.JIRA_STATUS_IN_TESTING)
+            ctx.jira.assign_issue(story.key, settings.JIRA_HUMAN_ACCOUNT_ID)
+            print(f"📋 Story {story.key} moved to In Testing (all {total} subtasks in testing/done)")
+
     if _all_subtasks_done(ctx, story.key):
-        # Mark this Story as complete
         ctx.jira.add_comment(
             story.key,
             "✅ All sub-tasks completed! Story PR is ready for review."
