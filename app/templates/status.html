@@ -587,6 +587,14 @@
             <select id="boardFilter" style="background:#1a1a1a;color:#e0e0e0;border:1px solid #555;padding:5px 10px;border-radius:4px;margin-right:20px;cursor:pointer">
                 <option value="all" selected>All Boards</option>
             </select>
+            <span class="detail-label">Status:</span>
+            <select id="statusFilter" style="background:#1a1a1a;color:#e0e0e0;border:1px solid #555;padding:5px 10px;border-radius:4px;margin-right:20px;cursor:pointer">
+                <option value="all" selected>All</option>
+                <option value="active">Active (Running)</option>
+                <option value="failed">Failed / Stuck</option>
+                <option value="completed">Completed</option>
+                <option value="queued">Queued</option>
+            </select>
             <span class="detail-label">Time Range:</span>
             <select id="timeFilter" style="background:#1a1a1a;color:#e0e0e0;border:1px solid #555;padding:5px 10px;border-radius:4px;margin-right:20px;cursor:pointer">
                 <option value="1">Last Hour</option>
@@ -654,6 +662,7 @@
         let detailMode = 'detailed';
         let timeFilter = 24; // default to 24 hours
         let boardFilter = 'all'; // default to all boards
+        let statusFilter = 'all'; // default to all statuses
         let configBoards = []; // boards from repos.json (populated on load)
         let autoRefreshInterval = null;
         const resettingRuns = new Set(); // Run IDs we just reset - show "Running" until complete/fail
@@ -867,13 +876,27 @@
                 boardFilter = validValue;
             }
             
-            // Filter runs by selected board
-            const filteredRuns = boardFilter === 'all' 
+            // Filter runs by board
+            let filteredRuns = boardFilter === 'all' 
                 ? runs 
                 : runs.filter(run => getBoard(run.issue_key) === boardFilter);
-            
+
+            // Filter by status
+            if (statusFilter === 'active') {
+                filteredRuns = filteredRuns.filter(r => ['running', 'claimed'].includes(r.status));
+            } else if (statusFilter === 'failed') {
+                filteredRuns = filteredRuns.filter(r => r.status === 'failed' || (
+                    ['running', 'claimed'].includes(r.status) && r.created_at && (Date.now()/1000 - r.created_at) > 300
+                ));
+            } else if (statusFilter === 'completed') {
+                filteredRuns = filteredRuns.filter(r => r.status === 'completed');
+            } else if (statusFilter === 'queued') {
+                filteredRuns = filteredRuns.filter(r => r.status === 'queued');
+            }
+
             if (filteredRuns.length === 0) {
-                container.innerHTML = `<div class="no-data">No runs found for board: ${boardFilter}</div>`;
+                const label = statusFilter !== 'all' ? `status: ${statusFilter}` : `board: ${boardFilter}`;
+                container.innerHTML = `<div class="no-data">No runs found for ${label}</div>`;
                 document.getElementById('resetStuckBtn').style.display = 'none';
                 return;
             }
@@ -1205,6 +1228,12 @@
         // Board filter change
         document.getElementById('boardFilter').addEventListener('change', (e) => {
             boardFilter = e.target.value;
+            fetchStatus();
+        });
+
+        // Status filter change
+        document.getElementById('statusFilter').addEventListener('change', (e) => {
+            statusFilter = e.target.value;
             fetchStatus();
         });
         
