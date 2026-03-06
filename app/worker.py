@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from .config import settings, PARENT_PLAN_COMMENT_PREFIX
-from .db import claim_next_run, init_db, update_run, add_event, save_plan, get_plan, add_progress_event, enqueue_run
+from .db import claim_next_run, connect, init_db, update_run, add_event, save_plan, get_plan, add_progress_event, enqueue_run
 from .executor import ExecutionResult, execute_subtask
 from .jira import JiraClient
 from .jira_adf import adf_to_plain_text
@@ -1406,6 +1406,18 @@ def process_run(ctx: Context, run_id: int, issue_key: str, payload: Dict[str, An
         add_event(run_id, "error", f"Could not fetch issue {issue_key}", {})
         update_run(run_id, status="failed", last_error="Could not fetch issue from Jira")
         return
+
+    # Persist the Jira summary into payload_json so the dashboard can display it
+    if issue.summary:
+        try:
+            payload["summary"] = issue.summary
+            with connect() as cx:
+                cx.execute(
+                    "UPDATE runs SET payload_json = ? WHERE id = ?",
+                    (json.dumps(payload), run_id),
+                )
+        except Exception:
+            pass
 
     # Log issue state for debugging
     add_event(run_id, "info", f"Issue state check", {
