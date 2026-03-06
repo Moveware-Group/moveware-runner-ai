@@ -618,9 +618,7 @@ async def status_api(detail: str = "summary", hours: str = "24") -> Dict[str, An
         with connect() as conn:
             cursor = conn.cursor()
             
-            # Calculate time cutoff
             if hours == "all":
-                # Get all runs, but limit to reasonable number
                 cursor.execute("""
                     SELECT 
                         id,
@@ -629,7 +627,8 @@ async def status_api(detail: str = "summary", hours: str = "24") -> Dict[str, An
                         locked_by,
                         locked_at,
                         created_at,
-                        updated_at
+                        updated_at,
+                        payload_json
                     FROM runs
                     ORDER BY id DESC
                     LIMIT 200
@@ -646,7 +645,8 @@ async def status_api(detail: str = "summary", hours: str = "24") -> Dict[str, An
                         locked_by,
                         locked_at,
                         created_at,
-                        updated_at
+                        updated_at,
+                        payload_json
                     FROM runs
                     WHERE created_at > ?
                     ORDER BY id DESC
@@ -660,14 +660,22 @@ async def status_api(detail: str = "summary", hours: str = "24") -> Dict[str, An
             for run in runs:
                 run_id = run[0]
                 run_status = run[2]
+                payload_raw = run[7] if len(run) > 7 else None
+                summary = ""
+                if payload_raw:
+                    try:
+                        summary = json.loads(payload_raw).get("summary", "")
+                    except Exception:
+                        pass
                 run_data = {
                     "run_id": run_id,
                     "issue_key": run[1],
+                    "summary": summary,
                     "status": run_status,
                     "locked_by": run[3],
-                    "locked_at": run[4],  # When worker claimed it
+                    "locked_at": run[4],
                     "created_at": run[5],
-                    "completed_at": run[6],  # updated_at (used as completion time for completed/failed)
+                    "completed_at": run[6],
                     "progress_events": []
                 }
                 
