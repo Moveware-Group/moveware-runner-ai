@@ -56,9 +56,10 @@ def retry_with_backoff(
 class OpenAIClient:
     """Minimal OpenAI Responses API client (no SDK dependency)."""
 
-    def __init__(self, api_key: str, base_url: Optional[str] = None):
+    def __init__(self, api_key: str, base_url: Optional[str] = None, timeout: int = 300):
         self.api_key = api_key
         self.base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
+        self.timeout = timeout
 
     def chat_completions_create(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Standard OpenAI Chat Completions API with retry."""
@@ -68,7 +69,7 @@ class OpenAIClient:
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
             }
-            r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=180)
+            r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=self.timeout)
             if r.status_code >= 400:
                 raise RuntimeError(f"OpenAI error {r.status_code}: {r.text}")
             return r.json()
@@ -83,7 +84,7 @@ class OpenAIClient:
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
             }
-            r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=180)
+            r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=self.timeout)
             if r.status_code >= 400:
                 raise RuntimeError(f"OpenAI error {r.status_code}: {r.text}")
             return r.json()

@@ -312,7 +312,11 @@ def generate_plan(
         add_progress_event(run_id, "planning", "ChatGPT reviewing plan for gaps and improvements", {})
     
     print("Step 2: ChatGPT reviewing Claude's plan...")
-    openai_client = OpenAIClient(settings.OPENAI_API_KEY, base_url=settings.OPENAI_BASE_URL)
+    openai_client = OpenAIClient(
+        settings.OPENAI_API_KEY,
+        base_url=settings.OPENAI_BASE_URL,
+        timeout=settings.OPENAI_TIMEOUT_SECONDS
+    )
     
     review_prompt = (
         f"Review this implementation plan for Epic: {issue.key}\n\n"

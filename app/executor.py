@@ -2411,7 +2411,8 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                 from app.llm_openai import OpenAIClient
                 openai_client = OpenAIClient(
                     api_key=settings.OPENAI_API_KEY,
-                    base_url=settings.OPENAI_BASE_URL
+                    base_url=settings.OPENAI_BASE_URL,
+                    timeout=settings.OPENAI_TIMEOUT_SECONDS
                 )
                 fix_text, fix_usage = openai_client.responses_text_with_usage(
                     model=settings.OPENAI_MODEL,

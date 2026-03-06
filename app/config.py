@@ -50,6 +50,7 @@ class Settings:
     OPENAI_API_KEY: str = env("OPENAI_API_KEY", required=True)
     OPENAI_MODEL: str = env("OPENAI_MODEL", required=True)
     OPENAI_BASE_URL: str = env("OPENAI_BASE_URL", required=True)
+    OPENAI_TIMEOUT_SECONDS: int = int(env("OPENAI_TIMEOUT_SECONDS", default="300"))  # 5 min for large fix requests
 
     ANTHROPIC_API_KEY: str = env("ANTHROPIC_API_KEY", required=True)
     ANTHROPIC_MODEL: str = env("ANTHROPIC_MODEL", required=True)
