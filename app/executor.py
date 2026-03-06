@@ -2362,6 +2362,8 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             f"- ❌ Providing partial file content (must be COMPLETE)\n"
             f"- ❌ Wrapping JSON in markdown code fences\n"
             f"- ❌ NEVER create or use MovewareClient — use Rest API v2 (fetch/axios) instead\n\n"
+            f"**CRITICAL:** Your response MUST be valid JSON only. Start with {{ and end with }}. "
+            f"No markdown, no explanation before or after. Raw JSON only.\n\n"
             f"**REMEMBER:** Read → Verify → Fix → Verify again. Focus ONLY on fixing build errors."
         )
         
@@ -2370,18 +2372,27 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             
             if model_provider == "anthropic":
                 # Use Claude with cached context (skills_content in scope from above)
-                fix_raw = client.messages_create({
-                    "model": settings.ANTHROPIC_MODEL,
-                    "system": _build_system_with_cache(comprehensive_context, skills_content),  # Cached!
-                    "messages": [{"role": "user", "content": fix_prompt}],
-                    "max_tokens": 16000,
-                    "temperature": 1,
-                    "thinking": {
-                        "type": "enabled",
-                        "budget_tokens": 8000  # Increased for error fixing
-                    }
-                })
-                
+                # Retry once if we get empty response (transient API/thinking issues)
+                fix_text = ""
+                for claude_attempt in range(2):
+                    fix_raw = client.messages_create({
+                        "model": settings.ANTHROPIC_MODEL,
+                        "system": _build_system_with_cache(comprehensive_context, skills_content),  # Cached!
+                        "messages": [{"role": "user", "content": fix_prompt}],
+                        "max_tokens": 16000,
+                        "temperature": 1,
+                        "thinking": {
+                            "type": "enabled",
+                            "budget_tokens": 4000  # Leave headroom for actual fix JSON output
+                        }
+                    })
+                    fix_text = AnthropicClient.extract_text(fix_raw)
+                    if fix_text and "{" in fix_text:
+                        break
+                    if claude_attempt == 0:
+                        print(f"⚠ Claude returned empty/invalid response, retrying once...")
+                    else:
+                        print(f"⚠ Claude returned empty response again after retry")
                 # Track token usage for fix attempts
                 if metrics and fix_raw.get("usage"):
                     usage = fix_raw["usage"]
@@ -2389,15 +2400,12 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                     metrics.total_output_tokens += usage.get("output_tokens", 0)
                     metrics.cached_tokens += usage.get("cache_read_input_tokens", 0)
                     metrics.self_heal_attempts += 1
-                    # Recalculate cost
                     metrics.estimated_cost = calculate_cost(
                         settings.ANTHROPIC_MODEL,
                         metrics.total_input_tokens,
                         metrics.total_output_tokens,
                         metrics.cached_tokens
                     )
-                
-                fix_text = AnthropicClient.extract_text(fix_raw)
             else:
                 # Use OpenAI as fallback (using same client as planner)
                 from app.llm_openai import OpenAIClient
@@ -2452,6 +2460,12 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                     last_brace = fix_json_text.rfind('}')
                     if last_brace > first_brace:
                         fix_json_text = fix_json_text[first_brace:last_brace+1]
+            
+            # Fail fast if empty or no JSON structure (saves expensive repair attempts)
+            if not fix_json_text.strip() or '{' not in fix_json_text:
+                print(f"❌ {model_name} returned empty or non-JSON response (len={len(fix_text)})")
+                print(f"Raw response preview: {repr(fix_text[:200])}")
+                raise RuntimeError(f"{model_name}'s fix response was empty or not valid JSON")
             
             # Try to parse JSON with repair
             from .json_repair import try_parse_json
