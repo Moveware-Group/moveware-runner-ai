@@ -82,6 +82,67 @@ def _get_repo_settings(issue_key: str) -> dict:
         }
 
 
+def _resolve_file_questions(
+    questions: list, repo_path: Path
+) -> tuple:
+    """
+    Detect file-path references in Claude's questions and auto-read them.
+
+    Returns:
+        (file_contents: dict[str, str], remaining_questions: list[str])
+        file_contents maps relative paths to their content.
+        remaining_questions are questions that could NOT be resolved by reading files.
+    """
+    # Regex patterns that match common file-path references in questions
+    path_pattern = re.compile(
+        r"""(?:content of|provide|see|read|need|source|check|look at|view|inspect)[:\s]*"""
+        r"""[`'"]*"""
+        r"""((?:src|app|lib|components|pages|public|utils|hooks|services|types|config|prisma)"""
+        r"""[/\\][\w./\\[\]-]+\.(?:ts|tsx|js|jsx|css|json|prisma|md))""",
+        re.IGNORECASE,
+    )
+    # Also catch bare file paths like src/foo/bar.ts mentioned anywhere
+    bare_path_pattern = re.compile(
+        r"""((?:src|app|lib|components|pages|public|utils|hooks|services|types|config|prisma)"""
+        r"""[/\\][\w./\\[\]-]+\.(?:ts|tsx|js|jsx|css|json|prisma))"""
+    )
+
+    file_contents: dict = {}
+    remaining_questions: list = []
+    max_file_size = 30_000
+
+    for q in questions:
+        found_paths = set(path_pattern.findall(q))
+        found_paths.update(bare_path_pattern.findall(q))
+
+        # Normalise separators
+        normalised = {p.replace("\\", "/") for p in found_paths}
+
+        resolved_any = False
+        for rel_path in normalised:
+            if rel_path in file_contents:
+                resolved_any = True
+                continue
+            full_path = repo_path / rel_path
+            if full_path.exists() and full_path.is_file():
+                try:
+                    content = full_path.read_text(encoding="utf-8")
+                    if len(content) > max_file_size:
+                        content = content[:max_file_size] + f"\n... (truncated, {len(content)} total chars)"
+                    file_contents[rel_path] = content
+                    resolved_any = True
+                    print(f"  ✅ Auto-read: {rel_path} ({len(content):,} chars)")
+                except Exception as e:
+                    print(f"  ⚠️ Could not read {rel_path}: {e}")
+            else:
+                print(f"  ❌ File not found: {rel_path}")
+
+        if not resolved_any:
+            remaining_questions.append(q)
+
+    return file_contents, remaining_questions
+
+
 def _get_repo_context(repo_path: Path, issue: JiraIssue, include_all_code: bool = False) -> str:
     """Get comprehensive repository context for Claude, including code and history.
     
@@ -1111,33 +1172,130 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         print(f"Response (first 2000 chars): {json_text[:2000]}")
         raise RuntimeError(f"Failed to parse Claude response: {e}")
 
-    # Check if there are questions instead of implementation
+    # Check if there are questions instead of implementation.
+    # Many "questions" are actually requests for file contents — auto-resolve those.
     if "questions" in payload and payload["questions"]:
         questions = payload["questions"]
         questions_text = "\n".join([f"- {q}" for q in questions])
-        # Post to Jira so the human can answer and re-assign
-        summary = payload.get("summary", "") or payload.get("implementation_plan", "")
-        jira_comment = (
-            "❓ *Implementation blocked – clarification needed*\n\n"
-            "The AI Runner needs answers before it can implement:\n\n"
-            f"{questions_text}\n\n"
-            "----\n"
-            "*To unblock:* Add a comment below with your answers, then re-assign this sub-task to AI Runner."
-        )
-        if summary:
-            jira_comment = f"*Context:* {summary}\n\n" + jira_comment
-        try:
-            jira_client = JiraClient(
-                base_url=settings.JIRA_BASE_URL,
-                email=settings.JIRA_EMAIL,
-                api_token=settings.JIRA_API_TOKEN,
+        print(f"Claude asked {len(questions)} question(s) instead of implementing:")
+        print(questions_text)
+
+        # --- Auto-resolve: extract file paths from questions and read them ---
+        file_contents, remaining_questions = _resolve_file_questions(questions, repo_path)
+
+        if file_contents:
+            print(f"📂 Auto-resolved {len(file_contents)} file(s) from questions — re-prompting Claude")
+            if run_id:
+                add_progress_event(run_id, "executing",
+                    f"Claude asked for {len(file_contents)} file(s) — auto-reading and re-prompting",
+                    {"files_resolved": list(file_contents.keys())})
+
+            # Build follow-up content with the requested files
+            file_context_parts = [
+                "Here are the source files you requested. Now implement the task with NO further questions.\n"
+            ]
+            for fpath, fcontent in file_contents.items():
+                ext = fpath.rsplit(".", 1)[-1] if "." in fpath else ""
+                file_context_parts.append(f"**{fpath}:**\n```{ext}\n{fcontent}\n```\n")
+
+            if remaining_questions:
+                file_context_parts.append(
+                    "For your other questions — use your best judgement based on the code provided. "
+                    "Do NOT ask further questions. Implement the solution now.\n"
+                )
+
+            followup_content = "\n".join(file_context_parts)
+
+            # Re-call Claude with the file contents as a follow-up message
+            raw2 = client.messages_create({
+                "model": settings.ANTHROPIC_MODEL,
+                "system": _build_system_with_cache(context_info, skills_content, kb_context, type_context),
+                "messages": [
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": text},
+                    {"role": "user", "content": followup_content},
+                ],
+                "max_tokens": 16000,
+                "temperature": 1,
+                "thinking": {"type": "enabled", "budget_tokens": 8000},
+            })
+
+            # Track cost of follow-up call
+            if metrics and raw2.get("usage"):
+                usage2 = raw2["usage"]
+                metrics.total_input_tokens += usage2.get("input_tokens", 0)
+                metrics.total_output_tokens += usage2.get("output_tokens", 0)
+                metrics.cached_tokens += usage2.get("cache_read_input_tokens", 0)
+                metrics.estimated_cost = calculate_cost(
+                    settings.ANTHROPIC_MODEL,
+                    metrics.total_input_tokens,
+                    metrics.total_output_tokens,
+                    metrics.cached_tokens,
+                )
+                if run_id:
+                    add_progress_event(run_id, "executing",
+                        f"Follow-up response — cumulative cost: ${metrics.estimated_cost:.4f}",
+                        {"cost": round(metrics.estimated_cost, 4)})
+
+            text2 = AnthropicClient.extract_text(raw2)
+            json_text2 = text2.strip()
+
+            # Parse the follow-up response
+            lines2 = json_text2.split('\n')
+            if lines2[0].strip().startswith('```'):
+                lines2 = lines2[1:]
+                for i in range(len(lines2) - 1, -1, -1):
+                    if lines2[i].strip() == '```':
+                        lines2 = lines2[:i]
+                        break
+                json_text2 = '\n'.join(lines2)
+
+            stripped2 = json_text2.lstrip()
+            if stripped2 and stripped2[0] != '{':
+                extracted2 = extract_json_from_llm_response(json_text2)
+                if extracted2:
+                    json_text2 = extracted2
+
+            try:
+                payload2 = try_parse_json(json_text2, max_repair_attempts=3)
+                if payload2 is not None:
+                    payload = payload2
+                    print("✅ Follow-up response parsed successfully — proceeding with implementation")
+                    # If the follow-up STILL has questions and no files, fall through to human escalation
+                    if "questions" in payload and payload["questions"] and not payload.get("files"):
+                        remaining_questions = payload["questions"]
+                    else:
+                        remaining_questions = []
+                else:
+                    print("⚠️ Could not parse follow-up response, falling through to human escalation")
+            except Exception as e2:
+                print(f"⚠️ Failed to parse follow-up: {e2}")
+
+        # If there are still unresolved questions (not file requests), escalate to human
+        if remaining_questions and not payload.get("files"):
+            final_questions_text = "\n".join([f"- {q}" for q in remaining_questions])
+            summary = payload.get("summary", "") or payload.get("implementation_plan", "")
+            jira_comment = (
+                "❓ *Implementation blocked – clarification needed*\n\n"
+                "The AI Runner needs answers before it can implement:\n\n"
+                f"{final_questions_text}\n\n"
+                "----\n"
+                "*To unblock:* Add a comment below with your answers, then re-assign this sub-task to AI Runner."
             )
-            jira_client.add_comment(issue.key, jira_comment)
-            jira_client.assign(issue.key, settings.JIRA_HUMAN_ACCOUNT_ID)
-            jira_client.transition_to_status(issue.key, settings.JIRA_STATUS_BLOCKED)
-        except Exception as e:
-            print(f"Could not post questions to Jira: {e}")
-        raise RuntimeError(f"Implementation blocked by questions:\n{questions_text}")
+            if summary:
+                jira_comment = f"*Context:* {summary}\n\n" + jira_comment
+            try:
+                jira_client = JiraClient(
+                    base_url=settings.JIRA_BASE_URL,
+                    email=settings.JIRA_EMAIL,
+                    api_token=settings.JIRA_API_TOKEN,
+                )
+                jira_client.add_comment(issue.key, jira_comment)
+                jira_client.assign(issue.key, settings.JIRA_HUMAN_ACCOUNT_ID)
+                jira_client.transition_to_status(issue.key, settings.JIRA_STATUS_BLOCKED)
+            except Exception as e:
+                print(f"Could not post questions to Jira: {e}")
+            raise RuntimeError(f"Implementation blocked by questions:\n{final_questions_text}")
 
     # 4) Apply file changes
     files_changed = []

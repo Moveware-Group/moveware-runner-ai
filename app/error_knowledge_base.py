@@ -124,6 +124,19 @@ _CORE_RULES = [
             "Do NOT try to modify the interface — cast at the call site."
         ),
     },
+    {
+        "repo_name": "*",
+        "category": "implementation",
+        "scope": "global",
+        "severity": "critical",
+        "rule_text": (
+            "NEVER ask to 'see' or 'read' source files via questions. You MUST implement "
+            "using the code context provided. If writing tests, infer imports, function "
+            "signatures, and mock targets from the repository structure and file names. "
+            "Use standard patterns (e.g. default exports for route handlers, named exports "
+            "for utilities). Do NOT return a 'questions' array requesting file contents."
+        ),
+    },
 ]
 
 
