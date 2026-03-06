@@ -956,7 +956,19 @@
                     resettingRuns.delete(run.run_id);
                 }
             });
-            
+
+            // Sort: recently-reset first, then active, then by recency
+            filteredRuns.sort((a, b) => {
+                const aReset = resettingRuns.has(a.run_id) ? 1 : 0;
+                const bReset = resettingRuns.has(b.run_id) ? 1 : 0;
+                if (aReset !== bReset) return bReset - aReset;
+                const activeStates = ['running', 'claimed', 'queued'];
+                const aActive = activeStates.includes(a.status) ? 1 : 0;
+                const bActive = activeStates.includes(b.status) ? 1 : 0;
+                if (aActive !== bActive) return bActive - aActive;
+                return (b.updated_at || b.created_at || 0) - (a.updated_at || a.created_at || 0);
+            });
+
             container.innerHTML = filteredRuns.map(run => {
                 const isSuperseded = supersededRuns.has(run.run_id);
                 const statusClass = `status-${run.status}`;
