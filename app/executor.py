@@ -2758,7 +2758,12 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         # If re-queued, return gracefully instead of raising (the run will be retried)
         if pm_result and pm_result.get("requeued"):
             print(f"[post_mortem] Run re-queued — returning without raising error")
-            return {"status": "requeued_by_post_mortem", "run_id": run_id}
+            return ExecutionResult(
+                branch="",
+                pr_url=None,
+                summary="Re-queued by post-mortem analysis with new KB rules",
+                jira_comment="",
+            )
 
         raise RuntimeError(f"Build verification failed after {fix_attempt} attempts (Claude + OpenAI):\n{error_msg}")
     
