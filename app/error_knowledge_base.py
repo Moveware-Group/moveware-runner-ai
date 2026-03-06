@@ -219,6 +219,28 @@ _CORE_RULES = [
             "NEVER fix only page.tsx — you MUST also update the component's Props interface."
         ),
     },
+    {
+        "repo_name": "*",
+        "category": "import_resolution",
+        "scope": "global",
+        "severity": "critical",
+        "rule_text": (
+            "CASCADING MODULE ERROR PREVENTION:\n"
+            "Every import statement MUST resolve to a file that already exists in the "
+            "repository. NEVER create new files that import from other non-existent files.\n\n"
+            "BAD PATTERN (causes cascading errors):\n"
+            "1. Create CustomerDetailShell.tsx → imports from './CustomerProfile' (doesn't exist)\n"
+            "2. Fix: Create CustomerProfile.tsx → imports from './JobHistoryList' (doesn't exist)\n"
+            "3. Fix: Create JobHistoryList.tsx → imports from '@/lib/auth/verify' (doesn't exist)\n"
+            "...and so on forever.\n\n"
+            "CORRECT APPROACH:\n"
+            "- Build components self-contained — inline the functionality rather than splitting "
+            "into sub-components that don't exist yet\n"
+            "- Only import from modules that are ALREADY in the repository\n"
+            "- Check the repository context to see what files/exports are available\n"
+            "- If you need to create a new file, ensure ALL its imports resolve to existing files"
+        ),
+    },
 ]
 
 

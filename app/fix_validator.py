@@ -362,47 +362,99 @@ class FixValidator:
         content: str, 
         all_files: List[Dict[str, Any]]
     ) -> None:
-        """Validate that imports match available exports."""
+        """Validate that imports match available exports and resolve to real files."""
         
-        # Extract imports from this file
         imports = self._extract_imports(content)
         
-        # For each import, check if we're also updating the source file
+        # Collect all file paths being created/updated in this fix batch
+        fix_file_paths = set()
+        for file_op in all_files:
+            fp = file_op.get("path", "")
+            if fp:
+                fix_file_paths.add(self._normalize_path(fp))
+        
         for import_item in imports:
             source_path = import_item["from"]
             imported_names = import_item["names"]
+            
+            # Skip node_modules / external package imports
+            if not source_path.startswith('.') and not source_path.startswith('@/'):
+                continue
             
             # Resolve the import path to an actual file path
             resolved_path = self._resolve_import_path(path, source_path)
             
             if not resolved_path:
-                continue  # Can't resolve, skip validation
+                continue
             
-            # Check if we're updating this source file in this fix
+            # Check if any file matching this import exists on disk (with extensions)
+            file_exists_on_disk = self._find_file_on_disk(resolved_path)
+            
+            # Check if the file is being created/updated in this fix batch
+            file_in_fix = self._normalize_path(resolved_path) in fix_file_paths
+            if not file_in_fix:
+                # Also check with common extensions
+                for ext in ['.ts', '.tsx', '.js', '.jsx', '/index.ts', '/index.tsx']:
+                    if self._normalize_path(resolved_path + ext) in fix_file_paths:
+                        file_in_fix = True
+                        resolved_path = resolved_path + ext
+                        break
+            
+            # If the module doesn't exist anywhere, this fix will cause a build error
+            if not file_exists_on_disk and not file_in_fix:
+                self.validation_errors.append(
+                    f"{path}: Imports from '{source_path}' but this module does not exist "
+                    f"(not on disk, not in this fix). This will cause a 'Module not found' error."
+                )
+                continue
+            
+            # Now check that specific named imports are actually exported
             source_file_content = None
             for file_op in all_files:
                 if self._normalize_path(file_op.get("path", "")) == self._normalize_path(resolved_path):
                     source_file_content = file_op.get("content", "")
                     break
             
-            # If not in fix, try to read from disk
-            if not source_file_content:
-                source_file_path = self.repo_path / resolved_path
-                if source_file_path.exists():
-                    try:
-                        source_file_content = source_file_path.read_text(encoding="utf-8")
-                    except Exception:
-                        pass
+            if not source_file_content and file_exists_on_disk:
+                try:
+                    source_file_content = file_exists_on_disk.read_text(encoding="utf-8")
+                except Exception:
+                    pass
             
             if source_file_content:
-                # Check if imported names are exported
                 exports = self._extract_exports(source_file_content)
                 
                 for name in imported_names:
-                    if name not in exports:
+                    if name not in exports and "default" not in import_item:
                         self.validation_errors.append(
                             f"{path}: Imports '{name}' from '{source_path}' but it's not exported"
                         )
+    
+    def _find_file_on_disk(self, resolved_path: str) -> "Path | None":
+        """Check if a resolved import path matches any file on disk, trying common extensions."""
+        # Try the path as-is and with common extensions
+        candidates = [resolved_path]
+        for ext in ['.ts', '.tsx', '.js', '.jsx', '/index.ts', '/index.tsx', '/index.js']:
+            candidates.append(resolved_path + ext)
+        
+        # Also try without src/ prefix if it has one, and with src/ if it doesn't
+        alt_paths = []
+        for c in list(candidates):
+            if c.startswith('src/'):
+                alt_paths.append(c[4:])  # strip src/
+            else:
+                alt_paths.append('src/' + c)
+            # Also try app/ prefix for Next.js
+            if not c.startswith('app/'):
+                alt_paths.append('app/' + c)
+        candidates.extend(alt_paths)
+        
+        for candidate in candidates:
+            full_path = self.repo_path / candidate
+            if full_path.exists() and full_path.is_file():
+                return full_path
+        
+        return None
     
     def _extract_imports(self, content: str) -> List[Dict[str, Any]]:
         """Extract import statements from file content."""
@@ -452,9 +504,9 @@ class FixValidator:
         """Extract exported names from file content."""
         exports = set()
         
-        # export const/let/var/function/class NAME
+        # export const/let/var/function/class/async function/type/interface/enum NAME
         for match in re.finditer(
-            r'export\s+(?:const|let|var|function|class|async\s+function)\s+(\w+)',
+            r'export\s+(?:declare\s+)?(?:const|let|var|function|class|async\s+function|type|interface|enum)\s+(\w+)',
             content
         ):
             exports.add(match.group(1))
@@ -464,8 +516,10 @@ class FixValidator:
             names_str = match.group(1)
             for name in names_str.split(','):
                 name = name.strip()
+                # Handle 'type X' prefix
+                if name.startswith('type '):
+                    name = name[5:].strip()
                 if ' as ' in name:
-                    # export { foo as bar } - 'bar' is the exported name
                     name = name.split(' as ')[1].strip()
                 if name:
                     exports.add(name)
@@ -480,29 +534,23 @@ class FixValidator:
         """
         Resolve an import path to an actual file path.
         
-        Args:
-            importing_file: The file doing the importing (e.g., "src/app/page.tsx")
-            import_path: The import path (e.g., "@/lib/auth", "../utils")
-        
-        Returns:
-            Resolved file path or empty string if can't resolve
+        Returns the base path without extension — _find_file_on_disk will try extensions.
         """
-        # Handle TypeScript path aliases
         if import_path.startswith('@/'):
-            # @/ typically maps to src/
-            return import_path.replace('@/', 'src/')
+            # @/ can map to src/ or root depending on tsconfig
+            # Return the raw path without prefix; _find_file_on_disk tries both
+            return import_path[2:]  # strip @/ → "lib/auth/session"
         
-        # Handle relative imports
         if import_path.startswith('.'):
-            # Resolve relative to importing file's directory
             importing_dir = str(Path(importing_file).parent)
-            resolved = str((Path(importing_dir) / import_path).resolve())
-            # Make relative to repo root
-            if resolved.startswith(str(self.repo_path)):
-                resolved = resolved[len(str(self.repo_path))+1:]
-            return resolved
+            try:
+                resolved = str((Path(importing_dir) / import_path))
+                # Normalize .. etc
+                resolved = str(Path(resolved))
+                return resolved.replace('\\', '/')
+            except Exception:
+                return ""
         
-        # Can't resolve node_modules imports
         return ""
     
     def _normalize_path(self, path: str) -> str:

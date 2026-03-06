@@ -44,13 +44,20 @@ ERROR_PATTERNS = {
             r"Unable to resolve path to module"
         ],
         "fix_hint": (
-            "**IMPORT RESOLUTION ERROR:**\n"
+            "**IMPORT RESOLUTION ERROR — MOST COMMON CAUSE OF CASCADING FAILURES:**\n"
             "- **Leading slash /lib/...** — NEVER use '/lib/...' or \"/lib/...\". Webpack treats it as absolute "
             "filesystem path. Use '@/lib/...' (project alias) or relative paths instead.\n"
             "- If the module is an npm package: add to package.json, run npm install\n"
             "- If it's a local file: verify path exists, check extension (.ts/.tsx/.js/.jsx)\n"
             "- Use relative paths (../ for parent) or @/ alias for project root\n"
-            "- Check tsconfig.json paths alias configuration"
+            "- Check tsconfig.json paths alias configuration\n\n"
+            "**CRITICAL — DO NOT CREATE A CHAIN OF NEW FILES:**\n"
+            "If the missing module is something YOU created in a previous fix, the problem is "
+            "that you're creating files that import from other non-existent files. STOP creating "
+            "new files. Instead:\n"
+            "1. Remove the import to the non-existent module\n"
+            "2. Implement the needed functionality INLINE in the existing file\n"
+            "3. Or import from a module that ALREADY EXISTS in the repository"
         )
     },
     "index_signature_mismatch": {
