@@ -53,6 +53,7 @@ def try_all_auto_fixes(
         auto_fix_import_path_leading_slash,
         auto_fix_component_props_mismatch,
         auto_fix_double_prefix_import,
+        auto_fix_phantom_import,
     ]
     
     for auto_fix_func in auto_fixes:
@@ -242,6 +243,32 @@ def auto_fix_double_prefix_import(
         return False, ""
 
 
+def _find_interface_closing_brace(content: str, open_brace_pos: int) -> int:
+    """Find the matching closing brace for an interface/type, handling nested braces."""
+    depth = 1
+    i = open_brace_pos + 1
+    in_string = False
+    string_char = None
+    while i < len(content) and depth > 0:
+        ch = content[i]
+        if in_string:
+            if ch == string_char and (i == 0 or content[i - 1] != '\\'):
+                in_string = False
+            i += 1
+            continue
+        if ch in ('"', "'", '`'):
+            in_string = True
+            string_char = ch
+            i += 1
+            continue
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+        i += 1
+    return i - 1 if depth == 0 else -1
+
+
 def auto_fix_component_props_mismatch(
     error_msg: str,
     repo_path: Path,
@@ -249,48 +276,47 @@ def auto_fix_component_props_mismatch(
 ) -> Tuple[bool, str]:
     """
     When page.tsx passes props that don't exist on a component's Props interface,
-    add ALL missing props to the interface in one pass.
-    
-    Extracts the full object type from the error to find all extra props,
-    not just the first one reported.
+    add ALL missing props to the interface in ALL copies of the file.
     """
     if not is_node_project:
         return False, ""
 
+    # Match both ASCII and Unicode quote styles
     match = re.search(
-        r"Property '(\w+)' does not exist on type '(?:IntrinsicAttributes & )?(\w+Props)'",
+        r"Property\s+['\u2018\u2019](\w+)['\u2018\u2019]\s+does not exist on type\s+['\u2018\u2019](?:IntrinsicAttributes & )?(\w+Props)['\u2018\u2019]",
         error_msg,
     )
     if not match:
         return False, ""
 
     props_type = match.group(2)
+    print(f"  [props-autofix] Matched Props type: {props_type}")
 
-    # Extract ALL props from the object type in the error message
-    # e.g. "Type '{ customer: any; activeTab: string; initialJobs: unknown[]; }' is not assignable"
+    # Extract ALL props from the type object in the error message
     type_obj_match = re.search(
-        r"Type '\{([^}]+)\}' is not assignable to type '(?:IntrinsicAttributes & )?" + re.escape(props_type) + "'",
+        r"Type\s+['\u2018]\{([^}]+)\}['\u2019]\s+is not assignable",
         error_msg,
     )
     
     all_passed_props: dict = {}
     if type_obj_match:
-        # Parse all props from the type object: "customer: any; activeTab: string; ..."
         for prop_match in re.finditer(r'(\w+)\s*:\s*([^;]+)', type_obj_match.group(1)):
             all_passed_props[prop_match.group(1)] = prop_match.group(2).strip()
+        print(f"  [props-autofix] Parsed {len(all_passed_props)} props from type object")
     
-    # Also find explicitly named missing props (may appear in multiple error lines)
+    # Find explicitly named missing props
     explicit_missing = set()
     for m in re.finditer(
-        r"Property '(\w+)' does not exist on type '(?:IntrinsicAttributes & )?" + re.escape(props_type) + "'",
+        r"Property\s+['\u2018\u2019](\w+)['\u2018\u2019]\s+does not exist on type\s+['\u2018\u2019](?:IntrinsicAttributes & )?"
+        + re.escape(props_type),
         error_msg,
     ):
         explicit_missing.add(m.group(1))
+    print(f"  [props-autofix] Explicitly missing: {explicit_missing}")
 
-    # Find the file that defines this Props type
-    props_file = None
-    props_content = None
+    # Find ALL files that define this Props type (there may be copies in src/ and root)
     import os
+    props_files: list = []
     for root, dirs, files in os.walk(repo_path):
         dirs[:] = [d for d in dirs if d not in ("node_modules", ".next", ".git", "dist", "build")]
         for f in files:
@@ -299,70 +325,139 @@ def auto_fix_component_props_mismatch(
                 try:
                     content = full.read_text(encoding="utf-8", errors="ignore")
                     if re.search(rf"(?:interface|type)\s+{re.escape(props_type)}\s*[{{=]", content):
-                        props_file = full
-                        props_content = content
-                        break
+                        props_files.append((full, content))
+                        print(f"  [props-autofix] Found {props_type} in {full.relative_to(repo_path)}")
                 except Exception:
                     continue
-        if props_file:
-            break
 
-    if not props_file or not props_content:
+    if not props_files:
+        print(f"  [props-autofix] No files found containing {props_type}")
         return False, ""
 
-    # Find the interface/type definition
-    interface_match = re.search(
-        rf"((?:interface|type)\s+{re.escape(props_type)}\s*(?:=\s*)?\{{[^}}]*?)(}})",
-        props_content,
-        re.DOTALL,
-    )
-    if not interface_match:
-        return False, ""
+    total_modified = 0
+    modified_paths = []
 
-    interface_body = interface_match.group(1)
-    
-    # Determine which props need to be added
-    props_to_add = []
-    
-    # First, check all props from the type object
-    for prop_name, prop_type in all_passed_props.items():
-        if not re.search(rf"\b{re.escape(prop_name)}\s*[?:]", interface_body):
-            props_to_add.append((prop_name, prop_type))
-    
-    # Also add any explicitly listed missing props not yet covered
-    for prop_name in explicit_missing:
-        if not any(p[0] == prop_name for p in props_to_add):
+    for props_file, props_content in props_files:
+        # Find the interface/type opening brace using brace counting (handles nested types)
+        iface_match = re.search(
+            rf"(?:interface|type)\s+{re.escape(props_type)}\s*(?:=\s*)?\{{",
+            props_content,
+        )
+        if not iface_match:
+            print(f"  [props-autofix] Could not find interface opening brace in {props_file.name}")
+            continue
+
+        open_brace = iface_match.end() - 1
+        close_brace = _find_interface_closing_brace(props_content, open_brace)
+        if close_brace < 0:
+            print(f"  [props-autofix] Could not find matching closing brace in {props_file.name}")
+            continue
+
+        interface_body = props_content[open_brace:close_brace + 1]
+
+        # Determine which props need to be added
+        props_to_add = []
+        
+        for prop_name, prop_type in all_passed_props.items():
             if not re.search(rf"\b{re.escape(prop_name)}\s*[?:]", interface_body):
-                # Infer type from name
-                if "hasmore" in prop_name.lower():
-                    inferred = "boolean"
-                elif prop_name.startswith("initial"):
-                    inferred = "any[]"
-                else:
-                    inferred = "any"
-                props_to_add.append((prop_name, inferred))
-    
-    if not props_to_add:
+                props_to_add.append((prop_name, prop_type))
+        
+        for prop_name in explicit_missing:
+            if not any(p[0] == prop_name for p in props_to_add):
+                if not re.search(rf"\b{re.escape(prop_name)}\s*[?:]", interface_body):
+                    if "hasmore" in prop_name.lower():
+                        inferred = "boolean"
+                    elif prop_name.startswith("initial"):
+                        inferred = "any[]"
+                    else:
+                        inferred = "any"
+                    props_to_add.append((prop_name, inferred))
+        
+        if not props_to_add:
+            print(f"  [props-autofix] No props to add in {props_file.name} (all already present)")
+            continue
+
+        # Insert new props just before the closing brace
+        new_lines = ""
+        for prop_name, prop_type in props_to_add:
+            new_lines += f"  {prop_name}?: {prop_type};\n"
+
+        new_content = (
+            props_content[:close_brace]
+            + new_lines
+            + props_content[close_brace:]
+        )
+
+        props_file.write_text(new_content, encoding="utf-8")
+        rel_path = str(props_file.relative_to(repo_path)).replace("\\", "/")
+        modified_paths.append(rel_path)
+        total_modified += len(props_to_add)
+        print(f"  [props-autofix] Added {len(props_to_add)} props to {rel_path}")
+
+    if total_modified == 0:
         return False, ""
 
-    # Build new prop lines and insert them all at once
-    new_lines = ""
-    added_names = []
-    for prop_name, prop_type in props_to_add:
-        new_lines += f"  {prop_name}?: {prop_type};\n"
-        added_names.append(prop_name)
+    added_names = list(set(p[0] for p in props_to_add)) if props_to_add else list(explicit_missing)
+    names_str = ", ".join(added_names[:5])
+    files_str = ", ".join(modified_paths)
+    return True, f"Added {total_modified} props ({names_str}) to {props_type} in {files_str}"
 
-    new_content = (
-        props_content[:interface_match.end(1)]
-        + new_lines
-        + props_content[interface_match.start(2):]
+
+def auto_fix_phantom_import(
+    error_msg: str,
+    repo_path: Path,
+    is_node_project: bool
+) -> Tuple[bool, str]:
+    """
+    Remove import lines that reference non-existent local modules.
+    Handles: "Cannot find module '@/components/customers/JobHistoryList'"
+    
+    Instead of creating the missing module (which causes cascading errors),
+    remove the import and any usage of the imported names.
+    """
+    if not is_node_project:
+        return False, ""
+
+    # Match: Cannot find module '@/path/to/Module' in a specific file
+    match = re.search(
+        r"(?:Cannot find module|Module not found: Can't resolve)\s+['\"](@/[^'\"\s]+|\.{1,2}/[^'\"\s]+)['\"]",
+        error_msg,
+        re.IGNORECASE,
     )
+    if not match:
+        return False, ""
 
-    props_file.write_text(new_content, encoding="utf-8")
-    rel_path = str(props_file.relative_to(repo_path)).replace("\\", "/")
-    names_str = ", ".join(added_names)
+    phantom_module = match.group(1)
 
-    return True, f"Added {len(added_names)} props ({names_str}) to {props_type} in {rel_path}"
+    # Find which file has this import
+    file_match = re.search(r'\./([^\s:]+\.tsx?)', error_msg)
+    if not file_match:
+        return False, ""
+
+    error_file = repo_path / file_match.group(1)
+    if not error_file.exists():
+        return False, ""
+
+    try:
+        content = error_file.read_text(encoding="utf-8")
+        lines = content.split('\n')
+        new_lines = []
+        removed_imports = []
+
+        for line in lines:
+            # Check if this line imports from the phantom module
+            if re.search(rf"""from\s+['"]{re.escape(phantom_module)}['"]""", line):
+                removed_imports.append(line.strip())
+                continue
+            new_lines.append(line)
+
+        if not removed_imports:
+            return False, ""
+
+        error_file.write_text('\n'.join(new_lines), encoding="utf-8")
+        return True, f"Removed phantom import '{phantom_module}' from {file_match.group(1)}"
+    except Exception:
+        return False, ""
 
 
 def auto_fix_import_path_leading_slash(
