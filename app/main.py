@@ -8,6 +8,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.config import settings
@@ -17,6 +18,12 @@ from app.queue_manager import get_queue_stats, reset_stale_runs
 
 app = FastAPI(title="Moveware AI Orchestrator")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+
+_static_dir = Path("/srv/ai/static")
+if not _static_dir.exists():
+    _static_dir = Path(__file__).parent.parent / "static"
+    _static_dir.mkdir(exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
 
 @app.on_event("startup")

@@ -32,6 +32,20 @@
             background: #0a0a0a;
             flex-wrap: wrap;
         }
+
+        .header-logo {
+            height: 32px;
+            width: auto;
+            flex-shrink: 0;
+        }
+
+        .header-center {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
         
         h1 {
             color: #00d4ff;
@@ -673,29 +687,33 @@
 </head>
 <body>
     <div class="header">
-        <h1>AI Runner</h1>
-        <button id="resetStuckBtn" class="reset-all-btn" onclick="resetAllStuckRuns()" style="display:none;">
-            ⚠️ Reset Stuck
-        </button>
-        <input type="text" id="searchFilter" placeholder="Search runs..." />
-        <select id="boardFilter">
-            <option value="all" selected>All Boards</option>
-        </select>
-        <select id="statusFilter">
-            <option value="all" selected>All Status</option>
-            <option value="active">Active</option>
-            <option value="failed">Failed / Stuck</option>
-            <option value="completed">Completed</option>
-            <option value="queued">Queued</option>
-        </select>
-        <select id="timeFilter">
-            <option value="1">Last Hour</option>
-            <option value="6">Last 6 Hours</option>
-            <option value="12">Last 12 Hours</option>
-            <option value="24" selected>Last 24 Hours</option>
-            <option value="168">Last Week</option>
-            <option value="all">All Time</option>
-        </select>
+        <img src="/static/moveware-logo.svg" alt="Moveware" class="header-logo" onerror="this.style.display='none'" />
+        <div class="header-spacer"></div>
+        <div class="header-center">
+            <h1>AI Runner</h1>
+            <button id="resetStuckBtn" class="reset-all-btn" onclick="resetAllStuckRuns()" style="display:none;">
+                ⚠️ Reset Stuck
+            </button>
+            <input type="text" id="searchFilter" placeholder="Search runs..." />
+            <select id="boardFilter">
+                <option value="all" selected>All Boards</option>
+            </select>
+            <select id="statusFilter">
+                <option value="all" selected>All Status</option>
+                <option value="active">Active</option>
+                <option value="failed">Failed / Stuck</option>
+                <option value="completed">Completed</option>
+                <option value="queued">Queued</option>
+            </select>
+            <select id="timeFilter">
+                <option value="1">Last Hour</option>
+                <option value="6">Last 6 Hours</option>
+                <option value="12">Last 12 Hours</option>
+                <option value="24" selected>Last 24 Hours</option>
+                <option value="168">Last Week</option>
+                <option value="all">All Time</option>
+            </select>
+        </div>
         <div class="header-spacer"></div>
         <div class="header-right">
             <span class="detail-label">Details</span>
