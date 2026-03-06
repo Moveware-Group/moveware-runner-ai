@@ -47,6 +47,13 @@ class FixValidator:
                 continue
             
             if action in ("create", "update"):
+                # Guard: content must be a string (LLM sometimes returns a dict)
+                if not isinstance(content, str):
+                    self.validation_warnings.append(
+                        f"{path}: content was {type(content).__name__}, expected string — skipping validation"
+                    )
+                    continue
+                
                 if not content:
                     self.validation_errors.append(f"{path}: Empty content")
                     continue
@@ -157,7 +164,12 @@ class FixValidator:
             )
     
     def _check_duplicate_declarations(self, path: str, content: str) -> None:
-        """Check for duplicate const/let/var/function/class declarations at same scope."""
+        """Check for duplicate const/let/var/function/class declarations at same scope.
+        
+        NOTE: These are now WARNINGS, not errors. TypeScript's own build step will
+        catch real duplicates. False positives from our scope detection were blocking
+        valid fixes from being tested.
+        """
 
         # Build a list of ALL scope boundaries (named functions, arrow callbacks,
         # describe/it/test/beforeEach blocks, etc.)
@@ -173,8 +185,8 @@ class FixValidator:
                 continue
 
             if name in module_level_declarations:
-                self.validation_errors.append(
-                    f"{path}: Duplicate module-level declaration of '{name}' "
+                self.validation_warnings.append(
+                    f"{path}: Possible duplicate module-level declaration of '{name}' "
                     f"(lines ~{content[:match.start()].count(chr(10))+1} and "
                     f"~{content[:module_level_declarations[name]].count(chr(10))+1})"
                 )
@@ -186,8 +198,8 @@ class FixValidator:
             if self._is_inside_scope(match.start(), scope_ranges):
                 continue
             if name in module_level_declarations:
-                self.validation_errors.append(
-                    f"{path}: Duplicate declaration of function '{name}'"
+                self.validation_warnings.append(
+                    f"{path}: Possible duplicate declaration of function '{name}'"
                 )
             else:
                 module_level_declarations[name] = match.start()
@@ -197,8 +209,8 @@ class FixValidator:
             if self._is_inside_scope(match.start(), scope_ranges):
                 continue
             if name in module_level_declarations:
-                self.validation_errors.append(
-                    f"{path}: Duplicate declaration of class '{name}'"
+                self.validation_warnings.append(
+                    f"{path}: Possible duplicate declaration of class '{name}'"
                 )
             else:
                 module_level_declarations[name] = match.start()

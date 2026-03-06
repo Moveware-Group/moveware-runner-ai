@@ -1428,6 +1428,7 @@ def auto_fix_eslint_rule_not_found(
     eslint_configs = [
         ".eslintrc.json", ".eslintrc.js", ".eslintrc.cjs", ".eslintrc.yml",
         ".eslintrc.yaml", ".eslintrc",
+        "eslint.config.js", "eslint.config.mjs", "eslint.config.cjs",
     ]
     for config_name in eslint_configs:
         config_path = repo_path / config_name
@@ -1449,9 +1450,9 @@ def auto_fix_eslint_rule_not_found(
                 config_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
                 return True, f"Disabled missing ESLint rule '{missing_rule}' in {config_name}"
 
-            elif config_name.endswith((".js", ".cjs")):
-                # JS config — inject into rules object
-                if '"rules"' in content or "'rules'" in content or "rules:" in content:
+            elif config_name.endswith((".js", ".cjs", ".mjs")):
+                # JS/flat config — inject into rules object
+                if '"rules"' in content or "'rules'" in content or "rules:" in content or "rules :" in content:
                     new_content = re.sub(
                         r'(rules\s*:\s*\{)',
                         rf'\1\n    "{missing_rule}": "off",',
@@ -1464,6 +1465,20 @@ def auto_fix_eslint_rule_not_found(
         except Exception as e:
             print(f"ESLint rule fix failed for {config_name}: {e}")
             continue
+
+    # Fallback: add eslint-disable comment to the specific file
+    file_match = re.search(r'\./([^\s:]+\.tsx?)', error_msg)
+    if file_match:
+        error_file = repo_path / file_match.group(1)
+        if error_file.exists():
+            try:
+                file_content = error_file.read_text(encoding="utf-8")
+                disable_comment = f"/* eslint-disable {missing_rule} */\n"
+                if disable_comment.strip() not in file_content:
+                    error_file.write_text(disable_comment + file_content, encoding="utf-8")
+                    return True, f"Added eslint-disable for '{missing_rule}' in {file_match.group(1)}"
+            except Exception:
+                pass
 
     return False, ""
 
