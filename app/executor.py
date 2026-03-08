@@ -1518,6 +1518,12 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             # Step 2a: Run tsc --noEmit (fast TypeScript gate before heavy build)
             if not verification_errors and (repo_path / "tsconfig.json").exists():
                 try:
+                    next_types_dir = repo_path / ".next" / "types"
+                    if next_types_dir.exists():
+                        import shutil
+                        shutil.rmtree(next_types_dir, ignore_errors=True)
+                        print("🗑️  Cleaned .next/types/ to prevent stale type errors")
+
                     if run_id:
                         add_progress_event(run_id, "verifying", "Running TypeScript check (tsc --noEmit)", {})
                     print("Running tsc --noEmit (TypeScript gate before build)...")
@@ -1530,25 +1536,33 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                     )
                     if tsc_result.returncode != 0:
                         tsc_output = tsc_result.stdout or tsc_result.stderr
-                        
-                        # Use intelligent error summarization
+
+                        # Filter out .next/ build artifact errors (auto-generated, not fixable)
+                        filtered_lines = [
+                            line for line in tsc_output.splitlines()
+                            if not line.startswith(".next/")
+                        ]
+                        tsc_output = "\n".join(filtered_lines)
+
                         from .error_summarizer import format_concise_error_summary, should_show_full_errors
-                        
-                        # Count errors
+
                         error_count = tsc_output.count("error TS")
-                        
-                        if should_show_full_errors(error_count):
-                            # Few errors - show them all
-                            error_message = f"TypeScript check failed (tsc --noEmit):\n{tsc_output[:3000]}"
+
+                        if error_count == 0:
+                            print("✅ TypeScript check passed (only .next/ build artifact errors filtered)")
+                            if run_id:
+                                add_progress_event(run_id, "verifying", "✓ TypeScript check passed (build artifacts filtered)", {})
                         else:
-                            # Many errors - show concise summary
-                            summary = format_concise_error_summary(tsc_output)
-                            error_message = f"TypeScript check failed (tsc --noEmit):\n\n{summary}\n\n--- Full Output (first 1000 chars) ---\n{tsc_output[:1000]}"
-                        
-                        verification_errors.append(error_message)
-                        print(f"tsc failed ({error_count} errors):\n{tsc_output[:500]}")
-                        if run_id:
-                            add_progress_event(run_id, "verifying", f"✗ TypeScript check failed — {error_count} errors", {"error_count": error_count})
+                            if should_show_full_errors(error_count):
+                                error_message = f"TypeScript check failed (tsc --noEmit):\n{tsc_output[:3000]}"
+                            else:
+                                summary = format_concise_error_summary(tsc_output)
+                                error_message = f"TypeScript check failed (tsc --noEmit):\n\n{summary}\n\n--- Full Output (first 1000 chars) ---\n{tsc_output[:1000]}"
+
+                            verification_errors.append(error_message)
+                            print(f"tsc failed ({error_count} errors):\n{tsc_output[:500]}")
+                            if run_id:
+                                add_progress_event(run_id, "verifying", f"✗ TypeScript check failed — {error_count} errors", {"error_count": error_count})
                     else:
                         print("✅ TypeScript check passed")
                         if run_id:
@@ -1801,8 +1815,11 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             if applied:
                 if run_id:
                     add_progress_event(run_id, "verifying", f"Re-running checks after auto-fix: {desc}", {})
-                # Re-run tsc
                 if (repo_path / "tsconfig.json").exists():
+                    next_types_dir = repo_path / ".next" / "types"
+                    if next_types_dir.exists():
+                        import shutil
+                        shutil.rmtree(next_types_dir, ignore_errors=True)
                     tsc_result = subprocess.run(
                         ["npx", "tsc", "--noEmit", "--pretty", "false"],
                         cwd=repo_path,
@@ -2489,44 +2506,54 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         
         try:
             print(f"Calling {model_name} to fix build errors...")
-            
+
+            _fell_through_to_openai = False
+
             if model_provider == "anthropic":
-                # Use Claude with cached context (skills_content in scope from above)
-                # Retry once if we get empty response (transient API/thinking issues)
-                fix_text = ""
-                for claude_attempt in range(2):
-                    fix_raw = client.messages_create({
-                        "model": settings.ANTHROPIC_MODEL,
-                        "system": _build_system_with_cache(comprehensive_context, skills_content),  # Cached!
-                        "messages": [{"role": "user", "content": fix_prompt}],
-                        "max_tokens": 16000,
-                        "temperature": 1,
-                        "thinking": {
-                            "type": "enabled",
-                            "budget_tokens": 4000  # Leave headroom for actual fix JSON output
-                        }
-                    })
-                    fix_text = AnthropicClient.extract_text(fix_raw)
-                    if fix_text and "{" in fix_text:
-                        break
-                    if claude_attempt == 0:
-                        print(f"⚠ Claude returned empty/invalid response, retrying once...")
+                try:
+                    fix_text = ""
+                    for claude_attempt in range(2):
+                        fix_raw = client.messages_create({
+                            "model": settings.ANTHROPIC_MODEL,
+                            "system": _build_system_with_cache(comprehensive_context, skills_content),
+                            "messages": [{"role": "user", "content": fix_prompt}],
+                            "max_tokens": 16000,
+                            "temperature": 1,
+                            "thinking": {
+                                "type": "enabled",
+                                "budget_tokens": 4000
+                            }
+                        })
+                        fix_text = AnthropicClient.extract_text(fix_raw)
+                        if fix_text and "{" in fix_text:
+                            break
+                        if claude_attempt == 0:
+                            print(f"⚠ Claude returned empty/invalid response, retrying once...")
+                        else:
+                            print(f"⚠ Claude returned empty response again after retry")
+                    if metrics and fix_raw.get("usage"):
+                        usage = fix_raw["usage"]
+                        metrics.total_input_tokens += usage.get("input_tokens", 0)
+                        metrics.total_output_tokens += usage.get("output_tokens", 0)
+                        metrics.cached_tokens += usage.get("cache_read_input_tokens", 0)
+                        metrics.self_heal_attempts += 1
+                        metrics.estimated_cost = calculate_cost(
+                            settings.ANTHROPIC_MODEL,
+                            metrics.total_input_tokens,
+                            metrics.total_output_tokens,
+                            metrics.cached_tokens
+                        )
+                except Exception as claude_err:
+                    err_str = str(claude_err)
+                    if "400" in err_str or "invalid_request" in err_str:
+                        print(f"⚠️ Claude 400 error (likely prompt too large), falling through to OpenAI for this attempt")
+                        model_provider = "openai"
+                        model_name = f"OpenAI ({settings.OPENAI_MODEL})"
+                        _fell_through_to_openai = True
                     else:
-                        print(f"⚠ Claude returned empty response again after retry")
-                # Track token usage for fix attempts
-                if metrics and fix_raw.get("usage"):
-                    usage = fix_raw["usage"]
-                    metrics.total_input_tokens += usage.get("input_tokens", 0)
-                    metrics.total_output_tokens += usage.get("output_tokens", 0)
-                    metrics.cached_tokens += usage.get("cache_read_input_tokens", 0)
-                    metrics.self_heal_attempts += 1
-                    metrics.estimated_cost = calculate_cost(
-                        settings.ANTHROPIC_MODEL,
-                        metrics.total_input_tokens,
-                        metrics.total_output_tokens,
-                        metrics.cached_tokens
-                    )
-            else:
+                        raise
+
+            if model_provider == "openai" or _fell_through_to_openai:
                 # Use OpenAI as fallback (using same client as planner)
                 from app.llm_openai import OpenAIClient
                 openai_client = OpenAIClient(
