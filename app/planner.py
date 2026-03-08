@@ -357,49 +357,58 @@ def generate_plan(
     if verdict == "suggest_improvements" and (suggestions or concerns):
         if run_id:
             add_progress_event(run_id, "planning", "Claude incorporating ChatGPT's feedback", {})
-        
+
         print("Step 3: Claude incorporating ChatGPT's suggestions...")
-        
+
         refinement_prompt = (
-            f"Your initial plan:\n{json.dumps(initial_plan, indent=2)}\n\n"
-            f"**ChatGPT Review Feedback:**\n"
-            f"Concerns: {json.dumps(concerns, indent=2)}\n"
-            f"Suggestions: {json.dumps(suggestions, indent=2)}\n\n"
-            "Please refine the plan to address these concerns and incorporate the suggestions.\n"
+            f"Refine this implementation plan based on reviewer feedback.\n\n"
+            f"**Original Epic:** {issue.key} - {issue.summary}\n\n"
+            f"**Current Plan:**\n{json.dumps(initial_plan, indent=2)}\n\n"
+            f"**Reviewer Concerns:**\n{json.dumps(concerns, indent=2)}\n"
+            f"**Reviewer Suggestions:**\n{json.dumps(suggestions, indent=2)}\n\n"
+            "Incorporate the feedback and return the refined plan.\n"
             + schema_prompt
         )
-        
-        refined_response = claude_client.messages_create({
-            "model": settings.ANTHROPIC_MODEL,
-            "system": _system_prompt_claude(),
-            "messages": [
-                {"role": "user", "content": user_prompt},
-                {"role": "assistant", "content": initial_plan_text},
-                {"role": "user", "content": refinement_prompt}
-            ],
-            "max_tokens": 16000,
-            "temperature": 1,
-            "thinking": {
-                "type": "enabled",
-                "budget_tokens": 8000
-            }
-        })
-        inp, out, thinking = _extract_claude_usage(refined_response)
-        claude_in += inp
-        claude_out += out
-        claude_thinking += thinking
 
-        refined_plan_text = claude_client.extract_text(refined_response)
-        final_plan = _parse_plan_json(refined_plan_text)
-        
-        # Add review metadata to plan
-        final_plan["_review"] = {
-            "chatgpt_verdict": verdict,
-            "concerns_addressed": concerns,
-            "suggestions_incorporated": suggestions
-        }
-        
-        print("✅ Plan refined based on ChatGPT feedback")
+        try:
+            refined_response = claude_client.messages_create({
+                "model": settings.ANTHROPIC_MODEL,
+                "system": _system_prompt_claude(),
+                "messages": [
+                    {"role": "user", "content": refinement_prompt}
+                ],
+                "max_tokens": 16000,
+                "temperature": 1,
+                "thinking": {
+                    "type": "enabled",
+                    "budget_tokens": 4000
+                }
+            })
+            inp, out, thinking = _extract_claude_usage(refined_response)
+            claude_in += inp
+            claude_out += out
+            claude_thinking += thinking
+
+            refined_plan_text = claude_client.extract_text(refined_response)
+            final_plan = _parse_plan_json(refined_plan_text)
+
+            final_plan["_review"] = {
+                "chatgpt_verdict": verdict,
+                "concerns_addressed": concerns,
+                "suggestions_incorporated": suggestions
+            }
+
+            print("✅ Plan refined based on ChatGPT feedback")
+        except Exception as e:
+            print(f"⚠️ Step 3 refinement failed ({type(e).__name__}: {str(e)[:120]}), using initial plan from Step 1")
+            if run_id:
+                add_progress_event(run_id, "planning", "Refinement timed out — using initial plan", {})
+            final_plan = initial_plan
+            final_plan["_review"] = {
+                "chatgpt_verdict": verdict,
+                "refinement_skipped": True,
+                "skip_reason": str(e)[:200]
+            }
     else:
         final_plan = initial_plan
         print("✅ Plan approved by ChatGPT without changes")
