@@ -48,6 +48,14 @@ def init_db() -> None:
             UNIQUE(issue_key)
         );
         """)
+        cx.execute("""
+        CREATE TABLE IF NOT EXISTS plan_drafts (
+            issue_key TEXT PRIMARY KEY,
+            plan_json TEXT NOT NULL,
+            review_json TEXT,
+            created_at INTEGER NOT NULL
+        );
+        """)
         cx.execute("CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status);")
         cx.execute("CREATE INDEX IF NOT EXISTS idx_runs_issue ON runs(issue_key);")
         cx.execute("CREATE INDEX IF NOT EXISTS idx_plans_issue ON plans(issue_key);")
@@ -267,3 +275,35 @@ def get_plan(issue_key: str) -> Optional[Dict[str, Any]]:
     if not row:
         return None
     return json.loads(row[0])
+
+
+def save_plan_draft(issue_key: str, plan_data: Dict[str, Any], review_data: Optional[Dict[str, Any]] = None) -> None:
+    """Save an intermediate plan draft (checkpoint after Step 1 or Step 2)."""
+    ts = now()
+    with connect() as cx:
+        cx.execute(
+            "INSERT OR REPLACE INTO plan_drafts(issue_key, plan_json, review_json, created_at) VALUES(?,?,?,?)",
+            (issue_key, json.dumps(plan_data), json.dumps(review_data) if review_data else None, ts),
+        )
+
+
+def get_plan_draft(issue_key: str, max_age_seconds: int = 3600) -> Optional[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]]:
+    """Retrieve a recent plan draft. Returns (plan_data, review_data) or None if stale/missing."""
+    with connect() as cx:
+        row = cx.execute(
+            "SELECT plan_json, review_json, created_at FROM plan_drafts WHERE issue_key=?",
+            (issue_key,),
+        ).fetchone()
+    if not row:
+        return None
+    age = now() - row[2]
+    if age > max_age_seconds:
+        return None
+    review = json.loads(row[1]) if row[1] else None
+    return json.loads(row[0]), review
+
+
+def delete_plan_draft(issue_key: str) -> None:
+    """Remove a plan draft after the final plan is saved."""
+    with connect() as cx:
+        cx.execute("DELETE FROM plan_drafts WHERE issue_key=?", (issue_key,))

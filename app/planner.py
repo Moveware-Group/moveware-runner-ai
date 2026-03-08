@@ -14,7 +14,7 @@ from .config import settings, PARENT_PLAN_COMMENT_PREFIX
 from .llm_openai import OpenAIClient
 from .llm_anthropic import AnthropicClient
 from .models import JiraIssue
-from .db import add_progress_event, DB_PATH
+from .db import add_progress_event, DB_PATH, save_plan_draft, get_plan_draft, delete_plan_draft
 from .metrics import ExecutionMetrics, calculate_cost, save_metrics
 
 
@@ -252,103 +252,122 @@ def generate_plan(
     
     user_prompt = user_prompt + schema_prompt
     
-    print("Step 1: Generating plan with Claude extended thinking...")
-    
-    # Try plan generation with retry on JSON parse failure
-    max_plan_attempts = 2
+    # Check for a recent draft checkpoint (e.g. from a previous timeout on Step 3)
+    draft = get_plan_draft(issue.key, max_age_seconds=3600)
+    cached_review = None
     initial_plan = None
     initial_plan_text = ""
-    
-    for plan_attempt in range(1, max_plan_attempts + 1):
-        response = claude_client.messages_create({
-            "model": settings.ANTHROPIC_MODEL,
-            "system": _system_prompt_claude(),
-            "messages": [{"role": "user", "content": user_prompt}],
-            "max_tokens": 16000,
-            "temperature": 1,
-            "thinking": {
-                "type": "enabled",
-                "budget_tokens": 10000  # Extra thinking for planning!
-            }
-        })
-        inp, out, thinking = _extract_claude_usage(response)
-        claude_in += inp
-        claude_out += out
-        claude_thinking += thinking
 
-        initial_plan_text = claude_client.extract_text(response)
-        
-        # Parse initial plan
+    if draft:
+        initial_plan, cached_review = draft
+        initial_plan_text = json.dumps(initial_plan, indent=2)
+        print(f"♻️  Loaded cached plan draft for {issue.key} — skipping Step 1")
         if run_id:
-            add_progress_event(run_id, "planning", f"Parsing Claude's plan (attempt {plan_attempt})", {})
-        
-        try:
-            initial_plan = _parse_plan_json(initial_plan_text)
-            print(f"✅ Successfully parsed plan on attempt {plan_attempt}")
-            break  # Success!
-        except (ValueError, json.JSONDecodeError) as e:
-            print(f"❌ Plan parsing failed on attempt {plan_attempt}: {e}")
-            
-            if plan_attempt < max_plan_attempts:
-                # Retry with stricter instructions
-                print(f"Retrying plan generation with stricter JSON formatting instructions...")
-                user_prompt += (
-                    "\n\n**CRITICAL - PREVIOUS RESPONSE HAD INVALID JSON:**\n"
-                    f"Error: {str(e)[:200]}\n\n"
-                    "**FIX YOUR JSON:**\n"
-                    "- Do NOT use trailing commas before } or ]\n"
-                    "- USE commas between array elements\n"
-                    "- USE double quotes for strings, not single quotes\n"
-                    "- Do NOT include comments in JSON\n"
-                    "- VALIDATE your JSON is properly formatted\n\n"
-                    "Please generate the plan again with VALID JSON."
-                )
-            else:
-                # Final attempt failed
-                raise ValueError(
-                    f"Could not parse plan JSON after {max_plan_attempts} attempts. "
-                    f"Last error: {e}\n"
-                    f"Response preview: {initial_plan_text[:500]}"
-                )
-    
-    # Step 2: ChatGPT reviews the plan
-    if run_id:
-        add_progress_event(run_id, "planning", "ChatGPT reviewing plan for gaps and improvements", {})
-    
-    print("Step 2: ChatGPT reviewing Claude's plan...")
-    openai_client = OpenAIClient(
-        settings.OPENAI_API_KEY,
-        base_url=settings.OPENAI_BASE_URL,
-        timeout=settings.OPENAI_TIMEOUT_SECONDS
-    )
-    
-    review_prompt = (
-        f"Review this implementation plan for Epic: {issue.key}\n\n"
-        f"**Epic Summary:** {issue.summary}\n\n"
-        f"**Epic Description:**\n{issue.description}\n\n"
-        f"**Proposed Plan:**\n{json.dumps(initial_plan, indent=2)}\n\n"
-        "Provide your review as JSON with:\n"
-        "{\n"
-        '  "verdict": "approve" or "suggest_improvements",\n'
-        '  "strengths": ["what the plan does well"],\n'
-        '  "concerns": ["potential issues or gaps"],\n'
-        '  "suggestions": ["specific improvements"]\n'
-        "}"
-    )
-    
-    review_text, review_usage = openai_client.responses_text_with_usage(
-        model=settings.OPENAI_MODEL,
-        system=_system_prompt_review(),
-        user=review_prompt,
-        max_tokens=4000,
-        temperature=0.3
-    )
-    openai_in += int(review_usage.get("input_tokens") or 0)
-    openai_out += int(review_usage.get("output_tokens") or 0)
+            add_progress_event(run_id, "planning", "Loaded cached plan draft, skipping Step 1", {})
+    else:
+        print("Step 1: Generating plan with Claude extended thinking...")
 
-    # Parse review (separate from plan parsing — review has verdict/suggestions, not stories)
-    review = _parse_review_json(review_text)
+        max_plan_attempts = 2
+
+        for plan_attempt in range(1, max_plan_attempts + 1):
+            response = claude_client.messages_create({
+                "model": settings.ANTHROPIC_MODEL,
+                "system": _system_prompt_claude(),
+                "messages": [{"role": "user", "content": user_prompt}],
+                "max_tokens": 16000,
+                "temperature": 1,
+                "thinking": {
+                    "type": "enabled",
+                    "budget_tokens": 10000
+                }
+            })
+            inp, out, thinking = _extract_claude_usage(response)
+            claude_in += inp
+            claude_out += out
+            claude_thinking += thinking
+
+            initial_plan_text = claude_client.extract_text(response)
+
+            if run_id:
+                add_progress_event(run_id, "planning", f"Parsing Claude's plan (attempt {plan_attempt})", {})
+
+            try:
+                initial_plan = _parse_plan_json(initial_plan_text)
+                print(f"✅ Successfully parsed plan on attempt {plan_attempt}")
+
+                save_plan_draft(issue.key, initial_plan)
+                print(f"💾 Saved plan draft checkpoint for {issue.key}")
+
+                break
+            except (ValueError, json.JSONDecodeError) as e:
+                print(f"❌ Plan parsing failed on attempt {plan_attempt}: {e}")
+
+                if plan_attempt < max_plan_attempts:
+                    print(f"Retrying plan generation with stricter JSON formatting instructions...")
+                    user_prompt += (
+                        "\n\n**CRITICAL - PREVIOUS RESPONSE HAD INVALID JSON:**\n"
+                        f"Error: {str(e)[:200]}\n\n"
+                        "**FIX YOUR JSON:**\n"
+                        "- Do NOT use trailing commas before } or ]\n"
+                        "- USE commas between array elements\n"
+                        "- USE double quotes for strings, not single quotes\n"
+                        "- Do NOT include comments in JSON\n"
+                        "- VALIDATE your JSON is properly formatted\n\n"
+                        "Please generate the plan again with VALID JSON."
+                    )
+                else:
+                    raise ValueError(
+                        f"Could not parse plan JSON after {max_plan_attempts} attempts. "
+                        f"Last error: {e}\n"
+                        f"Response preview: {initial_plan_text[:500]}"
+                    )
     
+    # Step 2: ChatGPT reviews the plan (skip if cached review exists from a prior attempt)
+    if cached_review:
+        review = cached_review
+        print(f"♻️  Loaded cached ChatGPT review — skipping Step 2")
+        if run_id:
+            add_progress_event(run_id, "planning", "Loaded cached review, skipping Step 2", {})
+    else:
+        if run_id:
+            add_progress_event(run_id, "planning", "ChatGPT reviewing plan for gaps and improvements", {})
+
+        print("Step 2: ChatGPT reviewing Claude's plan...")
+        openai_client = OpenAIClient(
+            settings.OPENAI_API_KEY,
+            base_url=settings.OPENAI_BASE_URL,
+            timeout=settings.OPENAI_TIMEOUT_SECONDS
+        )
+
+        review_prompt = (
+            f"Review this implementation plan for Epic: {issue.key}\n\n"
+            f"**Epic Summary:** {issue.summary}\n\n"
+            f"**Epic Description:**\n{issue.description}\n\n"
+            f"**Proposed Plan:**\n{json.dumps(initial_plan, indent=2)}\n\n"
+            "Provide your review as JSON with:\n"
+            "{\n"
+            '  "verdict": "approve" or "suggest_improvements",\n'
+            '  "strengths": ["what the plan does well"],\n'
+            '  "concerns": ["potential issues or gaps"],\n'
+            '  "suggestions": ["specific improvements"]\n'
+            "}"
+        )
+
+        review_text, review_usage = openai_client.responses_text_with_usage(
+            model=settings.OPENAI_MODEL,
+            system=_system_prompt_review(),
+            user=review_prompt,
+            max_tokens=4000,
+            temperature=0.3
+        )
+        openai_in += int(review_usage.get("input_tokens") or 0)
+        openai_out += int(review_usage.get("output_tokens") or 0)
+
+        review = _parse_review_json(review_text)
+
+        save_plan_draft(issue.key, initial_plan, review)
+        print(f"💾 Saved plan + review checkpoint for {issue.key}")
+
     # Step 3: Decide if refinement is needed
     verdict = review.get("verdict", "approve")
     suggestions = review.get("suggestions", [])
@@ -448,6 +467,8 @@ def generate_plan(
             save_metrics(plan_metrics)
         except Exception as e:
             print(f"Warning: Could not save planning metrics: {e}")
+
+    delete_plan_draft(issue.key)
 
     return final_plan
 
