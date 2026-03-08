@@ -114,6 +114,50 @@ def _fix_unescaped_control_chars(text: str) -> str:
     return ''.join(result)
 
 
+def _escape_unescaped_quotes_in_values(text: str) -> str:
+    """
+    Escape double quotes inside JSON string values that Claude forgot to escape.
+
+    Common with JSX template literals like: `No results for "${var}"`
+    which produce unescaped " inside JSON strings.
+
+    Heuristic: when inside a JSON string, a " is structural (ends the string)
+    only if what follows (after whitespace) is a JSON punctuation char: , : } ]
+    Otherwise it's an unescaped content quote and gets escaped.
+    """
+    result = []
+    in_string = False
+    i = 0
+    length = len(text)
+
+    while i < length:
+        ch = text[i]
+
+        if ch == '\\' and in_string and i + 1 < length:
+            result.append(ch)
+            result.append(text[i + 1])
+            i += 2
+            continue
+
+        if ch == '"':
+            if not in_string:
+                in_string = True
+                result.append(ch)
+            else:
+                rest = text[i + 1:]
+                stripped = rest.lstrip(' \t\r\n')
+                if not stripped or stripped[0] in ':,}]':
+                    in_string = False
+                    result.append(ch)
+                else:
+                    result.append('\\"')
+        else:
+            result.append(ch)
+        i += 1
+
+    return ''.join(result)
+
+
 def _find_balanced_json(text: str) -> Optional[str]:
     """Find the outermost balanced { ... } in text, respecting string quoting."""
     start = text.find('{')
@@ -247,7 +291,28 @@ def try_parse_json(text: str, max_repair_attempts: int = 3) -> Optional[Dict[str
     except json.JSONDecodeError as e:
         attempts.append(f"Control-char + repair failed: {e}")
 
-    # Attempt 5: Extract balanced, fix control chars, repair
+    # Attempt 5: Escape unescaped quotes in string values (JSX template literals etc.)
+    try:
+        fixed = _escape_unescaped_quotes_in_values(original_text)
+        fixed = repair_json(fixed)
+        result = json.loads(fixed)
+        print("✅ JSON parsed after escaping unescaped quotes in string values")
+        return result
+    except json.JSONDecodeError as e:
+        attempts.append(f"Unescaped-quote repair failed: {e}")
+
+    # Attempt 6: Combined — control chars + unescaped quotes
+    try:
+        fixed = _fix_unescaped_control_chars(original_text)
+        fixed = _escape_unescaped_quotes_in_values(fixed)
+        fixed = repair_json(fixed)
+        result = json.loads(fixed)
+        print("✅ JSON parsed after control-char + quote-escape repair")
+        return result
+    except json.JSONDecodeError as e:
+        attempts.append(f"Control-char + quote-escape failed: {e}")
+
+    # Attempt 7: Extract balanced, fix control chars, repair
     try:
         balanced = _find_balanced_json(original_text) or original_text
         fixed = _fix_unescaped_control_chars(balanced)
@@ -258,19 +323,21 @@ def try_parse_json(text: str, max_repair_attempts: int = 3) -> Optional[Dict[str
     except json.JSONDecodeError as e:
         attempts.append(f"Balanced + control-char failed: {e}")
 
-    # Attempt 6: Try strict=False with control-char fix
+    # Attempt 8: Try strict=False with control-char + quote-escape fix
     try:
         fixed = _fix_unescaped_control_chars(original_text)
+        fixed = _escape_unescaped_quotes_in_values(fixed)
         balanced = _find_balanced_json(fixed) or fixed
         result = json.loads(balanced, strict=False)
-        print("✅ JSON parsed with strict=False after control-char fix")
+        print("✅ JSON parsed with strict=False after control-char + quote fix")
         return result
     except json.JSONDecodeError as e:
-        attempts.append(f"strict=False + control-char failed: {e}")
+        attempts.append(f"strict=False + control-char + quote failed: {e}")
 
-    # Attempt 7: Handle truncated JSON (Claude hit output token limit)
+    # Attempt 9: Handle truncated JSON (Claude hit output token limit)
     try:
         fixed = _fix_unescaped_control_chars(original_text)
+        fixed = _escape_unescaped_quotes_in_values(fixed)
         balanced = _find_balanced_json(fixed) or fixed
         repaired = _repair_truncated_json(balanced)
         if repaired != balanced:
@@ -280,9 +347,10 @@ def try_parse_json(text: str, max_repair_attempts: int = 3) -> Optional[Dict[str
     except json.JSONDecodeError as e:
         attempts.append(f"Truncation repair failed: {e}")
 
-    # Attempt 8: Last resort — strict=False on truncation-repaired text
+    # Attempt 10: Last resort — strict=False on truncation-repaired text
     try:
         fixed = _fix_unescaped_control_chars(original_text)
+        fixed = _escape_unescaped_quotes_in_values(fixed)
         balanced = _find_balanced_json(fixed) or fixed
         repaired = _repair_truncated_json(balanced)
         repaired = repair_json(repaired)
