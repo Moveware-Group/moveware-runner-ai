@@ -193,38 +193,28 @@ def _extract_all_human_feedback(jira: JiraClient, parent_key: str) -> str:
     return "\n\n---\n\n".join(feedback_parts)
 
 
-def _create_stories_from_plan(ctx: Context, epic: JiraIssue) -> bool:
-    """Create Stories from Epic plan. Returns True if successful."""
+def _create_stories_from_plan(ctx: Context, epic: JiraIssue) -> str:
+    """Create Stories from Epic plan.
+
+    Returns:
+        "created"          – new stories were created
+        "already_existed"  – stories already exist, nothing to do
+        "error"            – plan missing or invalid
+    """
     from .story_creation_tracker import were_stories_already_created, mark_stories_created
-    
-    # CRITICAL: Check database first (more reliable than Jira API)
+
     already_created, existing_count = were_stories_already_created(epic.key)
     if already_created:
         print(f"🛑 Epic {epic.key} already has Stories created (DB flag set, {existing_count} Stories)")
         print(f"   Skipping creation to prevent infinite loop")
-        ctx.jira.add_comment(
-            epic.key,
-            f"✅ Stories were already created for this Epic ({existing_count} Stories).\n\n"
-            "This is a duplicate Story creation request (webhook retry or worker restart).\n"
-            "If you need to regenerate Stories, please:\n"
-            "1. Delete all existing Stories manually\n"
-            "2. Contact admin to clear the Epic flag in the database"
-        )
-        return True  # Return True because Stories exist
-    
-    # FALLBACK: Also check via Jira API (in case DB flag was cleared)
+        return "already_existed"
+
     existing_stories = ctx.jira.get_stories_for_epic(epic.key)
     if existing_stories and len(existing_stories) > 0:
         print(f"⚠️  Epic {epic.key} already has {len(existing_stories)} Stories (found via Jira API)")
         print(f"   Marking in database and skipping creation")
-        # Mark in database for future checks
         mark_stories_created(epic.key, len(existing_stories), ctx.worker_id)
-        ctx.jira.add_comment(
-            epic.key,
-            f"Stories already exist for this Epic ({len(existing_stories)} found). "
-            "Skipping creation to prevent duplicates."
-        )
-        return True
+        return "already_existed"
     
     # Retrieve plan from database
     plan = get_plan(epic.key)
@@ -232,12 +222,11 @@ def _create_stories_from_plan(ctx: Context, epic: JiraIssue) -> bool:
         ctx.jira.add_comment(epic.key, "AI Runner could not find a plan for this Epic. Please move to Backlog to generate a plan.")
         ctx.jira.transition_to_status(epic.key, settings.JIRA_STATUS_BLOCKED)
         ctx.jira.assign_issue(epic.key, settings.JIRA_HUMAN_ACCOUNT_ID)
-        return False
+        return "error"
 
     # Validate plan has stories
     stories = plan.get("stories") or []
     if not isinstance(stories, list) or not stories:
-        # Check if plan has old format with top-level subtasks
         if plan.get("subtasks"):
             ctx.jira.add_comment(
                 epic.key,
@@ -249,9 +238,8 @@ def _create_stories_from_plan(ctx: Context, epic: JiraIssue) -> bool:
             ctx.jira.add_comment(epic.key, "AI plan did not include stories. Please move back to Backlog to regenerate.")
         ctx.jira.transition_to_status(epic.key, settings.JIRA_STATUS_BLOCKED)
         ctx.jira.assign_issue(epic.key, settings.JIRA_HUMAN_ACCOUNT_ID)
-        return False
-    
-    # Add safety limit to prevent runaway creation
+        return "error"
+
     MAX_STORIES_PER_EPIC = 50
     if len(stories) > MAX_STORIES_PER_EPIC:
         print(f"⚠️  Plan has {len(stories)} stories, which exceeds safety limit of {MAX_STORIES_PER_EPIC}")
@@ -262,7 +250,7 @@ def _create_stories_from_plan(ctx: Context, epic: JiraIssue) -> bool:
         )
         ctx.jira.transition_to_status(epic.key, settings.JIRA_STATUS_BLOCKED)
         ctx.jira.assign_issue(epic.key, settings.JIRA_HUMAN_ACCOUNT_ID)
-        return False
+        return "error"
 
     created_keys = []
     for story_data in stories:
@@ -345,16 +333,15 @@ def _create_stories_from_plan(ctx: Context, epic: JiraIssue) -> bool:
                     f"Please manually move it to 'Selected for Development'."
                 )
         elif not settings.AUTO_START_NEXT_STORY and created_keys:
-            # Auto-start disabled - notify user to manually start
             ctx.jira.add_comment(
                 epic.key,
                 f"✅ Stories created. Auto-start is disabled.\n\n"
                 f"To begin processing, manually move {created_keys[0]} to 'Selected for Development'."
             )
-        
-        return True
-    
-    return False
+
+        return "created"
+
+    return "error"
 
 
 def _create_subtasks_from_story(ctx: Context, story: JiraIssue) -> None:
@@ -622,19 +609,20 @@ def _handle_revise_plan(ctx: Context, issue: JiraIssue, run_id: Optional[int] = 
 
 def _handle_epic_approved(ctx: Context, epic: JiraIssue) -> None:
     """Handle Epic approval - creates Stories from plan."""
-    # Accept both Selected for Dev and In Progress (user may have moved directly to In Progress)
     if epic.status not in (settings.JIRA_STATUS_SELECTED_FOR_DEV, settings.JIRA_STATUS_IN_PROGRESS):
         return
     if epic.assignee_account_id != settings.JIRA_AI_ACCOUNT_ID:
         return
 
-    # Create Stories from Epic plan (v2 format)
-    success = _create_stories_from_plan(ctx, epic)
-    
-    # Only transition if Stories were created successfully
-    if success:
+    result = _create_stories_from_plan(ctx, epic)
+
+    if result == "created":
         ctx.jira.transition_to_status(epic.key, settings.JIRA_STATUS_IN_PROGRESS)
         ctx.jira.add_comment(epic.key, "AI Runner created Stories from the plan. Stories will be broken down into sub-tasks when approved.")
+    elif result == "already_existed":
+        print(f"ℹ️  Stories already exist for {epic.key} — no action needed")
+        if epic.status == settings.JIRA_STATUS_SELECTED_FOR_DEV:
+            ctx.jira.transition_to_status(epic.key, settings.JIRA_STATUS_IN_PROGRESS)
 
 
 def _handle_story_approved(ctx: Context, story: JiraIssue, skip_rework_detection: bool = False) -> None:

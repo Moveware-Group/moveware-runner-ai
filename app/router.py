@@ -52,7 +52,11 @@ def _decide_internal(issue: JiraIssue) -> Optional[RouteDecision]:
 
         # Fallback: Epic in In Progress with plan but no Stories yet (user may have skipped Selected for Dev)
         if issue.status == settings.JIRA_STATUS_IN_PROGRESS and issue.assignee_account_id == settings.JIRA_AI_ACCOUNT_ID:
-            return RouteDecision(action="EPIC_APPROVED", issue_key=issue.key, reason="Epic in In Progress, create Stories if plan exists")
+            from .story_creation_tracker import were_stories_already_created
+            already_created, _ = were_stories_already_created(issue.key)
+            if not already_created:
+                return RouteDecision(action="EPIC_APPROVED", issue_key=issue.key, reason="Epic in In Progress, create Stories if plan exists")
+            return None
 
         # When Epic is Done and assigned to AI, nothing further.
         return None
