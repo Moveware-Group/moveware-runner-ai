@@ -87,21 +87,22 @@ def retry_with_backoff(
 class AnthropicClient:
     """Minimal Anthropic Messages API client (no SDK dependency)."""
 
-    def __init__(self, api_key: str, base_url: Optional[str] = None):
+    def __init__(self, api_key: str, base_url: Optional[str] = None, timeout: int = 300):
         self.api_key = api_key
         self.base_url = (base_url or "https://api.anthropic.com/v1").rstrip("/")
+        self.timeout = timeout
 
     def messages_create(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        timeout = self.timeout
         def _make_request():
             url = f"{self.base_url}/messages"
             headers = {
                 "x-api-key": self.api_key,
                 "anthropic-version": "2023-06-01",
-                "anthropic-beta": "prompt-caching-2024-07-31",  # Enable caching support
+                "anthropic-beta": "prompt-caching-2024-07-31",
                 "content-type": "application/json",
             }
-            # 300s timeout for extended thinking (can take several minutes)
-            r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=300)
+            r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=timeout)
             if r.status_code >= 400:
                 raise AnthropicAPIError(
                     f"Anthropic error {r.status_code}: {r.text[:500]}",

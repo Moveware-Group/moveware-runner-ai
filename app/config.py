@@ -55,6 +55,7 @@ class Settings:
     ANTHROPIC_API_KEY: str = env("ANTHROPIC_API_KEY", required=True)
     ANTHROPIC_MODEL: str = env("ANTHROPIC_MODEL", required=True)
     ANTHROPIC_BASE_URL: str = env("ANTHROPIC_BASE_URL", required=True)
+    ANTHROPIC_TIMEOUT_SECONDS: int = int(env("ANTHROPIC_TIMEOUT_SECONDS", default="300"))
 
     DEBUG: bool = env("DEBUG", default="false").lower() in ("1", "true", "yes", "y")
 

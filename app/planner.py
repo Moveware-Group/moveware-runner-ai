@@ -229,7 +229,11 @@ def generate_plan(
     if run_id:
         add_progress_event(run_id, "planning", "Using Claude extended thinking to analyze Epic", {})
 
-    claude_client = AnthropicClient(settings.ANTHROPIC_API_KEY, base_url=settings.ANTHROPIC_BASE_URL)
+    claude_client = AnthropicClient(
+        settings.ANTHROPIC_API_KEY,
+        base_url=settings.ANTHROPIC_BASE_URL,
+        timeout=settings.ANTHROPIC_TIMEOUT_SECONDS
+    )
     
     schema_prompt = (
         "\n\nReturn JSON only. Do not wrap in markdown.\n"
@@ -342,8 +346,8 @@ def generate_plan(
     openai_in += int(review_usage.get("input_tokens") or 0)
     openai_out += int(review_usage.get("output_tokens") or 0)
 
-    # Parse review
-    review = _parse_plan_json(review_text)
+    # Parse review (separate from plan parsing — review has verdict/suggestions, not stories)
+    review = _parse_review_json(review_text)
     
     # Step 3: Decide if refinement is needed
     verdict = review.get("verdict", "approve")
@@ -439,40 +443,56 @@ def generate_plan(
     return final_plan
 
 
-def _parse_plan_json(text: str) -> Dict[str, Any]:
+def _parse_json_response(text: str) -> Dict[str, Any]:
     """Parse JSON from model output, handling markdown wrappers and malformed JSON."""
-    from .json_repair import try_parse_json, extract_json_from_llm_response, validate_plan_json
-    
-    # First, try to extract JSON from the response
+    from .json_repair import try_parse_json, extract_json_from_llm_response
+
     json_text = extract_json_from_llm_response(text)
     if not json_text:
         json_text = text
-    
-    # Try to parse with progressive repair
+
     result = try_parse_json(json_text, max_repair_attempts=3)
-    
+
     if result is None:
-        # Save the problematic text for debugging
         error_file = Path("/tmp/failed_plan_json.txt")
         try:
             error_file.write_text(text, encoding="utf-8")
             print(f"❌ Saved failed JSON to {error_file} for debugging")
         except Exception:
             pass
-        
+
         raise ValueError(
             f"Could not parse JSON from response after multiple repair attempts.\n"
             f"First 500 chars: {text[:500]}\n"
             f"Check /tmp/failed_plan_json.txt for full output"
         )
-    
-    # Validate plan structure
+
+    return result
+
+
+def _parse_plan_json(text: str) -> Dict[str, Any]:
+    """Parse plan JSON and validate it has required structure (stories/subtasks)."""
+    from .json_repair import validate_plan_json
+
+    result = _parse_json_response(text)
+
     is_valid, validation_errors = validate_plan_json(result)
     if not is_valid:
         print(f"⚠️  Plan JSON validation warnings:")
         for error in validation_errors:
             print(f"  - {error}")
-    
+
+    return result
+
+
+def _parse_review_json(text: str) -> Dict[str, Any]:
+    """Parse ChatGPT review JSON (verdict/suggestions — not a plan)."""
+    result = _parse_json_response(text)
+
+    if "verdict" not in result:
+        print("⚠️  Review JSON missing 'verdict' field, defaulting to 'approve'")
+        result["verdict"] = "approve"
+
     return result
 
 

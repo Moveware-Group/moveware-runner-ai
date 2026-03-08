@@ -816,7 +816,7 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         add_progress_event(run_id, "executing", f"Checked out branch: {branch}", {"branch": branch})
 
     # 3) Ask Claude to implement the code changes
-    client = AnthropicClient(api_key=settings.ANTHROPIC_API_KEY, base_url=settings.ANTHROPIC_BASE_URL)
+    client = AnthropicClient(api_key=settings.ANTHROPIC_API_KEY, base_url=settings.ANTHROPIC_BASE_URL, timeout=settings.ANTHROPIC_TIMEOUT_SECONDS)
     
     # Get repository context (includes file contents)
     repo_path = Path(repo_settings["repo_workdir"])
