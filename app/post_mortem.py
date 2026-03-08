@@ -414,25 +414,37 @@ def _create_github_issue(
 # ---------------------------------------------------------------------------
 
 def _requeue_run(run_id: int) -> bool:
-    """Reset a failed run to 'queued' so it picks up new KB knowledge."""
+    """Create a NEW queued run for the same issue so it picks up new KB knowledge.
+
+    The original run is still being processed when post-mortem runs, so we
+    can't update it in-place (its status is 'claimed', not 'failed').
+    Instead we create a fresh run and log an event on the original.
+    """
     try:
+        run_info = _get_run_info(run_id)
+        issue_key = run_info.get("issue_key")
+        payload = run_info.get("payload", {})
+        if not issue_key:
+            print(f"[post_mortem] Cannot re-queue run {run_id}: missing issue_key")
+            return False
+
+        from .db import enqueue_run
+        new_run_id = enqueue_run(
+            issue_key=issue_key,
+            payload=payload,
+            force_new=True,
+        )
+
         ts = int(time.time())
         with connect() as conn:
             conn.execute(
-                """UPDATE runs
-                   SET status = 'queued',
-                       locked_by = NULL,
-                       locked_at = NULL,
-                       last_error = NULL,
-                       updated_at = ?
-                   WHERE id = ? AND status = 'failed'""",
-                (ts, run_id),
-            )
-            conn.execute(
                 "INSERT INTO events(run_id,ts,level,message,meta_json) VALUES(?,?,?,?,?)",
-                (run_id, ts, "info", "Run re-queued by post-mortem analysis (new KB rules applied)", "{}"),
+                (run_id, ts, "info",
+                 "Run re-queued by post-mortem analysis (new KB rules applied)",
+                 json.dumps({"new_run_id": new_run_id})),
             )
-        print(f"[post_mortem] Run {run_id} re-queued")
+
+        print(f"[post_mortem] Run {run_id} re-queued as new run {new_run_id}")
         return True
     except Exception as e:
         print(f"[post_mortem] Failed to re-queue run {run_id}: {e}")
@@ -440,12 +452,19 @@ def _requeue_run(run_id: int) -> bool:
 
 
 def _get_post_mortem_count(run_id: int) -> int:
-    """Count how many times post-mortem has already re-queued this run."""
+    """Count how many post-mortem re-queues have happened for this issue."""
     try:
+        run_info = _get_run_info(run_id)
+        issue_key = run_info.get("issue_key")
+        if not issue_key:
+            return 0
         with connect() as conn:
             row = conn.execute(
-                "SELECT COUNT(*) FROM events WHERE run_id=? AND message LIKE '%re-queued by post-mortem%'",
-                (run_id,),
+                """SELECT COUNT(*) FROM events e
+                   JOIN runs r ON e.run_id = r.id
+                   WHERE r.issue_key = ?
+                   AND e.message LIKE '%re-queued by post-mortem%'""",
+                (issue_key,),
             ).fetchone()
         return row[0] if row else 0
     except Exception:
