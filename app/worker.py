@@ -743,10 +743,14 @@ def _handle_story_approved(ctx: Context, story: JiraIssue, skip_rework_detection
         ctx.jira.add_comment(story.key, "Warning: No subtasks found to start.")
 
 
+class _RunRequeued(Exception):
+    """Raised when a run is re-queued by post-mortem — not a real error."""
+    pass
+
+
 def _handle_execute_subtask(ctx: Context, subtask: JiraIssue, run_id: Optional[int] = None) -> None:
     if not subtask.is_subtask:
         return
-    # Allow In Progress (normal) or Blocked (human answered questions, AI retrying)
     if subtask.status not in (settings.JIRA_STATUS_IN_PROGRESS, settings.JIRA_STATUS_BLOCKED):
         return
     if subtask.assignee_account_id != settings.JIRA_AI_ACCOUNT_ID:
@@ -754,19 +758,20 @@ def _handle_execute_subtask(ctx: Context, subtask: JiraIssue, run_id: Optional[i
     if not subtask.parent_key:
         return
 
-    # If Blocked, move to In Progress so the workflow is correct
     if subtask.status == settings.JIRA_STATUS_BLOCKED:
         ctx.jira.transition_to_status(subtask.key, settings.JIRA_STATUS_IN_PROGRESS)
 
-    # Execute
     result: ExecutionResult = execute_subtask(subtask, run_id)
 
-    # If post-mortem re-queued the run, don't transition or comment — it will retry
-    if result.summary and "re-queued by post-mortem" in result.summary.lower():
-        print(f"Post-mortem re-queued {subtask.key} — skipping Jira transition")
+    if not result.success:
+        if result.summary and "re-queued by post-mortem" in result.summary.lower():
+            print(f"Post-mortem re-queued {subtask.key} — skipping Jira transition")
+            raise _RunRequeued(f"{subtask.key} re-queued by post-mortem")
+        print(f"⚠️ Build failed for {subtask.key} — transitioning to Blocked")
+        ctx.jira.transition_to_status(subtask.key, settings.JIRA_STATUS_BLOCKED)
+        ctx.jira.assign_issue(subtask.key, settings.JIRA_HUMAN_ACCOUNT_ID)
         return
 
-    # Comment + transition + assign
     if result.jira_comment:
         ctx.jira.add_comment(subtask.key, result.jira_comment)
     ctx.jira.transition_to_status(subtask.key, settings.JIRA_STATUS_IN_TESTING)
@@ -1351,16 +1356,23 @@ def _handle_rework_subtask(ctx: Context, subtask: JiraIssue, run_id: Optional[in
     if subtask.status in (settings.JIRA_STATUS_NEEDS_REWORK, settings.JIRA_STATUS_SELECTED_FOR_DEV):
         ctx.jira.transition_to_status(subtask.key, settings.JIRA_STATUS_IN_PROGRESS)
     
-    # Execute the subtask (will incorporate feedback from description/comments)
     result: ExecutionResult = execute_subtask(subtask, run_id)
-    
-    # Comment + transition + assign
+
+    if not result.success:
+        if result.summary and "re-queued by post-mortem" in result.summary.lower():
+            print(f"Post-mortem re-queued rework for {subtask.key} — skipping Jira transition")
+            raise _RunRequeued(f"{subtask.key} rework re-queued by post-mortem")
+        print(f"⚠️ Rework build failed for {subtask.key} — transitioning to Blocked")
+        ctx.jira.transition_to_status(subtask.key, settings.JIRA_STATUS_BLOCKED)
+        ctx.jira.assign_issue(subtask.key, settings.JIRA_HUMAN_ACCOUNT_ID)
+        return
+
     rework_comment = (
         "## 🔄 Rework Complete\n\n"
         "I've addressed the issues found in testing and updated the implementation.\n\n"
         f"{result.jira_comment}"
     )
-    
+
     ctx.jira.add_comment(subtask.key, rework_comment)
     ctx.jira.transition_to_status(subtask.key, settings.JIRA_STATUS_IN_TESTING)
     ctx.jira.assign_issue(subtask.key, settings.JIRA_HUMAN_ACCOUNT_ID)
@@ -1460,14 +1472,24 @@ def process_run(ctx: Context, run_id: int, issue_key: str, payload: Dict[str, An
         _check_story_completion(ctx, issue)
     elif action.name == "REWORK_SUBTASK":
         add_progress_event(run_id, "executing", f"Reworking {issue_key} based on testing feedback", {})
-        _handle_rework_subtask(ctx, issue, run_id)
+        try:
+            _handle_rework_subtask(ctx, issue, run_id)
+        except _RunRequeued:
+            add_progress_event(run_id, "requeued", "Rework re-queued by post-mortem for automatic retry", {})
+            update_run(run_id, status="requeued", locked_by=None, locked_at=None)
+            return
     elif action.name == "EXECUTE_SUBTASK":
         add_progress_event(run_id, "executing", f"Implementing {issue_key}", {})
-        _handle_execute_subtask(ctx, issue, run_id)
+        try:
+            _handle_execute_subtask(ctx, issue, run_id)
+        except _RunRequeued:
+            add_progress_event(run_id, "requeued", "Run re-queued by post-mortem for automatic retry", {})
+            update_run(run_id, status="requeued", locked_by=None, locked_at=None)
+            return
     elif action.name == "SUBTASK_DONE":
         add_progress_event(run_id, "analyzing", "Checking parent Story status", {})
         _handle_subtask_done(ctx, issue)
-    
+
     add_progress_event(run_id, "completed", "Run completed successfully", {})
     update_run(run_id, status="completed", locked_by=None, locked_at=None)
 

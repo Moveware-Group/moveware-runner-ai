@@ -27,6 +27,7 @@ class ExecutionResult:
     pr_url: Optional[str]
     summary: str
     jira_comment: str
+    success: bool = True
 
 
 def _get_nextjs_build_env() -> dict:
@@ -2919,7 +2920,6 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         )
         jira_client.add_comment(issue.key, jira_comment)
 
-        # If re-queued, return gracefully instead of raising (the run will be retried)
         if pm_result and pm_result.get("requeued"):
             print(f"[post_mortem] Run re-queued — returning without raising error")
             return ExecutionResult(
@@ -2927,6 +2927,7 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                 pr_url=None,
                 summary="Re-queued by post-mortem analysis with new KB rules",
                 jira_comment="",
+                success=False,
             )
 
         raise RuntimeError(f"Build verification failed after {fix_attempt} attempts (Claude + OpenAI):\n{error_msg}")
