@@ -707,6 +707,7 @@
                 <option value="all" selected>All Status</option>
                 <option value="active">Active</option>
                 <option value="failed">Failed / Stuck</option>
+                <option value="requeued">Requeued</option>
                 <option value="completed">Completed</option>
                 <option value="queued">Queued</option>
             </select>
@@ -1022,6 +1023,8 @@
                 ));
             } else if (statusFilter === 'completed') {
                 filteredRuns = filteredRuns.filter(r => r.status === 'completed');
+            } else if (statusFilter === 'requeued') {
+                filteredRuns = filteredRuns.filter(r => r.status === 'requeued');
             } else if (statusFilter === 'queued') {
                 filteredRuns = filteredRuns.filter(r => r.status === 'queued');
             }
@@ -1185,8 +1188,20 @@
                             🗑️ Delete
                         </button>
                     `;
+                } else if (run.status === 'requeued') {
+                    actionButtons = `
+                        <button class="reset-btn"
+                                onclick="resetRun(${run.run_id}, '${run.issue_key}')"
+                                title="Retry this requeued run">
+                            🔄 Retry
+                        </button>
+                        <button class="delete-btn"
+                                onclick="deleteRun(${run.run_id}, '${run.issue_key}')"
+                                title="Delete this requeued run">
+                            🗑️ Delete
+                        </button>
+                    `;
                 } else if (run.status === 'claimed' || run.status === 'running') {
-                    // Claimed/running runs only get Reset
                     actionButtons = `
                         <button class="reset-btn ${isStuck ? 'reset-btn-warning' : ''}" 
                                 onclick="resetRun(${run.run_id}, '${run.issue_key}')"

@@ -661,8 +661,8 @@ async def retry_run(run_id: int) -> Dict[str, Any]:
                 return {"error": "Run not found"}
             
             status = row[0]
-            # Allow: failed, completed (retry), or claimed/running (reset stuck)
-            if status not in ("failed", "completed", "claimed", "running"):
+            # Allow: failed, completed (retry), claimed/running (reset stuck), requeued
+            if status not in ("failed", "completed", "claimed", "running", "requeued"):
                 return {"error": f"Cannot reset run with status: {status}"}
             
             # Reset run to queued
