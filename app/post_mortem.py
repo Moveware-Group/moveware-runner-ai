@@ -316,6 +316,23 @@ def _generate_improvement_suggestions(
 #  GitHub Issue creation
 # ---------------------------------------------------------------------------
 
+def _resolve_target_repo(issue_key: str) -> str:
+    """
+    Determine the GitHub repo slug (owner/name) to create issues on.
+    Uses the project's configured repo first, falls back to RUNNER_REPO.
+    """
+    try:
+        from .repo_config import get_repo_for_issue
+        repo_cfg = get_repo_for_issue(issue_key)
+        if repo_cfg:
+            slug = f"{repo_cfg.repo_owner_slug}/{repo_cfg.repo_name}"
+            print(f"[post_mortem] Target repo for {issue_key}: {slug}")
+            return slug
+    except Exception as e:
+        print(f"[post_mortem] Could not resolve target repo for {issue_key}: {e}")
+    return RUNNER_REPO
+
+
 def _create_github_issue(
     issue_key: str,
     run_id: int,
@@ -324,7 +341,8 @@ def _create_github_issue(
     final_error: str,
 ) -> Optional[str]:
     """
-    Create a GitHub Issue on the runner repo documenting the failure.
+    Create a GitHub Issue on the target project repo documenting the failure.
+    Falls back to the runner repo if the target repo is unavailable.
     Returns the issue URL, or None if creation failed.
     """
     try:
@@ -336,9 +354,8 @@ def _create_github_issue(
             print("[post_mortem] No GitHub token available, skipping issue creation")
             return None
 
-        title = f"[Post-Mortem] {issue_key} (run #{run_id}): {analysis['dominant_category']} - {analysis['pattern']}"
+        title = f"[AI Post-Mortem] {issue_key} (run #{run_id}): {analysis['dominant_category']} - {analysis['pattern']}"
 
-        # Build attempt table
         attempt_rows = []
         for a in attempts:
             status = "pass" if a["success"] else "FAIL"
@@ -351,7 +368,6 @@ def _create_github_issue(
             + "\n".join(attempt_rows)
         )
 
-        # Build proposed rules section
         rules_section = ""
         if analysis.get("proposed_rules"):
             rules_items = "\n".join(
@@ -360,7 +376,6 @@ def _create_github_issue(
             )
             rules_section = f"\n\n## Proposed KB Rules (auto-added)\n\n{rules_items}"
 
-        # Build suggestions section
         suggestions_section = ""
         if analysis.get("suggestions"):
             sugg_items = "\n".join(f"- {s}" for s in analysis["suggestions"])
@@ -382,30 +397,58 @@ def _create_github_issue(
             f"The run has been re-queued to test with the new knowledge.*"
         )
 
-        resp = requests.post(
-            f"https://api.github.com/repos/{RUNNER_REPO}/issues",
-            headers={
-                "Authorization": f"token {token}",
-                "Accept": "application/vnd.github.v3+json",
-            },
-            json={
+        target_repo = _resolve_target_repo(issue_key)
+        repos_to_try = [target_repo]
+        if target_repo != RUNNER_REPO:
+            repos_to_try.append(RUNNER_REPO)
+
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github.v3+json",
+        }
+
+        for repo_slug in repos_to_try:
+            print(f"[post_mortem] Attempting to create issue on {repo_slug}...")
+
+            issue_payload: Dict[str, Any] = {
                 "title": title[:256],
                 "body": body,
-                "labels": ["post-mortem", "self-healing"],
-            },
-            timeout=15,
-        )
+                "labels": ["post-mortem", "ai-runner"],
+            }
 
-        if resp.status_code in (201, 200):
-            url = resp.json().get("html_url", "")
-            print(f"[post_mortem] GitHub Issue created: {url}")
-            return url
-        else:
-            print(f"[post_mortem] GitHub Issue creation failed ({resp.status_code}): {resp.text[:300]}")
-            return None
+            resp = requests.post(
+                f"https://api.github.com/repos/{repo_slug}/issues",
+                headers=headers,
+                json=issue_payload,
+                timeout=15,
+            )
+
+            # If 422 (often caused by non-existent labels), retry without labels
+            if resp.status_code == 422:
+                print(f"[post_mortem] Got 422 on {repo_slug}, retrying without labels...")
+                issue_payload.pop("labels", None)
+                resp = requests.post(
+                    f"https://api.github.com/repos/{repo_slug}/issues",
+                    headers=headers,
+                    json=issue_payload,
+                    timeout=15,
+                )
+
+            if resp.status_code in (201, 200):
+                url = resp.json().get("html_url", "")
+                print(f"[post_mortem] GitHub Issue created on {repo_slug}: {url}")
+                return url
+            else:
+                print(f"[post_mortem] Issue creation FAILED on {repo_slug} "
+                      f"({resp.status_code}): {resp.text[:500]}")
+
+        print("[post_mortem] All repos exhausted — no issue created")
+        return None
 
     except Exception as e:
         print(f"[post_mortem] GitHub Issue creation error: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
@@ -590,12 +633,19 @@ def run_post_mortem(
         )
         result["github_issue_url"] = github_url
 
-        if github_url and run_id:
-            add_progress_event(
-                run_id, "analyzing",
-                f"Post-mortem: created GitHub Issue for tracking",
-                {"github_issue_url": github_url},
-            )
+        if run_id:
+            if github_url:
+                add_progress_event(
+                    run_id, "analyzing",
+                    f"Post-mortem: created GitHub Issue — {github_url}",
+                    {"github_issue_url": github_url},
+                )
+            else:
+                add_progress_event(
+                    run_id, "analyzing",
+                    "Post-mortem: GitHub Issue creation failed (check worker logs)",
+                    {},
+                )
 
         # 5. Re-queue the run (only if we haven't already re-queued too many times)
         prior_retries = _get_post_mortem_count(run_id)
