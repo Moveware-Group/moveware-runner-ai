@@ -2918,6 +2918,14 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                                     capture_output=True, text=True, timeout=10,
                                 )
                                 print(f"✅ Rolled back successfully. Next attempt starts from clean state.")
+                                # Re-create stubs that were wiped by the rollback
+                                try:
+                                    from .import_resolver import resolve_all_missing_imports
+                                    _post_rollback_stubs = resolve_all_missing_imports(repo_path)
+                                    if _post_rollback_stubs:
+                                        print(f"📦 Re-created {len(_post_rollback_stubs)} stub(s) after rollback")
+                                except Exception as _ir_err:
+                                    print(f"Warning: post-rollback stub creation failed: {_ir_err}")
                                 # Reset verification errors to the original error
                                 # so the next attempt focuses on the ORIGINAL problem
                                 verification_errors = list(verification_errors[:1]) if verification_errors else verification_errors

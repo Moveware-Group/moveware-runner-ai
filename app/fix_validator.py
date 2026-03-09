@@ -572,10 +572,18 @@ class FixValidator:
                 if name:
                     exports.add(name)
         
-        # export default
-        if 'export default' in content:
+        # export default function Name / export default class Name
+        for match in re.finditer(
+            r'export\s+default\s+(?:async\s+)?(?:function|class)\s+(\w+)',
+            content,
+        ):
+            exports.add(match.group(1))
             exports.add('default')
-        
+
+        # export default (anonymous or variable)
+        if 'export default' in content and 'default' not in exports:
+            exports.add('default')
+
         return exports
     
     def _resolve_import_path(self, importing_file: str, import_path: str) -> str:
