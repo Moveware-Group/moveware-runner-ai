@@ -55,6 +55,7 @@ def try_all_auto_fixes(
         auto_fix_nextjs_route_export,
         auto_fix_import_path_leading_slash,
         auto_fix_component_props_mismatch,
+        auto_fix_intrinsic_attributes,
         auto_fix_double_prefix_import,
         auto_fix_phantom_import,
         auto_fix_jsx_no_undef,
@@ -253,6 +254,107 @@ def auto_fix_missing_export(
 
     except Exception as e:
         print(f"auto_fix_missing_export failed: {e}")
+
+    return False, ""
+
+
+def auto_fix_intrinsic_attributes(
+    error_msg: str,
+    repo_path: Path,
+    is_node_project: bool,
+) -> Tuple[bool, str]:
+    """
+    Fix: Type '{ prop: any; }' is not assignable to type 'IntrinsicAttributes'.
+    This means the component was defined without accepting props.
+    Add `props: any` to the component's function signature.
+    """
+    if not is_node_project:
+        return False, ""
+
+    # Pattern: Property 'X' does not exist on type 'IntrinsicAttributes'.
+    # preceding line has: <ComponentName prop={...} />
+    match = re.search(
+        r"not assignable to type ['\"]IntrinsicAttributes['\"].*?"
+        r"Property ['\"](\w+)['\"] does not exist",
+        error_msg, re.DOTALL,
+    )
+    if not match:
+        return False, ""
+
+    # Find the file and component from the error
+    file_match = re.search(
+        r"\./([\w/.[\]-]+\.tsx?)[:\(]",
+        error_msg,
+    )
+    if not file_match:
+        return False, ""
+
+    error_file = repo_path / file_match.group(1)
+    if not error_file.exists():
+        return False, ""
+
+    content = error_file.read_text(encoding="utf-8")
+
+    # Find the JSX usage: <ComponentName prop={...} />
+    # Extract the component name from error context
+    comp_match = re.search(
+        r"<(\w+)\s+\w+\s*=",
+        error_msg,
+    )
+    if not comp_match:
+        return False, ""
+
+    component_name = comp_match.group(1)
+
+    # Find the component's source file by scanning imports in the error file
+    import_match = re.search(
+        rf"import\s+(?:\{{[^}}]*\}}|\w+)\s+from\s+['\"]([^'\"]+)['\"]",
+        content,
+    )
+
+    # Search for the component definition across all likely files
+    for pattern in ["**/*.tsx", "**/*.ts"]:
+        for f in repo_path.glob(pattern):
+            rel = str(f.relative_to(repo_path))
+            if "node_modules" in rel or ".next" in rel:
+                continue
+            try:
+                src = f.read_text(encoding="utf-8")
+            except Exception:
+                continue
+
+            # Match: export default function ComponentName() {
+            # or:    export function ComponentName() {
+            func_pattern = re.compile(
+                rf"(export\s+(?:default\s+)?function\s+{re.escape(component_name)})\s*\(\s*\)",
+            )
+            m = func_pattern.search(src)
+            if m:
+                new_src = func_pattern.sub(
+                    rf"\1(props: any)",
+                    src,
+                    count=1,
+                )
+                if new_src != src:
+                    f.write_text(new_src, encoding="utf-8")
+                    rel_path = str(f.relative_to(repo_path))
+                    return True, f"Added `props: any` to {component_name} in {rel_path}"
+
+            # Match: const ComponentName = () => {
+            arrow_pattern = re.compile(
+                rf"((?:export\s+)?(?:const|let)\s+{re.escape(component_name)}\s*=\s*)\(\s*\)\s*(?::\s*\w+\s*)?=>",
+            )
+            m = arrow_pattern.search(src)
+            if m:
+                new_src = arrow_pattern.sub(
+                    lambda ma: ma.group(0).replace("()", "(props: any)", 1),
+                    src,
+                    count=1,
+                )
+                if new_src != src:
+                    f.write_text(new_src, encoding="utf-8")
+                    rel_path = str(f.relative_to(repo_path))
+                    return True, f"Added `props: any` to {component_name} in {rel_path}"
 
     return False, ""
 
@@ -1976,16 +2078,12 @@ def auto_fix_module_not_found_stub(
 ) -> Tuple[bool, str]:
     """
     Auto-fix "Module not found: Can't resolve '@/lib/...'" errors by
-    creating a stub module that exports the symbols the importing file needs.
-
-    Only handles @/ alias paths that should exist under the repo root.
+    delegating to the import resolver which scans all source files and creates stubs.
     """
     if not is_node_project:
         return False, ""
 
-    # Match both webpack and TypeScript error formats:
-    #   webpack: Module not found: Can't resolve '@/lib/foo'
-    #   tsc:     Cannot find module '@/components/foo' or its corresponding type declarations
+    # Check if error contains missing @/ module references
     matches = re.findall(
         r"(?:Module not found: Can't resolve|Cannot find module)\s+'(@/[^']+)'",
         error_msg,
@@ -1993,89 +2091,19 @@ def auto_fix_module_not_found_stub(
     if not matches:
         return False, ""
 
-    created = []
-    for alias_path in set(matches):
-        rel_path = alias_path.replace("@/", "")
+    print(f"  [stub-debug] Found {len(set(matches))} missing @/ modules in error: {list(set(matches))[:5]}")
 
-        candidates = [
-            rel_path + ext
-            for ext in [".ts", ".tsx", "/index.ts", "/index.tsx", ".js"]
-        ]
-        file_exists = any((repo_path / c).exists() for c in candidates)
-        if file_exists:
-            continue
-
-        # Use .tsx for component paths, .ts for lib/util paths
-        is_component = any(seg in rel_path for seg in ["components/", "app/"])
-        ext = ".tsx" if is_component else ".ts"
-        target_file = rel_path + ext
-        target_path = repo_path / target_file
-
-        needed_exports: set = set()
-        for pattern in ["*.ts", "*.tsx"]:
-            for ts_file in repo_path.rglob(pattern):
-                if "node_modules" in str(ts_file) or ".next" in str(ts_file):
-                    continue
-                try:
-                    src = ts_file.read_text(encoding="utf-8")
-                    for m in re.finditer(
-                        rf"import\s+\{{([^}}]+)\}}\s+from\s+['\"]"
-                        + re.escape(alias_path) + r"['\"]",
-                        src,
-                    ):
-                        for name in m.group(1).split(","):
-                            name = name.strip().split(" as ")[0].strip()
-                            if name:
-                                needed_exports.add(name)
-                    for m in re.finditer(
-                        rf"import\s+(\w+)\s+from\s+['\"]"
-                        + re.escape(alias_path) + r"['\"]",
-                        src,
-                    ):
-                        needed_exports.add(f"default:{m.group(1)}")
-                except Exception:
-                    continue
-
-        if not needed_exports:
-            continue
-
-        stub_lines = [
-            f'// Stub module created by AI Runner auto-fix',
-            f'// TODO: Replace with actual implementation for {alias_path}',
-        ]
-
-        if is_component:
-            stub_lines.insert(0, "'use client';")
-            stub_lines.append('')
-
-        for export_name in sorted(needed_exports):
-            if export_name.startswith("default:"):
-                func_name = export_name.split(":")[1]
-                if is_component:
-                    stub_lines.append(f'export default function {func_name}(props: any) {{')
-                    stub_lines.append(f'  return <div data-stub="{func_name}">{{/* stub */}}</div>;')
-                    stub_lines.append(f'}}')
-                else:
-                    stub_lines.append(f'export default function {func_name}(...args: any[]) {{')
-                    stub_lines.append(f'  return undefined as any;')
-                    stub_lines.append(f'}}')
-            else:
-                if is_component and export_name[0].isupper():
-                    stub_lines.append(f'export function {export_name}(props: any) {{')
-                    stub_lines.append(f'  return <div data-stub="{export_name}">{{/* stub */}}</div>;')
-                    stub_lines.append(f'}}')
-                else:
-                    stub_lines.append(f'export function {export_name}(...args: any[]) {{')
-                    stub_lines.append(f'  return undefined as any;')
-                    stub_lines.append(f'}}')
-            stub_lines.append('')
-
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        target_path.write_text("\n".join(stub_lines), encoding="utf-8")
-        created.append(f"{target_file} ({len(needed_exports)} exports)")
-
-    if created:
-        return True, f"Created stub module(s): {', '.join(created)}"
+    try:
+        from .import_resolver import resolve_all_missing_imports
+        created = resolve_all_missing_imports(repo_path)
+        if created:
+            return True, f"Created stub module(s): {', '.join(created)}"
+        else:
+            print(f"  [stub-debug] Import resolver found no missing imports to stub (files may already exist)")
+    except Exception as e:
+        print(f"  [stub-debug] Import resolver failed: {e}")
+        import traceback
+        traceback.print_exc()
 
     return False, ""
 

@@ -506,6 +506,12 @@ def _system_prompt() -> str:
         "- For updates, provide the COMPLETE file content (not diffs)\n"
         "- Keep changes focused on the specific sub-task requirements\n"
         "- If requirements are unclear, include an 'questions' array in JSON instead of 'files'\n\n"
+        "**🚨 IMPORT COMPLETENESS — THE #1 BUILD FAILURE:**\n"
+        "- EVERY file you import from MUST either already exist in the repo OR be in your 'files' array\n"
+        "- If file A imports from file B, you MUST include file B in your response\n"
+        "- Do NOT reference modules that don't exist — check the repo file listing carefully\n"
+        "- If you need a sub-component you can't fully implement, create it as a minimal stub in the same response\n"
+        "- BEFORE responding: verify every import in every file resolves to something real\n\n"
         "**🚨 CRITICAL SCOPE RULES - MUST FOLLOW:**\n"
         "- ONLY implement what is EXPLICITLY stated in the task requirements\n"
         "- Do NOT add features, pages, or components that are not mentioned in the requirements\n"
@@ -536,14 +542,14 @@ def _system_prompt() -> str:
         "Do NOT invent encrypted fields (e.g. 'refreshTokenEncrypted', 'metadataEncrypted') — check the schema!\n"
         "  * Prisma: for null checks in where clauses, use `{ isSet: false }` not `null` or `{ equals: null }`\n"
         "  * Importing from modules that DO NOT EXIST in the repository\n"
-        "- **IMPORT VALIDATION (your fix WILL BE REJECTED if violated):**\n"
-        "  * Every import MUST resolve to a file that already exists in the repository\n"
-        "  * Do NOT invent new module paths — check the repo context for existing files\n"
-        "  * Do NOT create files that import from other files you're also creating "
-        "(this causes cascading Module not found errors)\n"
-        "  * If you need to create a new component, it must be self-contained — no imports "
-        "from other new files that don't exist yet\n"
-        "- TEST YOUR MENTAL MODEL: Before finishing, mentally trace each import/export\n\n"
+        "- **IMPORT VALIDATION — #1 CAUSE OF BUILD FAILURES (WILL BE REJECTED):**\n"
+        "  * EVERY file you import from MUST either (a) already exist in the repo, or (b) be included in YOUR response\n"
+        "  * If you create file A that imports from file B, you MUST also create file B in the SAME response\n"
+        "  * Do NOT split implementation across files unless you provide ALL of them\n"
+        "  * Do NOT invent module paths — only import from paths you can see in the repo context\n"
+        "  * BEFORE finishing: mentally verify EVERY import in EVERY file you're creating resolves to something real\n"
+        "  * Common mistake: creating a Shell component that imports NotesPanel, ClickToCallButton, etc. without creating those files\n"
+        "  * If a component needs sub-components you can't provide, inline them or use a placeholder div\n\n"
         "**CRITICAL: DO NOT REGRESS EXISTING FUNCTIONALITY:**\n"
         "- When adding new features, you MUST preserve ALL existing functionality\n"
         "- DO NOT remove existing exports, functions, or components unless explicitly instructed\n"
@@ -1438,6 +1444,19 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             if run_id:
                 add_progress_event(run_id, "verifying", msg, {"fixes": len(proactive_fixes), "warnings": len(proactive_warnings)})
     
+    # 4.6) Pre-build import resolution — create stubs for any @/ imports that don't resolve
+    try:
+        from .import_resolver import resolve_all_missing_imports
+        _changed = [f["path"] for f in files if f.get("action", "update") != "delete"]
+        _stubs_created = resolve_all_missing_imports(repo_path, changed_files=_changed)
+        if _stubs_created:
+            msg = f"Pre-build: created {len(_stubs_created)} stub module(s) for missing imports"
+            print(f"📦 {msg}")
+            if run_id:
+                add_progress_event(run_id, "verifying", msg, {"stubs": _stubs_created})
+    except Exception as _ir_err:
+        print(f"Warning: pre-build import resolution failed: {_ir_err}")
+
     # 5) Pre-commit verification (catch errors early!)
     if run_id:
         add_progress_event(run_id, "verifying", "Running pre-commit checks", {})
@@ -1666,6 +1685,40 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                 print(f"📚 Recorded {_n} lesson(s) from initial build failure")
         except Exception:
             pass
+
+    # Resolve missing imports FIRST (this is the #1 cause of cascading failures)
+    if verification_errors and is_node_project:
+        _has_missing_modules = any(
+            "Module not found" in e or "Cannot find module" in e
+            for e in verification_errors
+        )
+        if _has_missing_modules:
+            try:
+                from .import_resolver import resolve_all_missing_imports
+                _stubs = resolve_all_missing_imports(repo_path)
+                if _stubs:
+                    print(f"📦 Pre-fix: resolved {len(_stubs)} missing import(s) with stubs")
+                    if run_id:
+                        add_progress_event(run_id, "verifying", f"Created {len(_stubs)} stubs for missing imports", {"stubs": _stubs})
+                    # Re-run tsc to see if stubs resolved the issues
+                    _tsc_retry = subprocess.run(
+                        ["npx", "tsc", "--noEmit", "--pretty", "false"],
+                        cwd=repo_path, capture_output=True, text=True, timeout=60,
+                    )
+                    if _tsc_retry.returncode == 0:
+                        print("✅ TypeScript check passed after stub creation!")
+                        verification_errors = []
+                    else:
+                        _tsc_out = _tsc_retry.stdout or _tsc_retry.stderr
+                        _filtered = [l for l in _tsc_out.splitlines() if not l.startswith(".next/")]
+                        _remaining = len([l for l in _filtered if ": error " in l])
+                        if _remaining > 0:
+                            verification_errors = [f"TypeScript check still failing ({_remaining} errors) after stub creation:\n{chr(10).join(_filtered[:500])}"]
+                        else:
+                            print("✅ TypeScript check passed after stub creation (only .next/ errors filtered)")
+                            verification_errors = []
+            except Exception as _ir_err:
+                print(f"Warning: pre-fix import resolution failed: {_ir_err}")
 
     # Try all auto-fixes before engaging AI (saves time and cost!)
     if verification_errors:
@@ -2132,6 +2185,39 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         print(f"\nVERIFICATION FAILED - Attempt {fix_attempt}/{MAX_FIX_ATTEMPTS} using {model_name}")
         print(f"Error summary: {error_msg[:200]}...")
         
+        # SHORT-CIRCUIT: "Module not found" → create stubs directly (LLM is terrible at this)
+        _module_not_found_resolved = False
+        try:
+            _mnf_matches = re.findall(
+                r"(?:Module not found: Can't resolve|Cannot find module)\s+'(@/[^']+)'",
+                error_msg,
+            )
+            if _mnf_matches:
+                from .import_resolver import resolve_all_missing_imports
+                print(f"📦 Detected {len(set(_mnf_matches))} missing module(s) — resolving with stubs...")
+                _stubs = resolve_all_missing_imports(repo_path)
+                if _stubs:
+                    print(f"📦 Created {len(_stubs)} stub(s): {', '.join(_stubs)}")
+                    _af_result = subprocess.run(
+                        ["npm", "run", "build"],
+                        cwd=repo_path, capture_output=True, text=True,
+                        timeout=180, env=_get_nextjs_build_env(),
+                    )
+                    if _af_result.returncode == 0:
+                        print(f"✅ Build passed after import resolution!")
+                        verification_errors = []
+                        _module_not_found_resolved = True
+                    else:
+                        _af_err = _af_result.stderr if _af_result.stderr else _af_result.stdout
+                        verification_errors = [f"Build still failing after stub creation:\n{_af_err[:2000]}"]
+                        error_msg = "\n\n".join(verification_errors)
+                        print(f"⚠️  Stubs created but build still failing — continuing with auto-fixes")
+        except Exception as _mnf_err:
+            print(f"Warning: module-not-found short-circuit failed: {_mnf_err}")
+
+        if _module_not_found_resolved:
+            break
+
         # Try auto-fixes FIRST before calling the LLM (cheaper, faster, more reliable)
         # Run in a loop — one auto-fix may expose another (e.g. phantom import -> jsx-no-undef)
         _autofix_rounds = 0
@@ -2739,6 +2825,15 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                         except Exception as e:
                             print(f"Prettier on fixed files: {e}")
                 
+                # Resolve any missing imports the LLM fix may have introduced
+                try:
+                    from .import_resolver import resolve_all_missing_imports
+                    _fix_stubs = resolve_all_missing_imports(repo_path, changed_files=fixed_files)
+                    if _fix_stubs:
+                        print(f"📦 Post-fix: created {len(_fix_stubs)} stub(s) for new missing imports")
+                except Exception as _ir_err:
+                    print(f"Warning: post-fix import resolution failed: {_ir_err}")
+
                 # Re-run verification after fixes
                 print("Re-running build verification after fixes...")
                 if run_id:
