@@ -672,10 +672,35 @@ def auto_fix_prisma_schema_mismatch(
                     if prev.endswith(',') and (i >= len(lines) or lines[i].strip().startswith('}')):
                         lines[i - 1] = prev[:-1] + "\n" if prev.endswith(',\n') else prev[:-1]
 
+                # Also remove downstream references to this property (e.g. account.refreshTokenEncrypted)
+                # that would cause "Property 'X' does not exist on type" errors
+                downstream_removed = 0
                 new_content = "\n".join(lines)
+                downstream_pattern = re.compile(
+                    rf'(?:^.*?\b\w+\.{re.escape(invalid_prop)}\b.*$)',
+                    re.MULTILINE,
+                )
+                for dm in downstream_pattern.finditer(new_content):
+                    line_text = dm.group(0).strip()
+                    if line_text.startswith("//") or line_text.startswith("*"):
+                        continue
+                    downstream_removed += 1
+
+                if downstream_removed > 0:
+                    new_content = downstream_pattern.sub(
+                        lambda m: f"// AUTO-REMOVED: {m.group(0).strip()}  // '{invalid_prop}' not in {model_name} schema"
+                        if not m.group(0).strip().startswith("//") and not m.group(0).strip().startswith("*")
+                        else m.group(0),
+                        new_content,
+                    )
+                    print(f"  Also commented out {downstream_removed} downstream reference(s) to '{invalid_prop}'")
+
                 file_path.write_text(new_content, encoding="utf-8")
                 removed_preview = removed[0].strip()[:60]
-                return True, f"Removed invalid '{invalid_prop}' from {model_name} query in {file_rel} ({removed_preview})"
+                desc = f"Removed invalid '{invalid_prop}' from {model_name} query in {file_rel} ({removed_preview})"
+                if downstream_removed > 0:
+                    desc += f" + {downstream_removed} downstream ref(s)"
+                return True, desc
 
     except Exception as e:
         print(f"auto_fix_prisma_schema_mismatch failed: {e}")

@@ -2167,7 +2167,7 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         
         # Get similar successful fixes from pattern learning database
         from .pattern_learner import get_similar_successful_fixes, format_fix_suggestions
-        similar_patterns = get_similar_successful_fixes(error_msg, limit=10)
+        similar_patterns = get_similar_successful_fixes(error_msg, limit=5)
         pattern_guidance = format_fix_suggestions(similar_patterns)
         
         if similar_patterns:
@@ -2255,14 +2255,25 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         # For Prisma errors, ALWAYS include schema.prisma so AI can see actual models/fields
         prisma_schema_path = repo_path / "prisma" / "schema.prisma"
         if prisma_schema_path.exists():
-            # Include for specific Prisma error types
-            if error_category in ("prisma_schema_mismatch", "prisma_model_missing", "prisma_model_not_exported"):
-                error_files.add("prisma/schema.prisma")
-                print(f"Including prisma/schema.prisma in context for {error_category} error")
-            # Also include if error message mentions @prisma/client or PrismaClient
+            include_prisma = False
+            reason = ""
+
+            if error_category in ("prisma_schema_mismatch", "prisma_model_missing", "prisma_model_not_exported", "property_type_mismatch"):
+                include_prisma = True
+                reason = f"{error_category} error"
             elif "@prisma/client" in error_msg or "PrismaClient" in error_msg:
+                include_prisma = True
+                reason = "Prisma-related error detected"
+            elif re.search(r"does not exist in type ['\"].*?(?:Select|Include|Where|Create|Update|OrderBy)", error_msg):
+                include_prisma = True
+                reason = "Prisma-generated type in error"
+            elif re.search(r"not assignable to type ['\"].*?(?:Select|Include|Where|Create|Update|OrderBy)", error_msg):
+                include_prisma = True
+                reason = "Prisma type assignment error"
+
+            if include_prisma:
                 error_files.add("prisma/schema.prisma")
-                print("Including prisma/schema.prisma in context (Prisma-related error detected)")
+                print(f"Including prisma/schema.prisma in context ({reason})")
         
         # For env type errors, include env schema files so AI can add missing properties
         if error_category == "env_type_missing":
@@ -2408,33 +2419,15 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             f"{error_analysis_section}"
             f"{pattern_guidance}"
             f"{reflection_guidance}"
-            f"\n**MANDATORY DEBUGGING PROCESS:**\n"
-            f"1. **READ THE ERROR MESSAGE COMPLETELY** - Every word matters!\n"
-            f"   - What file has the error? (look for file paths)\n"
-            f"   - What line number? (helps locate the problem)\n"
-            f"   - What exactly is the error? (missing export, type mismatch, syntax, etc.)\n\n"
-            f"2. **READ THE ACTUAL FILE CONTENTS** (provided in context below)\n"
-            f"   - Don't guess what's in the file - READ IT!\n"
-            f"   - Search for 'export' keyword to see what's actually exported\n"
-            f"   - Check the exact spelling and casing (JavaScript is case-sensitive!)\n\n"
-            f"3. **COMPARE ERROR vs REALITY**\n"
-            f"   - Error says: \"Module has no exported member 'userRepository'\"\n"
-            f"   - File contains: 'export const UserRepository' ← Different casing!\n"
-            f"   - OR File contains: 'const userRepository' ← Missing 'export' keyword!\n"
-            f"   - Fix: Either add export OR fix import to match actual name\n\n"
-            f"4. **BEFORE CHANGING ANY FILE - VERIFY:**\n"
-            f"   - If adding an import → CHECK the source file exports that name\n"
-            f"   - If adding a function call → CHECK the function signature (arguments)\n"
-            f"   - If adding a constant → CHECK it doesn't already exist (no duplicates!)\n"
-            f"   - If changing a file → READ IT FIRST to understand current state\n\n"
-            f"5. **APPLY THE FIX**\n"
-            f"   - Missing export? Add 'export' keyword to the SOURCE file\n"
-            f"   - Wrong name? Fix the import to match actual export name\n"
-            f"   - Missing package? Add to package.json dependencies\n"
-            f"   - Type error? Check interface and add missing properties\n"
-            f"   - Function signature mismatch? Check actual function definition\n\n"
-            f"**Key Error Context:**\n{error_file_context if error_file_context else chr(10).join(error_context) if error_context else 'See full errors above'}\n\n"
-            f"**Full Repository Context:**\n{comprehensive_context}\n\n"
+            f"\n**FIX RULES:**\n"
+            f"- Read the error message carefully — it names the file, line, and exact issue\n"
+            f"- Read the actual file contents from context — don't guess\n"
+            f"- If a property 'does not exist in type', check prisma/schema.prisma or the type definition for valid fields\n"
+            f"- Don't add fields that aren't in the schema — remove references to them instead\n"
+            f"- Verify imports match actual exports before changing them\n"
+            f"- Never duplicate existing declarations\n\n"
+            f"**Key Error Context (files with errors):**\n{error_file_context if error_file_context else chr(10).join(error_context) if error_context else 'See full errors above'}\n\n"
+            f"**NOTE:** Full repository context is provided in the system prompt — do NOT ask for files.\n\n"
             f"**RESPONSE FORMAT - CRITICAL:**\n"
             f"Your response MUST be ONLY valid JSON. No markdown code fences, no explanation, JUST JSON.\n\n"
             f"Provide COMPLETE fixed files using this EXACT format:\n"
@@ -2561,9 +2554,13 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                     base_url=settings.OPENAI_BASE_URL,
                     timeout=settings.OPENAI_TIMEOUT_SECONDS
                 )
+                openai_system = (
+                    _system_prompt() + "\n\n"
+                    f"**Repository Context:**\n{comprehensive_context}\n"
+                )
                 fix_text, fix_usage = openai_client.responses_text_with_usage(
                     model=settings.OPENAI_MODEL,
-                    system=_system_prompt(),
+                    system=openai_system,
                     user=fix_prompt,
                     max_tokens=16000,
                     temperature=1.0
