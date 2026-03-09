@@ -32,6 +32,9 @@ def try_all_auto_fixes(
         auto_fix_eslint_rule_not_found,
         auto_fix_missing_export,
         auto_fix_prisma_schema_mismatch,
+        auto_fix_prisma_null_assignment,
+        auto_fix_module_not_found_stub,
+        auto_fix_hardcoded_secrets,
         auto_fix_missing_npm_package,
         auto_fix_eslint_config_package,
         auto_fix_prettier_formatting,
@@ -1842,3 +1845,231 @@ def auto_fix_jsx_no_undef(
         pass
 
     return False, ""
+
+
+def auto_fix_prisma_null_assignment(
+    error_msg: str,
+    repo_path: Path,
+    is_node_project: bool,
+) -> Tuple[bool, str]:
+    """
+    Auto-fix Prisma where-clause null assignments.
+
+    Prisma strict types don't accept `null` directly in where clauses.
+    Converts `field: null` or `field: { equals: null }` to proper Prisma
+    null-check syntax using `{ isSet: false }`.
+    """
+    if not is_node_project:
+        return False, ""
+
+    match = re.search(
+        r"['\"]?null['\"]? is not assignable to type ['\"]string \| (?:StringFilter|FieldRef)<",
+        error_msg,
+    )
+    if not match:
+        return False, ""
+
+    file_match = re.search(r'\./([^\s:]+\.(?:ts|tsx)):(\d+)', error_msg)
+    if not file_match:
+        file_match = re.search(r'(src/[^\s:]+\.(?:ts|tsx)):(\d+)', error_msg)
+    if not file_match:
+        return False, ""
+
+    file_rel = file_match.group(1)
+    error_line = int(file_match.group(2))
+    fp = repo_path / file_rel
+
+    if not fp.exists():
+        return False, ""
+
+    try:
+        content = fp.read_text(encoding="utf-8")
+        lines = content.split("\n")
+        if error_line < 1 or error_line > len(lines):
+            return False, ""
+
+        line_text = lines[error_line - 1]
+
+        # Pattern 1: `userId: { equals: null }` → `userId: { isSet: false }`
+        new_line = re.sub(
+            r'(\w+)\s*:\s*\{\s*equals\s*:\s*null\s*\}',
+            r'\1: { isSet: false }',
+            line_text,
+        )
+        if new_line != line_text:
+            lines[error_line - 1] = new_line
+            fp.write_text("\n".join(lines), encoding="utf-8")
+            return True, f"Fixed Prisma null filter (equals:null → isSet:false) in {file_rel}:{error_line}"
+
+        # Pattern 2: `userId: null` → `userId: { isSet: false }`
+        new_line = re.sub(
+            r'(\w+)\s*:\s*null\b',
+            r'\1: { isSet: false }',
+            line_text,
+        )
+        if new_line != line_text:
+            lines[error_line - 1] = new_line
+            fp.write_text("\n".join(lines), encoding="utf-8")
+            return True, f"Fixed Prisma null filter (null → isSet:false) in {file_rel}:{error_line}"
+
+    except Exception as e:
+        print(f"auto_fix_prisma_null_assignment failed: {e}")
+
+    return False, ""
+
+
+def auto_fix_module_not_found_stub(
+    error_msg: str,
+    repo_path: Path,
+    is_node_project: bool,
+) -> Tuple[bool, str]:
+    """
+    Auto-fix "Module not found: Can't resolve '@/lib/...'" errors by
+    creating a stub module that exports the symbols the importing file needs.
+
+    Only handles @/ alias paths that should exist under the repo root.
+    """
+    if not is_node_project:
+        return False, ""
+
+    matches = re.findall(
+        r"Module not found: Can't resolve '(@/[^']+)'",
+        error_msg,
+    )
+    if not matches:
+        return False, ""
+
+    created = []
+    for alias_path in set(matches):
+        rel_path = alias_path.replace("@/", "")
+
+        candidates = [
+            rel_path + ext
+            for ext in [".ts", ".tsx", "/index.ts", "/index.tsx", ".js"]
+        ]
+        file_exists = any((repo_path / c).exists() for c in candidates)
+        if file_exists:
+            continue
+
+        target_file = rel_path + ".ts"
+        target_path = repo_path / target_file
+
+        needed_exports: set = set()
+        for ts_file in repo_path.rglob("*.ts"):
+            if "node_modules" in str(ts_file) or ".next" in str(ts_file):
+                continue
+            try:
+                src = ts_file.read_text(encoding="utf-8")
+                for m in re.finditer(
+                    rf"import\s+\{{([^}}]+)\}}\s+from\s+['\"]"
+                    + re.escape(alias_path) + r"['\"]",
+                    src,
+                ):
+                    for name in m.group(1).split(","):
+                        name = name.strip().split(" as ")[0].strip()
+                        if name:
+                            needed_exports.add(name)
+                for m in re.finditer(
+                    rf"import\s+(\w+)\s+from\s+['\"]"
+                    + re.escape(alias_path) + r"['\"]",
+                    src,
+                ):
+                    needed_exports.add(f"default:{m.group(1)}")
+            except Exception:
+                continue
+
+        if not needed_exports:
+            continue
+
+        stub_lines = [
+            f'// Stub module created by AI Runner auto-fix',
+            f'// TODO: Implement actual logic for {alias_path}',
+            '',
+        ]
+
+        for export_name in sorted(needed_exports):
+            if export_name.startswith("default:"):
+                func_name = export_name.split(":")[1]
+                stub_lines.append(f'export default function {func_name}(...args: any[]) {{')
+                stub_lines.append(f'  console.warn("{func_name} is a stub — implement me");')
+                stub_lines.append(f'  return undefined as any;')
+                stub_lines.append(f'}}')
+            else:
+                stub_lines.append(f'export function {export_name}(...args: any[]) {{')
+                stub_lines.append(f'  console.warn("{export_name} is a stub — implement me");')
+                stub_lines.append(f'  return undefined as any;')
+                stub_lines.append(f'}}')
+            stub_lines.append('')
+
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text("\n".join(stub_lines), encoding="utf-8")
+        created.append(f"{target_file} ({len(needed_exports)} exports)")
+
+    if created:
+        return True, f"Created stub module(s): {', '.join(created)}"
+
+    return False, ""
+
+
+def auto_fix_hardcoded_secrets(
+    error_msg: str,
+    repo_path: Path,
+    is_node_project: bool,
+) -> Tuple[bool, str]:
+    """
+    Auto-fix hardcoded secret/API key warnings from the security scanner.
+
+    Replaces obvious placeholder secrets with process.env references.
+    """
+    if not is_node_project:
+        return False, ""
+
+    match = re.search(
+        r'\[CRITICAL\]\s+([^\s:]+\.(?:ts|tsx|js)):(\d+)\s+.*?Hardcoded Secret',
+        error_msg,
+    )
+    if not match:
+        return False, ""
+
+    file_rel = match.group(1)
+    fp = repo_path / file_rel
+
+    if not fp.exists():
+        return False, ""
+
+    try:
+        content = fp.read_text(encoding="utf-8")
+        original = content
+
+        # Replace hardcoded secret patterns with env var references
+        content = re.sub(
+            r"""((?:api[_-]?key|secret|token|password|auth[_-]?secret|credential|encryption[_-]?key)\s*[:=]\s*)(['"])([A-Za-z0-9_\-/.+=]{8,})\2""",
+            lambda m: f'{m.group(1)}process.env.{_env_var_name(m.group(0))} || ""',
+            content,
+            flags=re.IGNORECASE,
+        )
+
+        if content != original:
+            fp.write_text(content, encoding="utf-8")
+            return True, f"Replaced hardcoded secrets with env var references in {file_rel}"
+
+    except Exception as e:
+        print(f"auto_fix_hardcoded_secrets failed: {e}")
+
+    return False, ""
+
+
+def _env_var_name(context: str) -> str:
+    """Derive an env var name from the context of a hardcoded secret."""
+    ctx = context.lower()
+    if "encryption" in ctx:
+        return "ENCRYPTION_KEY"
+    if "refresh" in ctx:
+        return "REFRESH_TOKEN_SECRET"
+    if "access" in ctx:
+        return "ACCESS_TOKEN_SECRET"
+    if "api" in ctx:
+        return "API_SECRET_KEY"
+    if "auth" in ctx:
+        return "AUTH_SECRET"
+    return "SECRET_KEY"
