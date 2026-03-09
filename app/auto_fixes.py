@@ -1983,8 +1983,11 @@ def auto_fix_module_not_found_stub(
     if not is_node_project:
         return False, ""
 
+    # Match both webpack and TypeScript error formats:
+    #   webpack: Module not found: Can't resolve '@/lib/foo'
+    #   tsc:     Cannot find module '@/components/foo' or its corresponding type declarations
     matches = re.findall(
-        r"Module not found: Can't resolve '(@/[^']+)'",
+        r"(?:Module not found: Can't resolve|Cannot find module)\s+'(@/[^']+)'",
         error_msg,
     )
     if not matches:
@@ -2002,54 +2005,69 @@ def auto_fix_module_not_found_stub(
         if file_exists:
             continue
 
-        target_file = rel_path + ".ts"
+        # Use .tsx for component paths, .ts for lib/util paths
+        is_component = any(seg in rel_path for seg in ["components/", "app/"])
+        ext = ".tsx" if is_component else ".ts"
+        target_file = rel_path + ext
         target_path = repo_path / target_file
 
         needed_exports: set = set()
-        for ts_file in repo_path.rglob("*.ts"):
-            if "node_modules" in str(ts_file) or ".next" in str(ts_file):
-                continue
-            try:
-                src = ts_file.read_text(encoding="utf-8")
-                for m in re.finditer(
-                    rf"import\s+\{{([^}}]+)\}}\s+from\s+['\"]"
-                    + re.escape(alias_path) + r"['\"]",
-                    src,
-                ):
-                    for name in m.group(1).split(","):
-                        name = name.strip().split(" as ")[0].strip()
-                        if name:
-                            needed_exports.add(name)
-                for m in re.finditer(
-                    rf"import\s+(\w+)\s+from\s+['\"]"
-                    + re.escape(alias_path) + r"['\"]",
-                    src,
-                ):
-                    needed_exports.add(f"default:{m.group(1)}")
-            except Exception:
-                continue
+        for pattern in ["*.ts", "*.tsx"]:
+            for ts_file in repo_path.rglob(pattern):
+                if "node_modules" in str(ts_file) or ".next" in str(ts_file):
+                    continue
+                try:
+                    src = ts_file.read_text(encoding="utf-8")
+                    for m in re.finditer(
+                        rf"import\s+\{{([^}}]+)\}}\s+from\s+['\"]"
+                        + re.escape(alias_path) + r"['\"]",
+                        src,
+                    ):
+                        for name in m.group(1).split(","):
+                            name = name.strip().split(" as ")[0].strip()
+                            if name:
+                                needed_exports.add(name)
+                    for m in re.finditer(
+                        rf"import\s+(\w+)\s+from\s+['\"]"
+                        + re.escape(alias_path) + r"['\"]",
+                        src,
+                    ):
+                        needed_exports.add(f"default:{m.group(1)}")
+                except Exception:
+                    continue
 
         if not needed_exports:
             continue
 
         stub_lines = [
             f'// Stub module created by AI Runner auto-fix',
-            f'// TODO: Implement actual logic for {alias_path}',
-            '',
+            f'// TODO: Replace with actual implementation for {alias_path}',
         ]
+
+        if is_component:
+            stub_lines.insert(0, "'use client';")
+            stub_lines.append('')
 
         for export_name in sorted(needed_exports):
             if export_name.startswith("default:"):
                 func_name = export_name.split(":")[1]
-                stub_lines.append(f'export default function {func_name}(...args: any[]) {{')
-                stub_lines.append(f'  console.warn("{func_name} is a stub — implement me");')
-                stub_lines.append(f'  return undefined as any;')
-                stub_lines.append(f'}}')
+                if is_component:
+                    stub_lines.append(f'export default function {func_name}(props: any) {{')
+                    stub_lines.append(f'  return <div data-stub="{func_name}">{{/* stub */}}</div>;')
+                    stub_lines.append(f'}}')
+                else:
+                    stub_lines.append(f'export default function {func_name}(...args: any[]) {{')
+                    stub_lines.append(f'  return undefined as any;')
+                    stub_lines.append(f'}}')
             else:
-                stub_lines.append(f'export function {export_name}(...args: any[]) {{')
-                stub_lines.append(f'  console.warn("{export_name} is a stub — implement me");')
-                stub_lines.append(f'  return undefined as any;')
-                stub_lines.append(f'}}')
+                if is_component and export_name[0].isupper():
+                    stub_lines.append(f'export function {export_name}(props: any) {{')
+                    stub_lines.append(f'  return <div data-stub="{export_name}">{{/* stub */}}</div>;')
+                    stub_lines.append(f'}}')
+                else:
+                    stub_lines.append(f'export function {export_name}(...args: any[]) {{')
+                    stub_lines.append(f'  return undefined as any;')
+                    stub_lines.append(f'}}')
             stub_lines.append('')
 
         target_path.parent.mkdir(parents=True, exist_ok=True)
