@@ -1021,8 +1021,8 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
         "model": settings.ANTHROPIC_MODEL,
         "system": _build_system_with_cache(context_info, skills_content, kb_context, type_context),
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 16000,  # Increased for large file contents
-        "temperature": 1,  # Required when thinking is enabled
+        "max_tokens": 64000,
+        "temperature": 1,
         "thinking": {
             "type": "enabled",
             "budget_tokens": 8000  # Increased for complex problems
@@ -1227,7 +1227,7 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                     {"role": "assistant", "content": text},
                     {"role": "user", "content": followup_content},
                 ],
-                "max_tokens": 16000,
+                "max_tokens": 64000,
                 "temperature": 1,
                 "thinking": {"type": "enabled", "budget_tokens": 8000},
             })

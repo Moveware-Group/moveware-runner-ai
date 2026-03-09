@@ -189,7 +189,6 @@ def auto_fix_missing_export(
         # Case-insensitive match
         for exp_name in all_exports:
             if exp_name.lower() == missing_symbol.lower() and exp_name != missing_symbol:
-                # Found case mismatch — fix the import in the importing file
                 importing_match = re.search(r'\./([^\s:]+\.(?:ts|tsx|js|jsx)):', error_msg)
                 if importing_match:
                     imp_file = repo_path / importing_match.group(1)
@@ -199,6 +198,58 @@ def auto_fix_missing_export(
                         if new_imp != imp_content:
                             imp_file.write_text(new_imp, encoding="utf-8")
                             return True, f"Fixed import: {missing_symbol} → {exp_name} (case mismatch)"
+
+        # Strategy 3: Module has `export default` but import uses named import `{ X }`
+        has_default = bool(re.search(
+            rf'export\s+default\s+(?:function|class|const)?\s*{re.escape(missing_symbol)}\b',
+            content,
+        )) or bool(re.search(
+            rf'export\s+default\s+(?:function|class)\s+\w+',
+            content,
+        )) or "export default" in content
+
+        if has_default:
+            fixed_count = 0
+            # Fix ALL files that use `import { symbol } from 'module'`
+            for ts_file in repo_path.rglob("*.tsx"):
+                if "node_modules" in str(ts_file) or ".next" in str(ts_file):
+                    continue
+                try:
+                    fc = ts_file.read_text(encoding="utf-8")
+                    # Match: import { CRMLayout } from '..path..'  or  import { CRMLayout, Other } from '..path..'
+                    # We need to handle both sole named import and mixed
+                    pattern = rf"import\s+\{{\s*{re.escape(missing_symbol)}\s*\}}\s+from\s+(['\"][^'\"]+['\"])"
+                    m = re.search(pattern, fc)
+                    if m:
+                        old_import = m.group(0)
+                        from_path = m.group(1)
+                        new_import = f"import {missing_symbol} from {from_path}"
+                        fc = fc.replace(old_import, new_import, 1)
+                        ts_file.write_text(fc, encoding="utf-8")
+                        fixed_count += 1
+                except Exception:
+                    continue
+            # Also check .ts files
+            for ts_file in repo_path.rglob("*.ts"):
+                if "node_modules" in str(ts_file) or ".next" in str(ts_file):
+                    continue
+                try:
+                    fc = ts_file.read_text(encoding="utf-8")
+                    pattern = rf"import\s+\{{\s*{re.escape(missing_symbol)}\s*\}}\s+from\s+(['\"][^'\"]+['\"])"
+                    m = re.search(pattern, fc)
+                    if m:
+                        old_import = m.group(0)
+                        from_path = m.group(1)
+                        new_import = f"import {missing_symbol} from {from_path}"
+                        fc = fc.replace(old_import, new_import, 1)
+                        ts_file.write_text(fc, encoding="utf-8")
+                        fixed_count += 1
+                except Exception:
+                    continue
+
+            if fixed_count > 0:
+                rel = source_file.relative_to(repo_path)
+                return True, f"Fixed {fixed_count} file(s): {missing_symbol} is default export in {rel}, changed named imports to default"
 
     except Exception as e:
         print(f"auto_fix_missing_export failed: {e}")
