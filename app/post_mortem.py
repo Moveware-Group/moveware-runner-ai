@@ -399,8 +399,6 @@ def _create_github_issue(
 
         target_repo = _resolve_target_repo(issue_key)
         repos_to_try = [target_repo]
-        if target_repo != RUNNER_REPO:
-            repos_to_try.append(RUNNER_REPO)
 
         headers = {
             "Authorization": f"token {token}",
