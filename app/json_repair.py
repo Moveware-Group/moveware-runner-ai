@@ -399,13 +399,37 @@ def extract_json_from_llm_response(response_text: str) -> Optional[str]:
         if match:
             return match.group(1)
     
-    # Method 2: Find object boundaries
+    # Method 2: Find JSON object start — look for '{"' pattern (not just '{')
+    # This avoids false positives from code references like { ComponentName }
+    json_start = -1
+
+    # Try reliable patterns first
+    for pattern in ['\n{\n', '\n{  "', '\n{"', '{"']:
+        idx = text.find(pattern)
+        if idx >= 0:
+            json_start = idx + (1 if pattern.startswith('\n') else 0)
+            break
+
+    # Fallback: find first { followed by " within a few chars
+    if json_start < 0:
+        for i, ch in enumerate(text):
+            if ch == '{':
+                lookahead = text[i:i+6].replace(' ', '').replace('\n', '')
+                if '"' in lookahead:
+                    json_start = i
+                    break
+
+    if json_start >= 0:
+        last_brace = text.rfind('}')
+        if last_brace > json_start:
+            return text[json_start:last_brace+1]
+
+    # Final fallback: original behavior
     first_brace = text.find('{')
     last_brace = text.rfind('}')
-    
     if first_brace >= 0 and last_brace > first_brace:
         return text[first_brace:last_brace+1]
-    
+
     return None
 
 

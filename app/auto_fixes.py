@@ -537,10 +537,38 @@ def auto_fix_component_props_mismatch(
             print(f"  [props-autofix] No props to add in {props_file.name} (all already present)")
             continue
 
+        # Sanitize prop types — only use types that are already imported/available in the file
+        _primitive_types = {"string", "number", "boolean", "any", "unknown", "void", "null", "undefined", "never", "object"}
+        _safe_patterns = {"any[]", "string[]", "number[]", "boolean[]", "Record<string, any>", "React.ReactNode"}
+
+        def _sanitize_type(prop_type: str, file_content: str) -> str:
+            """Replace unresolvable type references with 'any'."""
+            clean = prop_type.strip().rstrip(";")
+            if clean in _primitive_types or clean in _safe_patterns:
+                return clean
+            if clean.endswith("[]"):
+                inner = clean[:-2]
+                if inner in _primitive_types:
+                    return clean
+                # Check if the type is imported or declared in this file
+                if re.search(rf"\b{re.escape(inner)}\b", file_content[:file_content.find("export") if "export" in file_content else len(file_content)]):
+                    return clean
+                return "any[]"
+            # For complex types, check if the base name is available
+            base_type = re.match(r"(\w+)", clean)
+            if base_type:
+                type_name = base_type.group(1)
+                if type_name in _primitive_types:
+                    return clean
+                if re.search(rf"(?:import|interface|type|class|enum)\s+.*?\b{re.escape(type_name)}\b", file_content):
+                    return clean
+            return "any"
+
         # Insert new props just before the closing brace
         new_lines = ""
         for prop_name, prop_type in props_to_add:
-            new_lines += f"  {prop_name}?: {prop_type};\n"
+            safe_type = _sanitize_type(prop_type, props_content)
+            new_lines += f"  {prop_name}?: {safe_type};\n"
 
         new_content = (
             props_content[:close_brace]

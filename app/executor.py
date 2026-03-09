@@ -2687,13 +2687,33 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                         break
                 fix_json_text = '\n'.join(lines[start_idx:end_idx])
             
-            # Method 2: Find first { and last }
+            # Method 2: Find the JSON object start — look for '{"' (not just '{')
+            # This avoids false positives from code references like { ContactDetailShell }
             if not fix_json_text.strip().startswith('{'):
-                first_brace = fix_json_text.find('{')
-                if first_brace >= 0:
+                # First try to find '{\n  "' or '{ "' or '{"' — reliable JSON start patterns
+                json_start = -1
+                for pattern in ['\n{\n', '\n{  "', '\n{"', '{\n  "', '{"']:
+                    idx = fix_json_text.find(pattern)
+                    if idx >= 0:
+                        json_start = idx + (1 if pattern.startswith('\n') else 0)
+                        break
+
+                if json_start < 0:
+                    # Fallback: find first { that's followed by " (within 5 chars)
+                    for i, ch in enumerate(fix_json_text):
+                        if ch == '{':
+                            after = fix_json_text[i:i+5].replace(' ', '').replace('\n', '')
+                            if '"' in after:
+                                json_start = i
+                                break
+
+                if json_start >= 0:
+                    preamble = fix_json_text[:json_start].strip()
+                    if preamble:
+                        print(f"ℹ️  Stripped {len(preamble)} chars of preamble text before JSON")
                     last_brace = fix_json_text.rfind('}')
-                    if last_brace > first_brace:
-                        fix_json_text = fix_json_text[first_brace:last_brace+1]
+                    if last_brace > json_start:
+                        fix_json_text = fix_json_text[json_start:last_brace+1]
             
             # Fail fast if empty or no JSON structure (saves expensive repair attempts)
             if not fix_json_text.strip() or '{' not in fix_json_text:
