@@ -773,6 +773,12 @@
                 <div class="metric-subtext" id="tokensSubtext">input + output</div>
             </div>
             
+            <div class="metric-card" style="border-left-color:#ffaa00">
+                <div class="metric-label">Self-heal / Post-mortem</div>
+                <div class="metric-value" id="runsWithSelfHeal">--</div>
+                <div class="metric-subtext" id="runsWithSelfHealSubtext">runs used auto-fix</div>
+            </div>
+            
             <div class="metric-card" style="border-top:2px solid #aa00ff">
                 <div class="metric-label">Knowledge Base</div>
                 <div class="metric-value" id="kbLessons">--</div>
@@ -899,14 +905,28 @@
                 document.getElementById('avgDuration').textContent = '--';
                 document.getElementById('totalTokens').textContent = '0';
                 document.getElementById('tokensSubtext').textContent = 'input + output';
+                const selfHealEl = document.getElementById('runsWithSelfHeal');
+                if (selfHealEl) selfHealEl.textContent = '--';
                 document.getElementById('errorCategoriesSection').innerHTML = '';
                 return;
             }
             
-            // Success rate
+            const runsWithSelfHeal = (data && data.runs_with_self_heal) ?? 0;
+            const selfHealEl = document.getElementById('runsWithSelfHeal');
+            if (selfHealEl) {
+                selfHealEl.textContent = runsWithSelfHeal;
+                const sub = document.getElementById('runsWithSelfHealSubtext');
+                if (sub) sub.textContent = runsWithSelfHeal === 1 ? 'run used auto-fix' : 'runs used auto-fix';
+            }
+            
+            // Success rate (failed = only runs that needed intervention; superseded failures excluded)
             document.getElementById('successRate').textContent = `${successRate}%`;
-            document.getElementById('successSubtext').textContent = 
-                `${completed} completed, ${failed} failed`;
+            const failedSuperseded = (data && data.failed_superseded) ?? 0;
+            let subtext = `${completed} completed, ${failed} failed`;
+            if (failedSuperseded > 0) {
+                subtext += ` (${failedSuperseded} recovered by retry)`;
+            }
+            document.getElementById('successSubtext').textContent = subtext;
             
             // Total cost
             document.getElementById('totalCost').textContent = `$${totalCostUsd}`;

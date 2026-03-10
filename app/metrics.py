@@ -185,74 +185,106 @@ def get_metrics(run_id: int) -> Optional[ExecutionMetrics]:
 def get_summary_stats(hours: int = 24) -> Dict[str, Any]:
     """
     Get summary statistics for the last N hours.
-    
-    Args:
-        hours: Number of hours to look back
-    
-    Returns:
-        Dictionary with summary statistics
+
+    Success rate counts only runs that reached a terminal state (completed or failed).
+    A failed run is not counted as a failure if a later run for the same issue
+    completed (superseded) — the outcome was eventually fixed.
     """
     from .db import connect
     import time
-    
+
     cutoff_time = int(time.time()) - (hours * 3600)
-    
+
     try:
         with connect() as conn:
             cursor = conn.cursor()
-            
-            # Get all runs in time period
+
+            # Need id, issue_key, status, created_at, metrics_json for superseded logic
             cursor.execute(
                 """
-                SELECT status, metrics_json 
-                FROM runs 
+                SELECT id, issue_key, status, created_at, metrics_json
+                FROM runs
                 WHERE created_at > ?
+                ORDER BY id ASC
                 """,
-                (cutoff_time,)
+                (cutoff_time,),
             )
-            
             rows = cursor.fetchall()
-            
+
             total_runs = len(rows)
-            completed = sum(1 for row in rows if row[0] == "completed")
-            failed = sum(1 for row in rows if row[0] == "failed")
-            
-            # Parse metrics
+            completed = sum(1 for r in rows if r[2] == "completed")
+            failed_raw = sum(1 for r in rows if r[2] == "failed")
+
+            # Superseded: failed run for which a later run (same issue) completed
+            issue_latest_completed = {}  # issue_key -> latest run id that completed
+            for r in rows:
+                rid, issue_key, status, _ts, _mj = r
+                if status == "completed":
+                    issue_latest_completed[issue_key] = max(
+                        issue_latest_completed.get(issue_key, 0), rid
+                    )
+            superseded_ids = set()
+            for r in rows:
+                rid, issue_key, status, _ts, _mj = r
+                if status == "failed" and issue_latest_completed.get(issue_key, 0) > rid:
+                    superseded_ids.add(rid)
+
+            failed_needing_intervention = sum(
+                1 for r in rows if r[2] == "failed" and r[0] not in superseded_ids
+            )
+            total_resolved = completed + failed_needing_intervention
+            success_rate = (
+                round(completed / total_resolved * 100, 1) if total_resolved > 0 else 0
+            )
+
+            # Parse metrics for cost, tokens, error categories, self-heal
             all_metrics = []
-            for row in rows:
-                if row[1]:
+            runs_with_self_heal = 0
+            for r in rows:
+                if r[4]:
                     try:
-                        data = json.loads(row[1])
-                        all_metrics.append(ExecutionMetrics.from_dict(data))
-                    except:
+                        data = json.loads(r[4])
+                        m = ExecutionMetrics.from_dict(data)
+                        all_metrics.append(m)
+                        if getattr(m, "self_heal_attempts", 0) > 0:
+                            runs_with_self_heal += 1
+                    except Exception:
                         pass
-            
-            # Calculate aggregates
+
             total_cost = sum(m.estimated_cost for m in all_metrics)
-            avg_duration = sum(m.duration_seconds for m in all_metrics) / len(all_metrics) if all_metrics else 0
-            total_tokens = sum(m.total_input_tokens + m.total_output_tokens for m in all_metrics)
-            
-            # Error categories
+            avg_duration = (
+                sum(m.duration_seconds for m in all_metrics) / len(all_metrics)
+                if all_metrics
+                else 0
+            )
+            total_tokens = sum(
+                m.total_input_tokens + m.total_output_tokens for m in all_metrics
+            )
             error_categories = {}
             for m in all_metrics:
                 if m.error_category:
-                    error_categories[m.error_category] = error_categories.get(m.error_category, 0) + 1
-            
+                    error_categories[m.error_category] = (
+                        error_categories.get(m.error_category, 0) + 1
+                    )
+
             return {
                 "period_hours": hours,
                 "total_runs": total_runs,
                 "completed": completed,
-                "failed": failed,
-                "success_rate": round(completed / total_runs * 100, 1) if total_runs > 0 else 0,
+                "failed": failed_needing_intervention,
+                "failed_superseded": len(superseded_ids),
+                "success_rate": success_rate,
                 "total_cost_usd": round(total_cost, 2),
                 "avg_duration_seconds": round(avg_duration, 1),
                 "total_tokens": total_tokens,
                 "error_categories": error_categories,
                 "avg_self_heal_attempts": round(
                     sum(m.self_heal_attempts for m in all_metrics) / len(all_metrics), 1
-                ) if all_metrics else 0
+                )
+                if all_metrics
+                else 0,
+                "runs_with_self_heal": runs_with_self_heal,
             }
-    
     except Exception as e:
         print(f"Warning: Could not calculate summary stats: {e}")
         return {
@@ -260,10 +292,12 @@ def get_summary_stats(hours: int = 24) -> Dict[str, Any]:
             "total_runs": 0,
             "completed": 0,
             "failed": 0,
+            "failed_superseded": 0,
             "success_rate": 0,
             "total_cost_usd": 0,
             "avg_duration_seconds": 0,
             "total_tokens": 0,
             "error_categories": {},
             "avg_self_heal_attempts": 0,
+            "runs_with_self_heal": 0,
         }
