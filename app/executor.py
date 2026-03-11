@@ -440,12 +440,14 @@ def _build_system_with_cache(
     skills_content: str = "",
     knowledge_base_context: str = "",
     type_definitions_context: str = "",
+    export_map_context: str = "",
 ) -> list:
     """
     Build system prompt with prompt caching for repository context.
     
     Includes optional project-specific skills (e.g., Next.js vs Flutter conventions),
-    preventive knowledge base lessons, and auto-detected type definitions.
+    preventive knowledge base lessons, auto-detected type definitions,
+    and an export map of available module exports.
     
     Returns array of system message blocks with cache_control markers.
     This reduces costs by 90% and speeds up responses 5x for repeated context.
@@ -456,6 +458,8 @@ def _build_system_with_cache(
     cached_parts.append(f"\n\n**Repository Context (cached for performance):**\n\n{repo_context}")
     if type_definitions_context:
         cached_parts.append(f"\n\n{type_definitions_context}")
+    if export_map_context:
+        cached_parts.append(f"\n\n{export_map_context}")
 
     blocks = [
         {
@@ -862,6 +866,19 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
     except Exception as e:
         print(f"Note: Type context extraction unavailable: {e}")
 
+    # PREVENTIVE: Build export map so LLM knows what's available to import
+    export_map_context = ""
+    try:
+        from .export_scanner import build_export_map
+        from .import_resolver import _get_alias_base
+        _alias_base = _get_alias_base(repo_path)
+        export_map_context = build_export_map(repo_path, alias_base=_alias_base)
+        if export_map_context:
+            _mod_count = export_map_context.count("→")
+            print(f"📦 Export map: {_mod_count} modules indexed for import guidance")
+    except Exception as e:
+        print(f"Note: Export scanner unavailable: {e}")
+
     from app.skill_loader import load_skills
     skills_list = repo_settings.get("skills", ["nextjs-fullstack-dev"])
     if run_id:
@@ -1025,7 +1042,7 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
     # Use prompt caching for repository context (90% cost reduction!)
     raw = client.messages_create({
         "model": settings.ANTHROPIC_MODEL,
-        "system": _build_system_with_cache(context_info, skills_content, kb_context, type_context),
+        "system": _build_system_with_cache(context_info, skills_content, kb_context, type_context, export_map_context),
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": 64000,
         "temperature": 1,
@@ -1227,7 +1244,7 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
             # Re-call Claude with the file contents as a follow-up message
             raw2 = client.messages_create({
                 "model": settings.ANTHROPIC_MODEL,
-                "system": _build_system_with_cache(context_info, skills_content, kb_context, type_context),
+                "system": _build_system_with_cache(context_info, skills_content, kb_context, type_context, export_map_context),
                 "messages": [
                     {"role": "user", "content": prompt},
                     {"role": "assistant", "content": text},
@@ -2597,7 +2614,7 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                     for claude_attempt in range(2):
                         fix_raw = client.messages_create({
                             "model": settings.ANTHROPIC_MODEL,
-                            "system": _build_system_with_cache(comprehensive_context, skills_content),
+                            "system": _build_system_with_cache(comprehensive_context, skills_content, export_map_context=export_map_context),
                             "messages": [{"role": "user", "content": fix_prompt}],
                             "max_tokens": 16000,
                             "temperature": 1,
@@ -2643,9 +2660,11 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
                     base_url=settings.OPENAI_BASE_URL,
                     timeout=settings.OPENAI_TIMEOUT_SECONDS
                 )
+                _export_section = f"\n\n{export_map_context}" if export_map_context else ""
                 openai_system = (
                     _system_prompt() + "\n\n"
                     f"**Repository Context:**\n{comprehensive_context}\n"
+                    f"{_export_section}\n"
                 )
                 fix_text, fix_usage = openai_client.responses_text_with_usage(
                     model=settings.OPENAI_MODEL,

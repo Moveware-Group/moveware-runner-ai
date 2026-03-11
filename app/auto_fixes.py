@@ -10,6 +10,50 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 
+def _fuzzy_find_export(missing: str, exports: List[str], threshold: float = 0.6) -> Optional[str]:
+    """Find the closest matching export name using multiple heuristics."""
+    missing_lower = missing.lower()
+
+    # 1. Substring match: getSession → getServerSession, getAuthSession
+    substring_matches = [e for e in exports if missing_lower in e.lower() or e.lower() in missing_lower]
+    if len(substring_matches) == 1:
+        return substring_matches[0]
+
+    # 2. Prefix match: getSession → getSessionFromToken
+    prefix_matches = [e for e in exports if e.lower().startswith(missing_lower[:4])]
+    if len(prefix_matches) == 1:
+        return prefix_matches[0]
+
+    # 3. Levenshtein-like similarity (simplified: count matching characters)
+    def _similarity(a: str, b: str) -> float:
+        a_l, b_l = a.lower(), b.lower()
+        if not a_l or not b_l:
+            return 0.0
+        # Longest common subsequence ratio
+        m, n = len(a_l), len(b_l)
+        dp = [[0] * (n + 1) for _ in range(m + 1)]
+        for i in range(1, m + 1):
+            for j in range(1, n + 1):
+                if a_l[i - 1] == b_l[j - 1]:
+                    dp[i][j] = dp[i - 1][j - 1] + 1
+                else:
+                    dp[i][j] = max(dp[i - 1][j], dp[i][j - 1])
+        lcs_len = dp[m][n]
+        return (2.0 * lcs_len) / (m + n)
+
+    best_score = 0.0
+    best_name = None
+    for e in exports:
+        score = _similarity(missing, e)
+        if score > best_score:
+            best_score = score
+            best_name = e
+
+    if best_score >= threshold and best_name and best_name != missing:
+        return best_name
+    return None
+
+
 def try_all_auto_fixes(
     error_msg: str,
     repo_path: Path,
@@ -203,7 +247,26 @@ def auto_fix_missing_export(
                             imp_file.write_text(new_imp, encoding="utf-8")
                             return True, f"Fixed import: {missing_symbol} → {exp_name} (case mismatch)"
 
-        # Strategy 3: Module has `export default` but import uses named import `{ X }`
+        # Strategy 3: Fuzzy match — find the most similar export name
+        if all_exports and missing_symbol not in all_exports:
+            best_match = _fuzzy_find_export(missing_symbol, all_exports)
+            if best_match:
+                importing_match = re.search(r'\./([^\s:]+\.(?:ts|tsx|js|jsx))[:\(]', error_msg)
+                if importing_match:
+                    imp_file = repo_path / importing_match.group(1)
+                    if imp_file.exists():
+                        imp_content = imp_file.read_text(encoding="utf-8")
+                        new_imp = re.sub(
+                            rf'\b{re.escape(missing_symbol)}\b',
+                            best_match,
+                            imp_content,
+                        )
+                        if new_imp != imp_content:
+                            imp_file.write_text(new_imp, encoding="utf-8")
+                            rel = imp_file.relative_to(repo_path)
+                            return True, f"Fixed import in {rel}: {missing_symbol} → {best_match} (fuzzy match from {source_file.relative_to(repo_path)})"
+
+        # Strategy 4: Module has `export default` but import uses named import `{ X }`
         has_default = bool(re.search(
             rf'export\s+default\s+(?:function|class|const)?\s*{re.escape(missing_symbol)}\b',
             content,
