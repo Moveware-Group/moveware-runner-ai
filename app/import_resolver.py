@@ -29,6 +29,60 @@ _IMPORT_RE = re.compile(
 )
 
 
+def _parse_jsonc(text: str) -> Optional[dict]:
+    """Parse JSON with comments (JSONC) as used in tsconfig.json.
+
+    Handles // line comments, /* block comments */, and trailing commas,
+    without corrupting glob patterns like @/* inside string values.
+    """
+    result: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            # String literal — copy verbatim until closing quote
+            j = i + 1
+            while j < n:
+                if text[j] == '\\':
+                    j += 2
+                elif text[j] == '"':
+                    j += 1
+                    break
+                else:
+                    j += 1
+            result.append(text[i:j])
+            i = j
+        elif c == '/' and i + 1 < n:
+            if text[i + 1] == '/':
+                # Line comment — skip to end of line
+                end = text.find('\n', i)
+                i = end if end != -1 else n
+            elif text[i + 1] == '*':
+                # Block comment — skip to */
+                end = text.find('*/', i + 2)
+                i = end + 2 if end != -1 else n
+            else:
+                result.append(c)
+                i += 1
+        else:
+            result.append(c)
+            i += 1
+
+    cleaned = "".join(result)
+    # Strip trailing commas (loop for nested levels)
+    prev = None
+    while prev != cleaned:
+        prev = cleaned
+        cleaned = re.sub(r',(\s*[}\]])', r'\1', cleaned)
+
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        print(f"  Warning: JSONC parse failed: {e}")
+        return None
+
+
 def _get_alias_base(repo_path: Path) -> str:
     """
     Read tsconfig.json to determine what @/ maps to.
@@ -40,15 +94,13 @@ def _get_alias_base(repo_path: Path) -> str:
             continue
         try:
             raw = config_path.read_text(encoding="utf-8")
-            # Strip comments (// and /* ... */) for JSON parsing
-            raw = re.sub(r'//.*?$', '', raw, flags=re.MULTILINE)
-            raw = re.sub(r'/\*.*?\*/', '', raw, flags=re.DOTALL)
-            config = json.loads(raw)
+            config = _parse_jsonc(raw)
+            if config is None:
+                continue
             paths = config.get("compilerOptions", {}).get("paths", {})
             for key, values in paths.items():
                 if key in ("@/*", "@*"):
                     if values and isinstance(values, list):
-                        # Value like ["./src/*"] or ["./*"]
                         mapping = values[0].rstrip("*").rstrip("/").lstrip("./")
                         if mapping:
                             print(f"  📂 @/ alias maps to '{mapping}/' (from {config_name})")

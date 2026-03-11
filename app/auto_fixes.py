@@ -43,6 +43,9 @@ def try_all_auto_fixes(
         auto_fix_prisma_import_type,
         auto_fix_env_type_missing,
         auto_fix_type_conversion,
+        auto_fix_nullable_assignment,
+        auto_fix_type_predicate_index_sig,
+        auto_fix_object_literal_unknown_prop,
         auto_fix_index_signature_mismatch,
         auto_fix_missing_typescript_types,
         auto_fix_outdated_lockfile,
@@ -357,6 +360,150 @@ def auto_fix_intrinsic_attributes(
                     return True, f"Added `props: any` to {component_name} in {rel_path}"
 
     return False, ""
+
+
+def auto_fix_type_predicate_index_sig(
+    error_msg: str,
+    repo_path: Path,
+    is_node_project: bool,
+) -> Tuple[bool, str]:
+    """
+    Fix: A type predicate's type must be assignable to its parameter's type.
+      Type 'X' is not assignable to type 'Record<string, unknown>'.
+        Index signature for type 'string' is missing in type 'X'.
+
+    Solution: Add [key: string]: unknown to the interface/type definition.
+    """
+    if not is_node_project:
+        return False, ""
+
+    match = re.search(
+        r"Index signature for type 'string' is missing in type '(\w+)'",
+        error_msg,
+    )
+    if not match:
+        return False, ""
+
+    type_name = match.group(1)
+
+    file_match = re.search(
+        r"\./([\w/.[\]-]+\.tsx?)[:\(]",
+        error_msg,
+    )
+    if not file_match:
+        return False, ""
+
+    error_file = repo_path / file_match.group(1)
+    if not error_file.exists():
+        return False, ""
+
+    content = error_file.read_text(encoding="utf-8")
+
+    # Find the interface/type definition and add index signature
+    pattern = re.compile(
+        rf"((?:export\s+)?(?:interface|type)\s+{re.escape(type_name)}\s*(?:extends\s+[^{{]+)?\{{)"
+    )
+    m = pattern.search(content)
+    if not m:
+        return False, ""
+
+    # Check if index signature already exists
+    open_brace = m.end() - 1
+    # Find closing brace
+    depth = 1
+    i = open_brace + 1
+    while i < len(content) and depth > 0:
+        if content[i] == '{':
+            depth += 1
+        elif content[i] == '}':
+            depth -= 1
+        i += 1
+    close_brace = i - 1
+    body = content[open_brace:close_brace + 1]
+
+    if "[key: string]" in body or "[k: string]" in body:
+        return False, ""
+
+    # Insert index signature right after the opening brace
+    insertion = "\n  [key: string]: unknown;"
+    new_content = content[:open_brace + 1] + insertion + content[open_brace + 1:]
+
+    error_file.write_text(new_content, encoding="utf-8")
+    rel_path = file_match.group(1)
+    return True, f"Added index signature to {type_name} in {rel_path}"
+
+
+def auto_fix_object_literal_unknown_prop(
+    error_msg: str,
+    repo_path: Path,
+    is_node_project: bool,
+) -> Tuple[bool, str]:
+    """
+    Fix: Object literal may only specify known properties, and 'X' does not exist in type 'Y'.
+    Solution: Remove the offending property from the object literal.
+    """
+    if not is_node_project:
+        return False, ""
+
+    match = re.search(
+        r"Object literal may only specify known properties, and '(\w+)' does not exist in type '([^']+)'",
+        error_msg,
+    )
+    if not match:
+        return False, ""
+
+    invalid_prop = match.group(1)
+    target_type = match.group(2)
+
+    file_match = re.search(
+        r"\./([\w/.[\]-]+\.tsx?)[:\(](\d+)",
+        error_msg,
+    )
+    if not file_match:
+        return False, ""
+
+    error_file = repo_path / file_match.group(1)
+    error_line = int(file_match.group(2))
+    if not error_file.exists():
+        return False, ""
+
+    content = error_file.read_text(encoding="utf-8")
+    lines = content.split("\n")
+
+    if error_line < 1 or error_line > len(lines):
+        return False, ""
+
+    # Find the line with the invalid property (0-indexed)
+    line_idx = error_line - 1
+    line = lines[line_idx]
+
+    # Check if this line contains the property assignment
+    prop_pattern = re.compile(
+        rf"^\s*{re.escape(invalid_prop)}\s*[:,]"
+    )
+    if not prop_pattern.match(line):
+        return False, ""
+
+    # Remove the line (and handle trailing comma on previous line)
+    removed_line = lines.pop(line_idx)
+
+    # If the previous line now ends with a comma before }, clean it up
+    if line_idx > 0 and line_idx < len(lines):
+        prev = lines[line_idx - 1].rstrip()
+        next_non_empty = ""
+        for l in lines[line_idx:]:
+            stripped = l.strip()
+            if stripped:
+                next_non_empty = stripped
+                break
+        if prev.endswith(",") and next_non_empty.startswith("}"):
+            lines[line_idx - 1] = prev[:-1]
+
+    new_content = "\n".join(lines)
+    error_file.write_text(new_content, encoding="utf-8")
+
+    rel_path = file_match.group(1)
+    return True, f"Removed '{invalid_prop}' from {target_type} literal in {rel_path}:{error_line}"
 
 
 def auto_fix_double_prefix_import(
@@ -1315,6 +1462,102 @@ def auto_fix_type_conversion(
     return False, ""
 
 
+def auto_fix_nullable_assignment(
+    error_msg: str,
+    repo_path: Path,
+    is_node_project: bool,
+) -> Tuple[bool, str]:
+    """
+    Fix: Type 'string | undefined' is not assignable to type 'string'.
+         Type 'X | null' is not assignable to type 'X'.
+
+    Adds nullish coalescing (?? default) to the offending expression.
+    """
+    if not is_node_project:
+        return False, ""
+
+    # Match patterns like:
+    # "Type 'string | undefined' is not assignable to type 'string'."
+    # "Type 'number | null' is not assignable to type 'number'."
+    m = re.search(
+        r"Type '(\w+)\s*\|\s*(undefined|null)' is not assignable to type '(\w+)'",
+        error_msg,
+    )
+    if not m:
+        return False, ""
+
+    base_type = m.group(1)
+    nullable = m.group(2)  # "undefined" or "null"
+    target_type = m.group(3)
+
+    if base_type != target_type:
+        return False, ""
+
+    # Determine default value based on target type
+    defaults = {
+        "string": "''",
+        "number": "0",
+        "boolean": "false",
+    }
+    default_val = defaults.get(target_type, "''")
+
+    file_match = re.search(
+        r"\./([\w/.[\]-]+\.tsx?)\((\d+),(\d+)\)",
+        error_msg,
+    )
+    if not file_match:
+        file_match = re.search(
+            r"\./([\w/.[\]-]+\.tsx?):(\d+):(\d+)",
+            error_msg,
+        )
+    if not file_match:
+        return False, ""
+
+    file_rel = file_match.group(1)
+    line_num = int(file_match.group(2))
+    col_num = int(file_match.group(3))
+    file_path = repo_path / file_rel
+
+    if not file_path.exists():
+        return False, ""
+
+    try:
+        content = file_path.read_text(encoding="utf-8")
+        lines = content.splitlines(keepends=True)
+        if line_num < 1 or line_num > len(lines):
+            return False, ""
+
+        line = lines[line_num - 1]
+
+        # Find the property assignment at/near the column
+        # Pattern: "propName: expression," or "propName: expression}"
+        prop_match = re.search(
+            r'(\w+)\s*:\s*([^,}\n]+)',
+            line,
+        )
+        if not prop_match:
+            return False, ""
+
+        prop_name = prop_match.group(1)
+        expr = prop_match.group(2).rstrip()
+
+        # Don't add ?? if already has nullish coalescing or non-null assertion
+        if '??' in expr or expr.endswith('!'):
+            return False, ""
+
+        new_expr = f"{expr} ?? {default_val}"
+        new_line = line[:prop_match.start(2)] + new_expr + line[prop_match.end(2):]
+        lines[line_num - 1] = new_line
+
+        file_path.write_text("".join(lines), encoding="utf-8")
+        return True, f"Added nullish coalescing to {prop_name} in {file_rel}:{line_num}"
+
+    except Exception as e:
+        print(f"auto_fix_nullable_assignment failed: {e}")
+
+    return False, ""
+
+
 def auto_fix_index_signature_mismatch(
     error_msg: str,
     repo_path: Path,
@@ -1328,6 +1571,10 @@ def auto_fix_index_signature_mismatch(
     Record<string, unknown>. Fix by casting at the call site.
     """
     if not is_node_project:
+        return False, ""
+
+    # Skip type predicate errors — handled by auto_fix_type_predicate_index_sig
+    if "type predicate" in error_msg.lower():
         return False, ""
 
     # Match the index-signature variant
