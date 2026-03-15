@@ -11,3 +11,5 @@ psutil==6.1.1  # For system health monitoring
 PyGithub==2.1.1  # GitHub API client
 PyJWT==2.8.0  # For GitHub App JWT tokens
 cryptography==41.0.7  # For JWT signing
+playwright==1.49.1  # Visual regression testing (screenshot capture + comparison)
+Pillow==11.1.0  # Pixel-level image comparison for visual diffs

@@ -3227,6 +3227,33 @@ def _execute_subtask_impl(issue: JiraIssue, run_id: Optional[int], metrics: Opti
     except Exception as e:
         print(f"Note: Playwright tests skipped: {e}")
 
+    # 5e-vis) Visual regression testing (Playwright screenshots before/after)
+    try:
+        from app.integrations.visual_testing import is_enabled as _vt_enabled, has_ui_changes as _vt_ui, run_visual_tests
+        changed_paths = [f["path"] for f in files if f.get("action") != "delete"]
+        if _vt_enabled() and _vt_ui(changed_paths):
+            print("Running visual regression tests...")
+            if run_id:
+                add_progress_event(run_id, "verifying", "Running visual regression tests (screenshot comparison)", {})
+            vt_result = run_visual_tests(repo_path, changed_files=changed_paths, run_id=run_id)
+            if vt_result.error and "skipping" not in vt_result.error.lower() and "disabled" not in vt_result.error.lower():
+                notes += f"\n\n⚠️ Visual tests: {vt_result.error}"
+                print(f"⚠️  Visual tests: {vt_result.error}")
+                if run_id:
+                    add_progress_event(run_id, "verifying", f"⚠ Visual tests: {vt_result.error}", {})
+            elif not vt_result.all_passed:
+                notes += f"\n\n{vt_result.to_jira_comment()}"
+                print(f"⚠️  Visual tests: {vt_result.failed}/{vt_result.total_pages} pages have regressions")
+                if run_id:
+                    add_progress_event(run_id, "verifying", f"⚠ Visual regressions: {vt_result.failed}/{vt_result.total_pages} pages differ", {"passed": vt_result.passed, "failed": vt_result.failed, "total": vt_result.total_pages})
+            elif vt_result.total_pages > 0:
+                notes += f"\n\n✅ Visual tests: {vt_result.passed}/{vt_result.total_pages} pages unchanged"
+                print(f"✓ Visual tests: all {vt_result.total_pages} pages match baseline")
+                if run_id:
+                    add_progress_event(run_id, "verifying", f"✓ Visual tests: {vt_result.total_pages}/{vt_result.total_pages} pages match", {"total": vt_result.total_pages})
+    except Exception as e:
+        print(f"Note: Visual regression tests skipped: {e}")
+
     # 5f) Semgrep SAST scan report (non-blocking, informational for Jira)
     try:
         from app.integrations.semgrep_scanner import is_installed as _semgrep_ok, scan as _semgrep_scan

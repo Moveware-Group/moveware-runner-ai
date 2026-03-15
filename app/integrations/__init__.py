@@ -18,11 +18,13 @@ Modules:
   security_scanner   - Static security analysis (secrets, injection, XSS, config)
   semgrep_scanner    - AST-aware SAST with OWASP Top 10 data-flow analysis
   owasp_zap          - Dynamic application security testing (DAST) via ZAP proxy
+  visual_testing     - Playwright screenshot-based visual regression detection
 
 Auto-activation:
   Credentials in .env:  Figma, Sentry, BrowserStack, Stripe, Slack, ZAP
   Always on:            Vercel (Next.js projects), GitHub CI (uses GH_TOKEN),
                         Lighthouse (free API, optional key for higher limits),
                         npm audit, Security scanner, Playwright (if configured in repo),
-                        Semgrep (if CLI installed)
+                        Semgrep (if CLI installed),
+                        Visual Testing (if Playwright pip pkg installed)
 """
